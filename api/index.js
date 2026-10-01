@@ -134,6 +134,14 @@ export default function handler(req, res) {
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     if (req.method === "OPTIONS") return res.status(200).end();
 
+    // Jika bukan path /api, tampilkan halaman HTML
+    const url = req.url || "";
+    const isApiPath = url.startsWith("/api");
+    if (req.method === "GET" && !isApiPath && req.query.admin === undefined && !req.query.key) {
+        res.setHeader("Content-Type", "text/html");
+        return res.status(200).send(UPAGE);
+    }
+
     if (req.method === "GET" && req.query.admin !== undefined) {
         if (req.query.admin !== ADMIN) {
             res.setHeader("Content-Type", "text/html");
