@@ -142,6 +142,14 @@ export default function handler(req, res) {
         return res.status(200).send(UPAGE);
     }
 
+    // Routing: /?uid=xxx → HTML, /api?uid=xxx → JSON
+    const reqUrl = req.url || "";
+    const isApiCall = reqUrl.startsWith("/api");
+    if (req.method === "GET" && !isApiCall) {
+        res.setHeader("Content-Type", "text/html");
+        return res.status(200).send(UPAGE);
+    }
+
     if (req.method === "GET" && req.query.admin !== undefined) {
         if (req.query.admin !== ADMIN) {
             res.setHeader("Content-Type", "text/html");
@@ -151,6 +159,28 @@ export default function handler(req, res) {
         return res.status(200).send(APAGE);
     }
 
+    // GET ?lookup=uid → proxy ambil username Roblox
+    if (req.method === "GET" && req.query.lookup) {
+        const uid = Number(req.query.lookup);
+        if (!uid || isNaN(uid)) return res.status(400).json({ ok: false });
+        try {
+            const { default: fetch } = await import("node-fetch");
+            const uRes = await fetch("https://users.roblox.com/v1/users/" + uid);
+            const uData = await uRes.json();
+            if (!uData || uData.errors) return res.status(200).json({ ok: false });
+            let avatar = "";
+            try {
+                const aRes = await fetch("https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=" + uid + "&size=48x48&format=Png&isCircular=true");
+                const aData = await aRes.json();
+                avatar = (aData.data && aData.data[0]) ? aData.data[0].imageUrl : "";
+            } catch(e) {}
+            return res.status(200).json({ ok: true, username: uData.name, displayName: uData.displayName, avatar });
+        } catch(e) {
+            return res.status(200).json({ ok: false, error: String(e) });
+        }
+    }
+
+    // GET ?uid=xxx&key=yyy → validate key
     if (req.method === "GET" && req.query.uid && req.query.key) {
         const uid = Number(req.query.uid);
         if (!uid || isNaN(uid)) return res.status(400).json({ ok: false, error: "UserId tidak valid" });
