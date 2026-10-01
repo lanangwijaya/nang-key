@@ -164,7 +164,6 @@ export default function handler(req, res) {
         const uid = Number(req.query.lookup);
         if (!uid || isNaN(uid)) return res.status(400).json({ ok: false });
         try {
-            const { default: fetch } = await import("node-fetch");
             const uRes = await fetch("https://users.roblox.com/v1/users/" + uid);
             const uData = await uRes.json();
             if (!uData || uData.errors) return res.status(200).json({ ok: false });
