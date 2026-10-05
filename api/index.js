@@ -123,7 +123,46 @@ async function handle(req, res) {
     if (!link) { res.status(200).json({ error: "no link" }); return; }
     const low = link.toLowerCase();
     const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36";
+    const isCleanUrl = (u) => u && typeof u === "string" && u.startsWith("http") &&
+      !["lootlabs","lootlinks","lootdest","platorelay","linkvertise","work.ink","sub2unlock","sub2get","playrole"].some(s => u.toLowerCase().includes(s));
     const needBrowser = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest") || low.includes("platorelay") || low.includes("linkvertise") || low.includes("work.ink") || low.includes("sub2unlock") || low.includes("sub2get") || low.includes("playrole");
+
+    // ── LAYER 0: Dedicated API per platform (tercepat) ──
+    // Linkvertise → bypassall.lol
+    if (low.includes("linkvertise") || low.includes("work.ink")) {
+      try {
+        const r = await fetch("https://bypassall.lol/api/bypass?url=" + encodeURIComponent(link), {
+          headers: { "User-Agent": UA }
+        });
+        if (r.ok) {
+          const d = await r.json();
+          const result = d.destination || d.result || d.url || d.bypassed;
+          if (isCleanUrl(result)) { res.status(200).json({ result, source: "bypassall" }); return; }
+        }
+      } catch {}
+      // Fallback: bypass.bot for linkvertise
+      try {
+        const r = await fetch("https://bypass.bot.nu/bypass?url=" + encodeURIComponent(link), {
+          headers: { "User-Agent": UA }
+        });
+        if (r.ok) {
+          const d = await r.json();
+          const result = d.result || d.destination || d.url;
+          if (isCleanUrl(result)) { res.status(200).json({ result, source: "bypass.bot" }); return; }
+        }
+      } catch {}
+      // Fallback: linklm.com bypass API
+      try {
+        const r = await fetch("https://linklm.com/api/bypass?url=" + encodeURIComponent(link), {
+          headers: { "User-Agent": UA, "Accept": "application/json" }
+        });
+        if (r.ok) {
+          const d = await r.json();
+          const result = d.result || d.destination || d.url || d.data;
+          if (isCleanUrl(result)) { res.status(200).json({ result, source: "linklm" }); return; }
+        }
+      } catch {}
+    }
 
     // LAYER 1: Browserless
     if (needBrowser) {
@@ -305,10 +344,7 @@ async function handle(req, res) {
       if (r.ok) {
         const d = await r.json();
         const result = d.result || d.url || d.destination || d.data;
-        if (result && typeof result === "string" && result.startsWith("http") && !result.includes("lootlabs")) {
-          res.status(200).json({ result, source: "bypass.vip" });
-          return;
-        }
+        if (isCleanUrl(result)) { res.status(200).json({ result, source: "bypass.vip" }); return; }
       }
     } catch {}
 
@@ -322,21 +358,29 @@ async function handle(req, res) {
       if (r.ok) {
         const d = await r.json();
         const result = d.result || d.destination || d.url || d.data;
-        if (result && typeof result === "string" && result.startsWith("http")) {
-          res.status(200).json({ result, source: "bypass.city" });
-          return;
-        }
+        if (isCleanUrl(result)) { res.status(200).json({ result, source: "bypass.city" }); return; }
       }
     } catch {}
 
-    // LAYER 4: HEAD redirect
+    // LAYER 4: BypassKing API
+    try {
+      const r = await fetch("https://api.bypassking.com/bypass?url=" + encodeURIComponent(link), {
+        headers: { "User-Agent": UA }
+      });
+      if (r.ok) {
+        const d = await r.json();
+        const result = d.destination || d.result || d.url;
+        if (isCleanUrl(result)) { res.status(200).json({ result, source: "bypassking" }); return; }
+      }
+    } catch {}
+
+    // LAYER 5: HEAD redirect (untuk link simpel)
     if (!needBrowser) {
       try {
         const r = await fetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } });
         const loc = r.headers.get("location");
         if (loc && loc.startsWith("http") && loc !== link) {
-          res.status(200).json({ result: loc, source: "redirect" });
-          return;
+          res.status(200).json({ result: loc, source: "redirect" }); return;
         }
       } catch {}
     }
@@ -344,7 +388,7 @@ async function handle(req, res) {
     res.status(200).json({
       result: link,
       source: "original",
-      warning: needBrowser ? "LootLabs/platorelay belum selesai. Klik bypass lagi 1-2x." : "Bypass gagal — buka manual.",
+      warning: "Bypass gagal semua layer. Coba buka manual.",
     });
     return;
   }
