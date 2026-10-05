@@ -12,6 +12,7 @@ async function handle(req, res) {
   const EXPIRE_S = 86400;
   const WA_NUMBER = "6281252425581";
   const BROWSERLESS_TOKEN = "2VO67VgLJTXNszJ47508df1abfc96345f97d220136688f6d6";
+  const BROWSERLESS_URL = "https://production-sfo.browserless.io/function";
   const AUTH_DOMAIN = req.headers.host || "localhost";
 
   function simpleHash(str) {
@@ -116,31 +117,70 @@ async function handle(req, res) {
     return;
   }
 
-  // ═══ BYPASS — 4 lapis ═══
+  // ═══ BYPASS ═══
   if (params.has("bypass")) {
     const link = params.get("bypass");
     if (!link) { res.status(200).json({ error: "no link" }); return; }
     const low = link.toLowerCase();
-    const isLoot = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest");
     const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36";
+    const needBrowser = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest") || low.includes("platorelay");
 
-    // LAYER 1: LootLabs via Browserless
-    if (isLoot) {
+    // LAYER 1: Browserless
+    if (needBrowser) {
       try {
-        const r = await fetch("https://chrome.browserless.io/function?token=" + BROWSERLESS_TOKEN, {
+        const r = await fetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=60000", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            code: "export default async function ({ page, context }) { const url = context.url; await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 }); await new Promise(r => setTimeout(r, 4000)); try { await page.evaluate(() => { const clickAll = () => { const els = document.querySelectorAll('button, a, [role=\"button\"]'); els.forEach(el => { const t = (el.textContent || '').toLowerCase().trim(); if (t.includes('continue') || t.includes('get link') || t.includes('unlock') || t.includes('proceed') || t.includes('go to link') || t.includes('visit')) { try { el.click(); } catch {} } }); }; clickAll(); setTimeout(clickAll, 2000); setTimeout(clickAll, 5000); setTimeout(clickAll, 8000); }); } catch {} await new Promise(r => setTimeout(r, 18000)); const finalUrl = page.url(); if (finalUrl.includes('lootlabs') || finalUrl.includes('lootlinks')) { const href = await page.evaluate(() => { const a = document.querySelector('a[href^=\"http\"]:not([href*=\"lootlabs\"]):not([href*=\"lootlinks\"]):not([href*=\"google\"]):not([href*=\"cloudflare\"])'); return a ? a.href : null; }); return { url: href || finalUrl, status: href ? 'resolved' : 'still_on_lootlabs' }; } return { url: finalUrl, status: 'resolved' }; }",
+            code: `export default async function ({ page, context }) {
+              const startUrl = context.url;
+              try {
+                await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+                await page.setViewport({ width: 1366, height: 768 });
+                await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 25000 });
+                await new Promise(r => setTimeout(r, 5000));
+                for (let i = 0; i < 6; i++) {
+                  await page.evaluate(() => {
+                    const els = document.querySelectorAll("button, a, [role='button'], [onclick]");
+                    els.forEach(el => {
+                      const t = (el.textContent || "").toLowerCase().trim();
+                      if (t.includes("continue") || t.includes("get link") || t.includes("unlock") || t.includes("proceed") || t.includes("go to link") || t.includes("visit") || t.includes("lanjut")) {
+                        try { el.click(); } catch {}
+                      }
+                    });
+                  });
+                  await new Promise(r => setTimeout(r, 2500));
+                }
+                await new Promise(r => setTimeout(r, 8000));
+                let finalUrl = page.url();
+                if (finalUrl.includes("lootlabs") || finalUrl.includes("lootlinks") || finalUrl.includes("platorelay")) {
+                  const href = await page.evaluate(() => {
+                    const a = document.querySelector("a[href^='http']:not([href*='lootlabs']):not([href*='lootlinks']):not([href*='platorelay']):not([href*='google']):not([href*='cloudflare']):not([href*='discord'])");
+                    return a ? a.href : null;
+                  });
+                  return { url: href || finalUrl, status: href ? "resolved" : "still_wrapped" };
+                }
+                return { url: finalUrl, status: "resolved" };
+              } catch (e) {
+                return { url: startUrl, status: "error", error: String(e) };
+              }
+            }`,
             context: { url: link },
           }),
         });
         if (r.ok) {
           const d = await r.json();
-          if (d && d.url && typeof d.url === "string" && d.url.startsWith("http") && !d.url.includes("lootlabs") && !d.url.includes("lootlinks")) {
+          if (d && d.url && typeof d.url === "string" && d.url.startsWith("http") && !d.url.includes("lootlabs") && !d.url.includes("lootlinks") && !d.url.includes("platorelay")) {
             res.status(200).json({ result: d.url, source: "browserless" });
             return;
           }
+          if (d && d.status === "still_wrapped") {
+            res.status(200).json({ result: link, source: "original", warning: "Masih ke-wrap. Klik bypass lagi 1-2x." });
+            return;
+          }
+          if (d && d.status === "error") console.error("Browserless error:", d.error);
+        } else {
+          console.error("Browserless HTTP", r.status, (await r.text()).slice(0, 300));
         }
       } catch (e) { console.error("Browserless:", e); }
     }
@@ -180,7 +220,7 @@ async function handle(req, res) {
     } catch {}
 
     // LAYER 4: HEAD redirect
-    if (!isLoot) {
+    if (!needBrowser) {
       try {
         const r = await fetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } });
         const loc = r.headers.get("location");
@@ -194,7 +234,7 @@ async function handle(req, res) {
     res.status(200).json({
       result: link,
       source: "original",
-      warning: isLoot ? "LootLabs belum selesai. Klik bypass lagi 1-2x." : "Bypass gagal — buka manual.",
+      warning: needBrowser ? "LootLabs/platorelay belum selesai. Klik bypass lagi 1-2x." : "Bypass gagal — buka manual.",
     });
     return;
   }
@@ -327,7 +367,7 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 <div class="panel" id="tab1">
 <div class="card">
 <div class="card-title">Bypass Shortlink</div>
-<div class="tags"><span class="tag">Linkvertise</span><span class="tag">Work.ink</span><span class="tag">Sub2Unlock</span><span class="tag">Playrole</span><span class="tag">LootLabs</span></div>
+<div class="tags"><span class="tag">Linkvertise</span><span class="tag">Work.ink</span><span class="tag">Sub2Unlock</span><span class="tag">Playrole</span><span class="tag">LootLabs</span><span class="tag">Platorelay</span></div>
 <input type="text" class="inp" id="bypassUrl" placeholder="Paste link shortlink di sini...">
 <button class="btn-cyan" onclick="doBypass()">Bypass Sekarang</button>
 <div class="result" id="bypassResult"></div>
@@ -352,6 +392,6 @@ function closeGen(){document.getElementById('genPanel').classList.remove('show')
 document.getElementById('genPanel').addEventListener('click',(e)=>{if(e.target.id==='genPanel')closeGen();});
 async function doLogin(){const pw=document.getElementById('genPw').value;if(!pw)return;try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:pw,uid:'1'})});const d=await r.json();if(d.error==='password salah'){document.getElementById('genPw').value='';document.getElementById('genPw').placeholder='password salah';}else if(d.ok){ownerPw=pw;document.getElementById('genForm').style.display='block';document.getElementById('genPw').disabled=true;}}catch(e){}}
 async function doGenerate(){const uid=document.getElementById('genUid').value.trim();const box=document.getElementById('genResult');if(!uid||!ownerPw)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Generating...';try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:ownerPw,uid:uid})});const d=await r.json();if(d.ok){box.className='result ok';box.innerHTML='<b>Username:</b> '+(d.username||'Unknown')+'<div class="key-line">'+d.key+'</div><b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b><a href="'+d.authLink+'" target="_blank" class="link-line">'+d.authLink+'</a><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';}else{box.className='result err';box.innerHTML=d.error||'Gagal';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
-async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Memproses (LootLabs bisa 20-25 detik)...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='browserless'?'ok':(d.source==='original'?'warn':'ok');box.className='result '+cls;let label='Bypass berhasil!';if(d.source==='original')label='Bypass gagal — buka manual:';const src=d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'';box.innerHTML=label+src+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
+async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Memproses (LootLabs/platorelay bisa 20-30 detik)...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='browserless'?'ok':(d.source==='original'?'warn':'ok');box.className='result '+cls;let label='Bypass berhasil!';if(d.source==='original')label='Belum selesai — klik bypass lagi:';const src=d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'';box.innerHTML=label+src+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 </script></body></html>`;
 }
