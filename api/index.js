@@ -1,7 +1,7 @@
 export default async function handler(req, res) {
   try { return await handle(req, res); }
   catch (e) {
-    console.error("HANDLER ERROR:", e);
+    console.error(e);
     if (!res.headersSent) res.status(200).json({ error: "server error", detail: String(e.message || e) });
   }
 }
@@ -65,7 +65,6 @@ async function handle(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (method === "OPTIONS") { res.status(200).end(); return; }
 
-  // POST
   if (method === "POST") {
     let body = "";
     await new Promise(r => { req.on("data", c => body += c); req.on("end", r); });
@@ -89,7 +88,6 @@ async function handle(req, res) {
     return;
   }
 
-  // /auth
   if (path === "/auth" || path === "/auth/") {
     const d = params.get("d");
     if (!d) { res.status(400).send("Missing data"); return; }
@@ -103,7 +101,6 @@ async function handle(req, res) {
     return;
   }
 
-  // validate
   if (params.has("uid") && params.has("key")) {
     const valid = isValid(params.get("uid"), params.get("key"));
     let username = null;
@@ -112,34 +109,47 @@ async function handle(req, res) {
     return;
   }
 
-  // lookup
   if (params.has("lookup")) {
     const name = await getRobloxUser(params.get("lookup"));
     res.status(200).json({ uid: params.get("lookup"), name });
     return;
   }
 
-  // bypass
+  // ═══ BYPASS ═══
   if (params.has("bypass")) {
     const link = params.get("bypass");
     if (!link) { res.status(200).json({ error: "no link" }); return; }
     const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-    const tried = [];
+    const low = link.toLowerCase();
 
+    // Deteksi LootLabs — langsung return karena nggak bisa di-bypass dari server
+    if (low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest")) {
+      res.status(200).json({
+        result: link,
+        source: "unsupported",
+        warning: "LootLabs/LootDest nggak bisa di-bypass dari server. Buka link, ikutin task 30 detik, langsung ke halaman tujuan.",
+      });
+      return;
+    }
+
+    // 1. bypass.vip
     try {
       const r = await fetch("https://api.bypass.vip/", {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA, "Accept": "application/json, text/plain, */*", "Origin": "https://bypass.vip", "Referer": "https://bypass.vip/" },
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA, "Origin": "https://bypass.vip", "Referer": "https://bypass.vip/" },
         body: "url=" + encodeURIComponent(link),
       });
       if (r.ok) {
         const d = await r.json();
-        const result = d.result || d.url || d.destination || d.data || d.bypassed;
-        if (result && typeof result === "string" && result.startsWith("http")) { res.status(200).json({ result, source: "bypass.vip" }); return; }
-        tried.push("bypass.vip:" + (d.message || "no result"));
-      } else tried.push("bypass.vip:HTTP" + r.status);
-    } catch { tried.push("bypass.vip:err"); }
+        const result = d.result || d.url || d.destination || d.data;
+        if (result && typeof result === "string" && result.startsWith("http")) {
+          res.status(200).json({ result, source: "bypass.vip" });
+          return;
+        }
+      }
+    } catch {}
 
+    // 2. bypass.city POST
     try {
       const r = await fetch("https://api.bypass.city/api/bypass", {
         method: "POST",
@@ -149,22 +159,14 @@ async function handle(req, res) {
       if (r.ok) {
         const d = await r.json();
         const result = d.result || d.destination || d.url || d.data;
-        if (result && typeof result === "string" && result.startsWith("http")) { res.status(200).json({ result, source: "bypass.city" }); return; }
-        tried.push("bypass.city:" + (d.message || "no result"));
-      } else tried.push("bypass.city:HTTP" + r.status);
-    } catch { tried.push("bypass.city:err"); }
-
-    try {
-      const r = await fetch("https://api.bypass.city/api/bypass?url=" + encodeURIComponent(link), {
-        headers: { "User-Agent": UA, "Origin": "https://bypass.city", "Referer": "https://bypass.city/" },
-      });
-      if (r.ok) {
-        const d = await r.json();
-        const result = d.result || d.destination || d.url || d.data;
-        if (result && typeof result === "string" && result.startsWith("http")) { res.status(200).json({ result, source: "bypass.city-get" }); return; }
+        if (result && typeof result === "string" && result.startsWith("http")) {
+          res.status(200).json({ result, source: "bypass.city" });
+          return;
+        }
       }
     } catch {}
 
+    // 3. bypass.tools
     try {
       const r = await fetch("https://bypass.tools/api/bypass", {
         method: "POST",
@@ -174,27 +176,24 @@ async function handle(req, res) {
       if (r.ok) {
         const d = await r.json();
         const result = d.result || d.destination || d.url || d.data;
-        if (result && typeof result === "string" && result.startsWith("http")) { res.status(200).json({ result, source: "bypass.tools" }); return; }
-        tried.push("bypass.tools:" + (d.message || "no result"));
-      } else tried.push("bypass.tools:HTTP" + r.status);
-    } catch { tried.push("bypass.tools:err"); }
-
-    try {
-      const r = await fetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } });
-      const loc = r.headers.get("location");
-      if (loc && loc.startsWith("http") && loc !== link) { res.status(200).json({ result: loc, source: "redirect-extract" }); return; }
-    } catch {}
-
-    try {
-      const r = await fetch("https://api.trw.lat/bypass?url=" + encodeURIComponent(link), { headers: { "User-Agent": UA, "Accept": "application/json" } });
-      if (r.ok) {
-        const d = await r.json();
-        const result = d.result || d.destination || d.url;
-        if (result && typeof result === "string" && result.startsWith("http")) { res.status(200).json({ result, source: "trw-api" }); return; }
+        if (result && typeof result === "string" && result.startsWith("http")) {
+          res.status(200).json({ result, source: "bypass.tools" });
+          return;
+        }
       }
     } catch {}
 
-    res.status(200).json({ result: link, source: "original", warning: "Semua API bypass gagal. Link asli dikembalikan — buka manual.", tried: tried.join(" | ") });
+    // 4. HEAD redirect
+    try {
+      const r = await fetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } });
+      const loc = r.headers.get("location");
+      if (loc && loc.startsWith("http") && loc !== link) {
+        res.status(200).json({ result: loc, source: "redirect" });
+        return;
+      }
+    } catch {}
+
+    res.status(200).json({ result: link, source: "original", warning: "Bypass gagal — buka manual." });
     return;
   }
 
@@ -202,13 +201,8 @@ async function handle(req, res) {
   res.status(200).send(mainPage(WA_NUMBER));
 }
 
-// ═══════════════════════════════════════════
-// AUTH PAGE
-// ═══════════════════════════════════════════
 function authPage(data, valid, username) {
-  const key = data.k;
-  const uid = data.u;
-  const exp = data.e;
+  const key = data.k, uid = data.u, exp = data.e;
   const now = Math.floor(Date.now() / 1000);
   const left = Math.max(0, exp - now);
   const hours = Math.floor(left / 3600);
@@ -227,7 +221,6 @@ body{background:#08080f;color:#e8e8f0;font-family:'Inter',sans-serif;min-height:
 .status.ok{background:rgba(0,232,122,0.12);color:#00e87a;border:1px solid rgba(0,232,122,0.3)}
 .status.err{background:rgba(255,80,80,0.12);color:#ff6b6b;border:1px solid rgba(255,80,80,0.3)}
 .info-row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #ffffff0a;font-size:.85rem}
-.info-row:last-of-type{border-bottom:none}
 .info-label{color:#6b6b8a}
 .info-value{color:#e8e8f0;font-weight:600;text-align:right;word-break:break-all;max-width:60%}
 .key-box{background:#0a0a14;border:1px solid #e03c8a40;border-radius:14px;padding:20px;margin-top:20px;text-align:center}
@@ -258,9 +251,6 @@ function copyKey(){
 </script></body></html>`;
 }
 
-// ═══════════════════════════════════════════
-// MAIN PAGE
-// ═══════════════════════════════════════════
 function mainPage(wa) {
   return `<!DOCTYPE html>
 <html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NANG Key System</title>
@@ -302,10 +292,12 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
 .result{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:12px;font-size:0.78rem;margin-top:10px;display:none;word-break:break-all;line-height:1.6}
 .result.ok{border-color:rgba(0,232,122,0.3);color:var(--green)}
 .result.err{border-color:rgba(255,80,80,0.3);color:#ff6b6b;background:rgba(255,40,40,0.05)}
+.result.warn{border-color:rgba(255,200,50,0.3);color:#ffc832;background:rgba(255,200,50,0.05)}
 .result .key-line{font-family:monospace;font-size:0.9rem;color:var(--green);font-weight:700;margin:6px 0;padding:8px;background:#0a1520;border-radius:6px;word-break:break-all}
 .result .link-line{font-family:monospace;font-size:0.7rem;color:var(--cyan);word-break:break-all;padding:6px;background:#0a1520;border-radius:6px;display:block;text-decoration:none;border:1px solid rgba(0,212,255,0.15);margin:6px 0}
 .tags{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px}
 .tag{background:rgba(0,212,255,0.08);color:var(--cyan);font-size:0.68rem;font-weight:600;padding:3px 9px;border-radius:20px;border:1px solid rgba(0,212,255,0.2)}
+.tag.warn{background:rgba(255,80,80,0.08);color:#ff8080;border-color:rgba(255,80,80,0.2)}
 .step{display:flex;gap:10px;align-items:flex-start;margin-bottom:10px;font-size:0.78rem;color:var(--muted)}
 .step-num{width:20px;height:20px;border-radius:50%;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;font-size:0.65rem;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .step span{color:var(--text)}
@@ -344,10 +336,17 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 <div class="panel" id="tab1">
 <div class="card">
 <div class="card-title">Bypass Shortlink</div>
-<div class="tags"><span class="tag">Linkvertise</span><span class="tag">Lootlabs</span><span class="tag">Lootdest</span><span class="tag">Playrole</span><span class="tag">Sub2Unlock</span><span class="tag">Work.ink</span></div>
+<div class="tags">
+<span class="tag">Linkvertise</span><span class="tag">Work.ink</span><span class="tag">Sub2Unlock</span><span class="tag">Playrole</span>
+<span class="tag warn">LootLabs ✗</span>
+</div>
 <input type="text" class="inp" id="bypassUrl" placeholder="Paste link shortlink di sini...">
 <button class="btn-cyan" onclick="doBypass()">Bypass Sekarang</button>
 <div class="result" id="bypassResult"></div>
+</div>
+<div class="card">
+<div class="card-title">Catatan</div>
+<div class="step"><div class="step-num">!</div><div><span>LootLabs</span> nggak bisa di-bypass — WebSocket + Cloudflare BotD block semua server request. Buka manual, task 30 detik.</div></div>
 </div>
 </div>
 
@@ -369,6 +368,6 @@ function closeGen(){document.getElementById('genPanel').classList.remove('show')
 document.getElementById('genPanel').addEventListener('click',(e)=>{if(e.target.id==='genPanel')closeGen();});
 async function doLogin(){const pw=document.getElementById('genPw').value;if(!pw)return;try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:pw,uid:'1'})});const d=await r.json();if(d.error==='password salah'){document.getElementById('genPw').value='';document.getElementById('genPw').placeholder='password salah';}else if(d.ok){ownerPw=pw;document.getElementById('genForm').style.display='block';document.getElementById('genPw').disabled=true;}}catch(e){}}
 async function doGenerate(){const uid=document.getElementById('genUid').value.trim();const box=document.getElementById('genResult');if(!uid||!ownerPw)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Generating...';try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:ownerPw,uid:uid})});const d=await r.json();if(d.ok){box.className='result ok';box.innerHTML='<b>Username:</b> '+(d.username||'Unknown')+'<div class="key-line">'+d.key+'</div><b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b><a href="'+d.authLink+'" target="_blank" class="link-line">'+d.authLink+'</a><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';}else{box.className='result err';box.innerHTML=d.error||'Gagal';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
-async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Memproses...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const isOriginal=d.source==='original';box.className='result '+(isOriginal?'err':'ok');const label=isOriginal?'Bypass API down — buka link asli:':'Bypass berhasil!';const src=d.source&&d.source!=='original'?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'';box.innerHTML=label+src+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div><button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>'+(d.warning?'<div style="font-size:.72rem;color:#6b6b8a;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
+async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Memproses...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='original'?'warn':(d.source==='unsupported'?'warn':'ok');box.className='result '+cls;let label='Bypass berhasil!';if(d.source==='unsupported')label='LootLabs nggak bisa di-bypass — buka manual:';if(d.source==='original')label='Bypass gagal — buka manual:';const src=d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">'+d.source+'</div>':'';box.innerHTML=label+src+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source==='unsupported'||d.source==='original'?'':'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 </script></body></html>`;
 }
