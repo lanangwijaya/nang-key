@@ -15,44 +15,37 @@ async function handle(req, res) {
   const BROWSERLESS_URL = "https://production-sfo.browserless.io/function";
   const AUTH_DOMAIN = req.headers.host || "localhost";
 
-  function simpleHash(str) {
-    let h = 0;
-    for (let i = 0; i < str.length; i++) h = ((h * 31) + str.charCodeAt(i)) % 1000000007;
-    return h;
-  }
-  function getWindow(ts) { return Math.floor((ts || Date.now() / 1000) / EXPIRE_S); }
+  function simpleHash(str) { let h=0; for(let i=0;i<str.length;i++) h=((h*31)+str.charCodeAt(i))%1000000007; return h; }
+  function getWindow(ts) { return Math.floor((ts || Date.now()/1000) / EXPIRE_S); }
   function makeKey(uid, w) {
     const h = simpleHash(SECRET + uid + w);
-    const p1 = String(uid).slice(0, 5).padEnd(5, "0");
-    return "NANG-" + p1 + "-" + String(h % 10000).padStart(4, "0") + "-" + String(Math.floor(h / 10000) % 10000).padStart(4, "0");
+    const p1 = String(uid).slice(0,5).padEnd(5,"0");
+    return "NANG-" + p1 + "-" + String(h%10000).padStart(4,"0") + "-" + String(Math.floor(h/10000)%10000).padStart(4,"0");
   }
-  function isValid(uid, key) {
-    const w = getWindow();
-    return makeKey(uid, w) === key || makeKey(uid, w - 1) === key;
-  }
+  function isValid(uid, key) { const w=getWindow(); return makeKey(uid,w)===key || makeKey(uid,w-1)===key; }
   function expiryStr() {
-    const now = Date.now() / 1000;
-    const next = (getWindow() + 1) * EXPIRE_S;
-    const left = Math.round(next - now);
-    return Math.floor(left / 3600) + "j " + Math.floor((left % 3600) / 60) + "m";
+    const now = Date.now()/1000;
+    const next = (getWindow()+1)*EXPIRE_S;
+    const left = Math.round(next-now);
+    return Math.floor(left/3600)+"j "+Math.floor((left%3600)/60)+"m";
   }
   function b64urlEncode(obj) {
-    let b64 = Buffer.from(JSON.stringify(obj), "utf8").toString("base64");
-    return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    let b64 = Buffer.from(JSON.stringify(obj),"utf8").toString("base64");
+    return b64.replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
   }
   function b64urlDecode(str) {
-    let s = str.replace(/-/g, "+").replace(/_/g, "/");
-    while (s.length % 4) s += "=";
-    return Buffer.from(s, "base64").toString("utf8");
+    let s = str.replace(/-/g,"+").replace(/_/g,"/");
+    while(s.length%4) s+="=";
+    return Buffer.from(s,"base64").toString("utf8");
   }
-  function makeAuthLink(uid, key, username) {
-    const payload = { u: String(uid), k: key, n: username || "", e: (getWindow() + 1) * EXPIRE_S };
+  function makeAuthLink(uid,key,username) {
+    const payload = { u: String(uid), k: key, n: username||"", e: (getWindow()+1)*EXPIRE_S };
     return "https://" + AUTH_DOMAIN + "/auth?d=" + b64urlEncode(payload);
   }
   async function getRobloxUser(uid) {
     try {
-      const r = await fetch("https://users.roblox.com/v1/users/" + uid);
-      if (!r.ok) return null;
+      const r = await fetch("https://users.roblox.com/v1/users/"+uid);
+      if(!r.ok) return null;
       return (await r.json()).name || null;
     } catch { return null; }
   }
@@ -62,27 +55,26 @@ async function handle(req, res) {
   const path = url.pathname;
   const method = req.method;
 
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Origin","*");
+  res.setHeader("Access-Control-Allow-Methods","GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers","Content-Type");
   if (method === "OPTIONS") { res.status(200).end(); return; }
 
   if (method === "POST") {
     let body = "";
     await new Promise(r => { req.on("data", c => body += c); req.on("end", r); });
     let parsed;
-    try { parsed = JSON.parse(body); } catch { res.status(400).json({ valid: false, error: "bad json" }); return; }
+    try { parsed = JSON.parse(body); } catch { res.status(400).json({ valid:false, error:"bad json" }); return; }
 
     if (parsed.action === "generate") {
-      if (parsed.pw !== ADMIN_PW) { res.status(200).json({ error: "password salah" }); return; }
-      const uid = String(parsed.uid || "").trim();
-      if (!uid) { res.status(200).json({ error: "uid kosong" }); return; }
+      if (parsed.pw !== ADMIN_PW) { res.status(200).json({ error:"password salah" }); return; }
+      const uid = String(parsed.uid||"").trim();
+      if(!uid) { res.status(200).json({ error:"uid kosong" }); return; }
       const key = makeKey(uid, getWindow());
       const name = await getRobloxUser(uid);
-      res.status(200).json({ ok: true, uid, key, expires: expiryStr(), username: name, authLink: makeAuthLink(uid, key, name) });
+      res.status(200).json({ ok:true, uid, key, expires: expiryStr(), username: name, authLink: makeAuthLink(uid,key,name) });
       return;
     }
-
     const valid = isValid(parsed.uid, parsed.key);
     let username = null;
     if (valid) username = await getRobloxUser(parsed.uid);
@@ -92,13 +84,13 @@ async function handle(req, res) {
 
   if (path === "/auth" || path === "/auth/") {
     const d = params.get("d");
-    if (!d) { res.status(400).send("Missing data"); return; }
+    if(!d) { res.status(400).send("Missing data"); return; }
     let data;
     try { data = JSON.parse(b64urlDecode(d)); } catch { res.status(400).send("Invalid link"); return; }
-    if (!data.u || !data.k) { res.status(400).send("Invalid data"); return; }
+    if(!data.u || !data.k) { res.status(400).send("Invalid data"); return; }
     const valid = isValid(data.u, data.k);
     const name = data.n || await getRobloxUser(data.u);
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Content-Type","text/html; charset=utf-8");
     res.status(200).send(authPage(data, valid, name));
     return;
   }
@@ -117,122 +109,162 @@ async function handle(req, res) {
     return;
   }
 
-  // ═══ BYPASS — 4 lapis ═══
+  // ═══ BYPASS — FORCE ALL ═══
   if (params.has("bypass")) {
     const link = params.get("bypass");
-    if (!link) { res.status(200).json({ error: "no link" }); return; }
+    if(!link) { res.status(200).json({ error:"no link" }); return; }
     const low = link.toLowerCase();
     const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-    const WRAPPED = ["lootlabs","lootlinks","lootdest","platorelay","linkvertise","work.ink","sub2unlock","sub2get","playrole","adf.ly","exe.io","exey.io","shrinkme","shrinkearn","shorte.st","ouo.io","cuty.io","fc.lc","bc.vc","adfoc.us","rekonise","boost.ink","mboost.me","ytsubme","sub4unlock","social-unlock","letsboost","link-to.net","up-to-down"];
-    const isCleanUrl = (u) => u && typeof u === "string" && u.startsWith("http") && !WRAPPED.some(s => u.toLowerCase().includes(s));
+    const WRAPPED = ["lootlabs","lootlinks","lootdest","platorelay","linkvertise","link-to.net","link-to","work.ink","sub2unlock","sub2get","playrole","adf.ly","exe.io","exey.io","shrinkme","shrinkearn","shorte.st","ouo.io","cuty.io","fc.lc","bc.vc","adfoc.us","rekonise","boost.ink","mboost.me","ytsubme","sub4unlock","social-unlock","letsboost","up-to-down","link1s","shrinke","clicksfly","mdiskshortner"];
+    const isClean = (u) => u && typeof u === "string" && u.startsWith("http") && !WRAPPED.some(s => u.toLowerCase().includes(s));
 
-    // LAYER 1: bypass.vip
-    try {
-      const r = await fetch("https://api.bypass.vip/", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-          "X-Requested-With": "XMLHttpRequest",
-          "User-Agent": UA,
-          "Origin": "https://bypass.vip",
-          "Referer": "https://bypass.vip/",
-        },
-        body: "url=" + encodeURIComponent(link),
-      });
-      if (r.ok) {
+    // ── LAYER 1: API bypass (cepat) ──
+    const apiLayers = [
+      { name: "bypass.vip", fn: async () => {
+        const r = await fetch("https://api.bypass.vip/", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "X-Requested-With": "XMLHttpRequest",
+            "User-Agent": UA,
+            "Origin": "https://bypass.vip",
+            "Referer": "https://bypass.vip/",
+          },
+          body: "url=" + encodeURIComponent(link),
+        });
+        if(!r.ok) return null;
         const d = await r.json();
-        const result = d.result || d.destination || d.url;
-        if ((d.status === "success" || d.status === "ok" || !d.status) && isCleanUrl(result)) {
-          res.status(200).json({ result, source: "bypass.vip" });
-          return;
-        }
-      }
-    } catch (e) { console.error("bypass.vip:", e); }
+        return d.result || d.destination || d.url;
+      }},
+      { name: "bypass.city", fn: async () => {
+        const r = await fetch("https://api.bypass.city/api/bypass", {
+          method: "POST",
+          headers: { "Content-Type":"application/json", "User-Agent": UA, "Origin":"https://bypass.city", "Referer":"https://bypass.city/" },
+          body: JSON.stringify({ url: link }),
+        });
+        if(!r.ok) return null;
+        const d = await r.json();
+        return d.result || d.destination || d.url;
+      }},
+      { name: "bypass.pm", fn: async () => {
+        const r = await fetch("https://bypass.pm/bypass2?url=" + encodeURIComponent(link), {
+          headers: { "User-Agent": UA, "Accept": "application/json,text/plain,*/*" },
+        });
+        if(!r.ok) return null;
+        const t = await r.text();
+        try { const d = JSON.parse(t); return d.result || d.destination || d.url; } catch {}
+        const m = t.match(/https?:\/\/[^\s"'<>]+/);
+        return m ? m[0] : null;
+      }},
+    ];
 
-    // LAYER 2: bypass.pm
-    try {
-      const r = await fetch("https://bypass.pm/bypass2?url=" + encodeURIComponent(link), {
-        headers: { "User-Agent": UA, "Accept": "application/json, text/plain, */*" }
-      });
-      if (r.ok) {
-        const text = await r.text();
-        let d; try { d = JSON.parse(text); } catch { d = null; }
-        const m = text.match(/https?:\/\/[^\s"'<>]+/);
-        const result = (d && (d.result || d.destination || d.url)) || (m && m[0]);
-        if (isCleanUrl(result)) {
-          res.status(200).json({ result, source: "bypass.pm" });
-          return;
-        }
-      }
-    } catch (e) { console.error("bypass.pm:", e); }
-
-    // LAYER 3: Browserless
-    const needBrowser = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest") || low.includes("platorelay") || low.includes("linkvertise") || low.includes("work.ink") || low.includes("sub2unlock") || low.includes("playrole");
-    if (needBrowser) {
+    for(const layer of apiLayers) {
       try {
-        const browserScript = [
-          'export default async function ({ page, context }) {',
-          '  const url = context.url;',
-          '  const low = url.toLowerCase();',
-          '  const isLoot = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest");',
-          '  const isPR = low.includes("platorelay");',
-          '  const isLV = low.includes("linkvertise") || low.includes("work.ink");',
-          '  const WRAPPED = ["lootlabs","lootlinks","lootdest","platorelay","linkvertise","work.ink","sub2unlock","sub2get","playrole"];',
-          '  const isWrapped = (u) => WRAPPED.some(s => u.toLowerCase().includes(s));',
-          '  const sleep = (ms) => new Promise(r => setTimeout(r, ms));',
-          '  async function clickAll() {',
-          '    return page.evaluate(() => {',
-          '      let n = 0;',
-          '      document.querySelectorAll("button, a, [role=button], [onclick], input[type=submit], input[type=button], .btn, .button").forEach(el => {',
-          '        if (el.disabled) return;',
-          '        const s = window.getComputedStyle(el);',
-          '        if (s.display === "none" || s.visibility === "hidden" || s.opacity === "0") return;',
-          '        const t = (el.textContent || el.value || "").toLowerCase().trim();',
-          '        const pat = ["continue","get link","unlock","proceed","go to link","visit","lanjut","claim","next","done","finish","complete","open","dapatkan","klik","access","go","enter","free access","skip","downl"];',
-          '        if (pat.some(p => t.includes(p))) { try { el.click(); n++; } catch {} }',
-          '      });',
-          '      return n;',
-          '    });',
-          '  }',
-          '  async function killCountdown() {',
-          '    await page.evaluate(() => {',
-          '      try {',
-          '        document.querySelectorAll("[id*=countdown],[class*=countdown],[id*=timer],[class*=timer],[id*=wait],[class*=wait]").forEach(el => { try { el.remove(); } catch {} });',
-          '      } catch {}',
-          '    });',
-          '  }',
-          '  try {',
-          '    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");',
-          '    await page.setViewport({ width: 1366, height: 768 });',
-          '    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });',
-          '    await sleep(4000);',
-          '    if (isPR) await killCountdown();',
-          '    if (isLV) {',
-          '      await page.evaluate(() => { window.scrollTo(0, document.body.scrollHeight / 2); });',
-          '      await sleep(3000);',
-          '    }',
-          '    for (let i = 0; i < 12; i++) {',
-          '      await clickAll();',
-          '      if (isPR && i % 2 === 1) await killCountdown();',
-          '      await sleep(2500);',
-          '      const cur = page.url();',
-          '      if (!isWrapped(cur)) return { url: cur, status: "resolved" };',
-          '    }',
-          '    await sleep(6000);',
-          '    const finalUrl = page.url();',
-          '    if (!isWrapped(finalUrl)) return { url: finalUrl, status: "resolved" };',
-          '    const found = await page.evaluate(() => {',
-          '      const a = document.querySelector("a[href^=http]:not([href*=lootlabs]):not([href*=lootlinks]):not([href*=platorelay]):not([href*=linkvertise]):not([href*=work.ink]):not([href*=google]):not([href*=cloudflare]):not([href*=discord])");',
-          '      return a ? a.href : null;',
-          '    });',
-          '    if (found && !isWrapped(found)) return { url: found, status: "resolved" };',
-          '    return { url: finalUrl, status: "still_wrapped" };',
-          '  } catch (e) {',
-          '    return { url: url, status: "error", error: String(e.message || e) };',
-          '  }',
-          '}'
-        ].join("\n");
+        const result = await layer.fn();
+        if (isClean(result)) {
+          res.status(200).json({ result, source: layer.name });
+          return;
+        }
+      } catch(e) { console.error(layer.name+":", e); }
+    }
+
+    // ── LAYER 2: Browserless — force semua shortlink yang gak tembus API ──
+    const forceBrowser = true; // SELALU coba browserless
+    if (forceBrowser) {
+      try {
+        const isLV = low.includes("linkvertise") || low.includes("link-to") || low.includes("work.ink");
+        const isLoot = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest");
+        const isPR = low.includes("platorelay");
+
+        const browserScript = `
+export default async function ({ page, context }) {
+  const url = context.url;
+  const low = url.toLowerCase();
+  const isLV = ${isLV};
+  const isLoot = ${isLoot};
+  const isPR = ${isPR};
+  const WRAPPED = ["lootlabs","lootlinks","lootdest","platorelay","linkvertise","link-to","work.ink","sub2unlock","sub2get","playrole","ouo.io","exe.io","shrinkme"];
+  const isWrapped = (u) => WRAPPED.some(s => u.toLowerCase().includes(s));
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  async function clickAll(pats) {
+    return page.evaluate((patterns) => {
+      let n = 0;
+      const els = document.querySelectorAll("button, a, [role=button], [onclick], input[type=submit], input[type=button], .btn, .button, div[onclick], span[onclick]");
+      els.forEach(el => {
+        try {
+          if (el.disabled) return;
+          const s = window.getComputedStyle(el);
+          if (s.display === "none" || s.visibility === "hidden" || parseFloat(s.opacity) < 0.1) return;
+          const t = (el.textContent || el.value || "").toLowerCase().trim();
+          if (patterns.some(p => t.includes(p))) {
+            try { el.scrollIntoView({block:"center",behavior:"instant"}); el.click(); n++; } catch {}
+          }
+        } catch {}
+      });
+      return n;
+    }, pats);
+  }
+
+  async function killTimers() {
+    await page.evaluate(() => {
+      try {
+        document.querySelectorAll("[id*=countdown],[class*=countdown],[id*=timer],[class*=timer],[id*=wait],[class*=wait],[data-countdown]").forEach(el => { try { el.remove(); } catch {} });
+        // Force any disabled button to enabled
+        document.querySelectorAll("button[disabled],[class*=disabled],.btn-disabled").forEach(el => {
+          try { el.disabled = false; el.removeAttribute("disabled"); el.classList.remove("disabled"); el.classList.remove("btn-disabled"); } catch {}
+        });
+      } catch {}
+    });
+  }
+
+  try {
+    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+    await page.setViewport({ width: 1366, height: 768 });
+    await page.setExtraHTTPHeaders({ "Accept-Language": "en-US,en;q=0.9", "DNT": "1" });
+
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 35000 });
+    await sleep(4500);
+
+    // Linkvertise flow
+    if (isLV) {
+      for (let i = 0; i < 20; i++) {
+        await page.evaluate(() => { try { window.scrollTo(0, document.body.scrollHeight * (0.3 + Math.random()*0.4)); } catch {} });
+        await sleep(700);
+        await clickAll(["free access","continue","get link","visit","proceed","go to link","next","skip","lanjut","unlock","claim","downl"]);
+        await sleep(2200);
+        const cur = page.url();
+        if (!isWrapped(cur)) return { url: cur, status: "resolved" };
+      }
+    } else {
+      // LootLabs / platorelay / generic
+      for (let i = 0; i < 14; i++) {
+        if (isPR || isLoot) await killTimers();
+        await clickAll(["continue","get link","unlock","proceed","go to link","visit","next","free access","lanjut","claim","go","enter","dapatkan","klik","tap","hold","press"]);
+        await sleep(2400);
+        const cur = page.url();
+        if (!isWrapped(cur)) return { url: cur, status: "resolved" };
+      }
+    }
+
+    await sleep(7000);
+    const finalUrl = page.url();
+    if (!isWrapped(finalUrl)) return { url: finalUrl, status: "resolved" };
+
+    // Cari link keluar di DOM
+    const found = await page.evaluate(() => {
+      const links = [...document.querySelectorAll("a[href^=http]")];
+      const clean = links.find(a => !/lootlabs|lootlinks|platorelay|linkvertise|link-to|work\\.ink|sub2unlock|sub2get|playrole|google|cloudflare|discord|facebook|twitter|t\\.co/.test(a.href));
+      return clean ? clean.href : null;
+    });
+    if (found) return { url: found, status: "resolved" };
+
+    return { url: finalUrl, status: "still_wrapped" };
+  } catch (e) {
+    return { url: url, status: "error", error: String(e.message || e) };
+  }
+}`;
 
         const r = await fetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=90000", {
           method: "POST",
@@ -242,12 +274,8 @@ async function handle(req, res) {
 
         if (r.ok) {
           const d = await r.json();
-          if (isCleanUrl(d && d.url)) {
+          if (isClean(d && d.url)) {
             res.status(200).json({ result: d.url, source: "browserless" });
-            return;
-          }
-          if (d && d.status === "still_wrapped") {
-            res.status(200).json({ result: link, source: "original", warning: "Masih ke-wrap. Klik bypass lagi 1-2x." });
             return;
           }
           if (d && d.status === "error") console.error("Browserless error:", d.error);
@@ -257,11 +285,11 @@ async function handle(req, res) {
       } catch (e) { console.error("Browserless:", e); }
     }
 
-    // LAYER 4: HEAD redirect
+    // ── LAYER 3: HEAD redirect ──
     try {
       const r = await fetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } });
       const loc = r.headers.get("location");
-      if (loc && loc.startsWith("http") && loc !== link && isCleanUrl(loc)) {
+      if (loc && loc.startsWith("http") && loc !== link && isClean(loc)) {
         res.status(200).json({ result: loc, source: "redirect" });
         return;
       }
@@ -270,21 +298,21 @@ async function handle(req, res) {
     res.status(200).json({
       result: link,
       source: "original",
-      warning: "Bypass gagal semua layer. Klik bypass lagi atau buka manual.",
+      warning: "Klik bypass lagi 1-2x — kadang butuh berkali-kali.",
     });
     return;
   }
 
-  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.setHeader("Content-Type","text/html; charset=utf-8");
   res.status(200).send(mainPage(WA_NUMBER));
 }
 
 function authPage(data, valid, username) {
   const key = data.k, uid = data.u, exp = data.e;
-  const now = Math.floor(Date.now() / 1000);
-  const left = Math.max(0, exp - now);
-  const hours = Math.floor(left / 3600);
-  const mins = Math.floor((left % 3600) / 60);
+  const now = Math.floor(Date.now()/1000);
+  const left = Math.max(0, exp-now);
+  const hours = Math.floor(left/3600);
+  const mins = Math.floor((left%3600)/60);
   return `<!DOCTYPE html>
 <html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NANG Auth</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
@@ -310,8 +338,8 @@ body{background:#08080f;color:#e8e8f0;font-family:'Inter',sans-serif;min-height:
 .notice b{color:#e8e8f0}
 </style></head><body>
 <div class="card">
-<div class="brand"><div class="logo">NANG AUTH</div><div class="status ${valid ? 'ok' : 'err'}">${valid ? 'VALID' : 'EXPIRED'}</div></div>
-<div class="info-row"><span class="info-label">Username</span><span class="info-value">${username || "Unknown"}</span></div>
+<div class="brand"><div class="logo">NANG AUTH</div><div class="status ${valid?'ok':'err'}">${valid?'VALID':'EXPIRED'}</div></div>
+<div class="info-row"><span class="info-label">Username</span><span class="info-value">${username||"Unknown"}</span></div>
 <div class="info-row"><span class="info-label">User ID</span><span class="info-value">${uid}</span></div>
 <div class="info-row"><span class="info-label">Berlaku</span><span class="info-value">${hours}j ${mins}m</span></div>
 <div class="key-box"><div class="key-label">Your Key</div><div class="key-value" id="keyText">${key}</div><button class="copy-btn" id="copyBtn" onclick="copyKey()">SALIN KEY</button></div>
@@ -428,6 +456,6 @@ function closeGen(){document.getElementById('genPanel').classList.remove('show')
 document.getElementById('genPanel').addEventListener('click',(e)=>{if(e.target.id==='genPanel')closeGen();});
 async function doLogin(){const pw=document.getElementById('genPw').value;if(!pw)return;try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:pw,uid:'1'})});const d=await r.json();if(d.error==='password salah'){document.getElementById('genPw').value='';document.getElementById('genPw').placeholder='password salah';}else if(d.ok){ownerPw=pw;document.getElementById('genForm').style.display='block';document.getElementById('genPw').disabled=true;}}catch(e){}}
 async function doGenerate(){const uid=document.getElementById('genUid').value.trim();const box=document.getElementById('genResult');if(!uid||!ownerPw)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Generating...';try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:ownerPw,uid:uid})});const d=await r.json();if(d.ok){box.className='result ok';box.innerHTML='<b>Username:</b> '+(d.username||'Unknown')+'<div class="key-line">'+d.key+'</div><b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b><a href="'+d.authLink+'" target="_blank" class="link-line">'+d.authLink+'</a><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';}else{box.className='result err';box.innerHTML=d.error||'Gagal';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
-async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Memproses (LootLabs/platorelay bisa 20-30 detik)...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='browserless'?'ok':(d.source==='original'?'warn':'ok');box.className='result '+cls;let label='Bypass berhasil!';if(d.source==='original')label='Belum selesai — klik bypass lagi:';const src=d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'';box.innerHTML=label+src+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
+async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Memproses (20-30 detik)...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='browserless'||d.source==='bypass.vip'||d.source==='bypass.city'||d.source==='bypass.pm'||d.source==='redirect'?'ok':(d.source==='original'?'warn':'ok');box.className='result '+cls;let label='Bypass berhasil!';if(d.source==='original')label='Belum selesai — klik bypass lagi:';const src=d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'';box.innerHTML=label+src+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 </script></body></html>`;
 }
