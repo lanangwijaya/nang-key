@@ -123,7 +123,7 @@ async function handle(req, res) {
     if (!link) { res.status(200).json({ error: "no link" }); return; }
     const low = link.toLowerCase();
     const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36";
-    const needBrowser = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest") || low.includes("platorelay");
+    const needBrowser = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest") || low.includes("platorelay") || low.includes("linkvertise") || low.includes("work.ink") || low.includes("sub2unlock") || low.includes("sub2get") || low.includes("playrole");
 
     // LAYER 1: Browserless
     if (needBrowser) {
@@ -134,8 +134,11 @@ async function handle(req, res) {
           body: JSON.stringify({
             code: `export default async function ({ page, context }) {
               const startUrl = context.url;
-              const isPlatorelay = startUrl.toLowerCase().includes("platorelay");
-              const isLoot = startUrl.toLowerCase().includes("lootlabs") || startUrl.toLowerCase().includes("lootlinks") || startUrl.toLowerCase().includes("lootdest");
+              const low = startUrl.toLowerCase();
+              const isPlatorelay = low.includes("platorelay");
+              const isLoot = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest");
+              const isLinkvertise = low.includes("linkvertise") || low.includes("work.ink");
+              const isWrapped = (u) => ["platorelay","lootlabs","lootlinks","lootdest","linkvertise","work.ink","sub2unlock","sub2get","playrole"].some(s => u.toLowerCase().includes(s));
               function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
               async function clickButtons(pg) {
                 return pg.evaluate(() => {
@@ -183,11 +186,11 @@ async function handle(req, res) {
               }
               async function grabFinalUrl(pg) {
                 const cur = pg.url();
-                if (!cur.includes("platorelay") && !cur.includes("lootlabs") && !cur.includes("lootlinks") && !cur.includes("lootdest")) return cur;
+                if (!isWrapped(cur)) return cur;
                 // Try to find destination link in DOM
                 const found = await pg.evaluate(() => {
                   const selectors = [
-                    "a[href^='http']:not([href*='platorelay']):not([href*='lootlabs']):not([href*='lootlinks']):not([href*='google']):not([href*='cloudflare']):not([href*='discord']):not([href*='facebook']):not([href*='twitter']):not([href*='t.co'])",
+                    "a[href^='http']:not([href*='platorelay']):not([href*='lootlabs']):not([href*='lootlinks']):not([href*='linkvertise']):not([href*='work.ink']):not([href*='sub2unlock']):not([href*='playrole']):not([href*='google']):not([href*='cloudflare']):not([href*='discord']):not([href*='facebook']):not([href*='twitter']):not([href*='t.co'])",
                     "[data-url]", "[data-href]", "[data-link]", "input[type='hidden'][name*='url']", "input[type='hidden'][name*='link']"
                   ];
                   for (const sel of selectors) {
@@ -217,23 +220,35 @@ async function handle(req, res) {
                   req.continue();
                 });
                 await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-                await sleep(isPlatorelay ? 3000 : 4000);
-                // platorelay: try to skip countdown immediately
+                await sleep(isLinkvertise ? 5000 : isPlatorelay ? 3000 : 4000);
                 if (isPlatorelay) await skipCountdown(page);
+                // linkvertise: scroll + wait for the interstitial button
+                if (isLinkvertise) {
+                  await page.evaluate(() => { window.scrollTo(0, document.body.scrollHeight / 2); });
+                  await sleep(3000);
+                  // Try clicking the "Free Access" / "Continue" / "Visit" button
+                  await page.evaluate(() => {
+                    document.querySelectorAll("button,a,[role='button']").forEach(el => {
+                      const t = (el.textContent || "").toLowerCase();
+                      if (t.includes("free access") || t.includes("continue") || t.includes("visit now") || t.includes("get") || t.includes("unlock") || t.includes("proceed")) {
+                        try { el.click(); } catch {}
+                      }
+                    });
+                  });
+                  await sleep(4000);
+                }
                 await sleep(1500);
-                // Click through multiple rounds
                 for (let i = 0; i < 8; i++) {
-                  const clicked = await clickButtons(page);
+                  await clickButtons(page);
                   await sleep(i < 3 ? 2000 : 3000);
                   if (isPlatorelay && i % 2 === 1) await skipCountdown(page);
                   const cur = page.url();
-                  if (!cur.includes("platorelay") && !cur.includes("lootlabs") && !cur.includes("lootlinks")) break;
+                  if (!isWrapped(cur)) break;
                 }
-                // Wait extra for platorelay (sometimes needs timer to fully expire)
                 if (isPlatorelay) await sleep(8000);
-                await sleep(isLoot ? 6000 : 3000);
+                await sleep(isLoot ? 6000 : isLinkvertise ? 4000 : 3000);
                 const finalUrl = await grabFinalUrl(page);
-                const isCleaned = !finalUrl.includes("platorelay") && !finalUrl.includes("lootlabs") && !finalUrl.includes("lootlinks") && !finalUrl.includes("lootdest");
+                const isCleaned = !isWrapped(finalUrl);
                 return { url: finalUrl, status: isCleaned ? "resolved" : "still_wrapped" };
               } catch (e) {
                 return { url: startUrl, status: "error", error: String(e.message || e) };
@@ -244,7 +259,7 @@ async function handle(req, res) {
         });
         if (r.ok) {
           const d = await r.json();
-          const isClean = (u) => u && typeof u === "string" && u.startsWith("http") && !u.includes("lootlabs") && !u.includes("lootlinks") && !u.includes("lootdest") && !u.includes("platorelay");
+          const isClean = (u) => u && typeof u === "string" && u.startsWith("http") && !u.includes("lootlabs") && !u.includes("lootlinks") && !u.includes("lootdest") && !u.includes("platorelay") && !u.includes("linkvertise") && !u.includes("work.ink") && !u.includes("sub2unlock") && !u.includes("sub2get") && !u.includes("playrole");
           if (isClean(d && d.url)) {
             res.status(200).json({ result: d.url, source: "browserless" });
             return;
