@@ -11,6 +11,7 @@ async function handle(req, res) {
   const ADMIN_PW = "nangowner123";
   const EXPIRE_S = 86400;
   const WA_NUMBER = "6281252425581";
+  const BROWSERLESS_TOKEN = "2VO67VgLJTXNszJ47508df1abfc96345f97d220136688f6d6";
   const AUTH_DOMAIN = req.headers.host || "localhost";
 
   function simpleHash(str) {
@@ -119,20 +120,42 @@ async function handle(req, res) {
   if (params.has("bypass")) {
     const link = params.get("bypass");
     if (!link) { res.status(200).json({ error: "no link" }); return; }
-    const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
     const low = link.toLowerCase();
+    const isLoot = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest");
 
-    // Deteksi LootLabs — langsung return karena nggak bisa di-bypass dari server
-    if (low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest")) {
-      res.status(200).json({
-        result: link,
-        source: "unsupported",
-        warning: "LootLabs/LootDest nggak bisa di-bypass dari server. Buka link, ikutin task 30 detik, langsung ke halaman tujuan.",
-      });
+    // LootLabs via Browserless
+    if (isLoot) {
+      try {
+        const r = await fetch("https://chrome.browserless.io/function?token=" + BROWSERLESS_TOKEN, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            code: "export default async function ({ page, context }) { const url = context.url; await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 }); await new Promise(r => setTimeout(r, 4000)); try { await page.evaluate(() => { const clickAll = () => { const els = document.querySelectorAll('button, a, [role=\"button\"]'); els.forEach(el => { const t = (el.textContent || '').toLowerCase().trim(); if (t.includes('continue') || t.includes('get link') || t.includes('unlock') || t.includes('proceed') || t.includes('go to link') || t.includes('visit')) { try { el.click(); } catch {} } }); }; clickAll(); setTimeout(clickAll, 2000); setTimeout(clickAll, 5000); setTimeout(clickAll, 8000); }); } catch {} await new Promise(r => setTimeout(r, 18000)); const finalUrl = page.url(); if (finalUrl.includes('lootlabs') || finalUrl.includes('lootlinks')) { const href = await page.evaluate(() => { const a = document.querySelector('a[href^=\"http\"]:not([href*=\"lootlabs\"]):not([href*=\"lootlinks\"]):not([href*=\"google\"]):not([href*=\"cloudflare\"])'); return a ? a.href : null; }); return { url: href || finalUrl, status: href ? 'resolved' : 'still_on_lootlabs' }; } return { url: finalUrl, status: 'resolved' }; }",
+            context: { url: link },
+          }),
+        });
+        if (r.ok) {
+          const d = await r.json();
+          if (d && d.url && typeof d.url === "string" && d.url.startsWith("http") && !d.url.includes("lootlabs") && !d.url.includes("lootlinks")) {
+            res.status(200).json({ result: d.url, source: "browserless" });
+            return;
+          }
+          if (d && d.status === "still_on_lootlabs") {
+            res.status(200).json({ result: link, source: "unsupported", warning: "LootLabs belum selesai. Klik bypass lagi — kadang butuh 2x." });
+            return;
+          }
+        } else {
+          const errTxt = await r.text();
+          console.error("Browserless HTTP", r.status, errTxt.slice(0, 300));
+        }
+      } catch (e) { console.error("Browserless:", e); }
+      res.status(200).json({ result: link, source: "original", warning: "Browserless gagal. Klik bypass lagi atau buka manual." });
       return;
     }
 
-    // 1. bypass.vip
+    // Non-Loot
+    const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36";
+
     try {
       const r = await fetch("https://api.bypass.vip/", {
         method: "POST",
@@ -149,7 +172,6 @@ async function handle(req, res) {
       }
     } catch {}
 
-    // 2. bypass.city POST
     try {
       const r = await fetch("https://api.bypass.city/api/bypass", {
         method: "POST",
@@ -166,24 +188,6 @@ async function handle(req, res) {
       }
     } catch {}
 
-    // 3. bypass.tools
-    try {
-      const r = await fetch("https://bypass.tools/api/bypass", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "User-Agent": UA, "Origin": "https://bypass.tools", "Referer": "https://bypass.tools/" },
-        body: JSON.stringify({ url: link }),
-      });
-      if (r.ok) {
-        const d = await r.json();
-        const result = d.result || d.destination || d.url || d.data;
-        if (result && typeof result === "string" && result.startsWith("http")) {
-          res.status(200).json({ result, source: "bypass.tools" });
-          return;
-        }
-      }
-    } catch {}
-
-    // 4. HEAD redirect
     try {
       const r = await fetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } });
       const loc = r.headers.get("location");
@@ -240,14 +244,7 @@ body{background:#08080f;color:#e8e8f0;font-family:'Inter',sans-serif;min-height:
 <div class="notice">Copy key → paste di <b>popup script NANG</b> → VERIFIKASI</div>
 </div>
 <script>
-function copyKey(){
-  const t=document.getElementById('keyText').textContent;
-  navigator.clipboard.writeText(t).then(()=>{
-    const b=document.getElementById('copyBtn');
-    b.textContent='TERSALIN!';b.classList.add('copied');
-    setTimeout(()=>{b.textContent='SALIN KEY';b.classList.remove('copied');},1800);
-  });
-}
+function copyKey(){const t=document.getElementById('keyText').textContent;navigator.clipboard.writeText(t).then(()=>{const b=document.getElementById('copyBtn');b.textContent='TERSALIN!';b.classList.add('copied');setTimeout(()=>{b.textContent='SALIN KEY';b.classList.remove('copied');},1800);});}
 </script></body></html>`;
 }
 
@@ -297,10 +294,6 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
 .result .link-line{font-family:monospace;font-size:0.7rem;color:var(--cyan);word-break:break-all;padding:6px;background:#0a1520;border-radius:6px;display:block;text-decoration:none;border:1px solid rgba(0,212,255,0.15);margin:6px 0}
 .tags{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px}
 .tag{background:rgba(0,212,255,0.08);color:var(--cyan);font-size:0.68rem;font-weight:600;padding:3px 9px;border-radius:20px;border:1px solid rgba(0,212,255,0.2)}
-.tag.warn{background:rgba(255,80,80,0.08);color:#ff8080;border-color:rgba(255,80,80,0.2)}
-.step{display:flex;gap:10px;align-items:flex-start;margin-bottom:10px;font-size:0.78rem;color:var(--muted)}
-.step-num{width:20px;height:20px;border-radius:50%;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;font-size:0.65rem;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-.step span{color:var(--text)}
 .user-card{display:flex;align-items:center;gap:10px;background:var(--bg3);border:1px solid rgba(0,232,122,0.2);border-radius:10px;padding:10px;margin-top:10px}
 .user-avatar{width:36px;height:36px;border-radius:8px;background:linear-gradient(135deg,var(--pink),var(--purple));display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1rem;color:#fff}
 .user-info{flex:1}
@@ -336,17 +329,10 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 <div class="panel" id="tab1">
 <div class="card">
 <div class="card-title">Bypass Shortlink</div>
-<div class="tags">
-<span class="tag">Linkvertise</span><span class="tag">Work.ink</span><span class="tag">Sub2Unlock</span><span class="tag">Playrole</span>
-<span class="tag warn">LootLabs ✗</span>
-</div>
+<div class="tags"><span class="tag">Linkvertise</span><span class="tag">Work.ink</span><span class="tag">Sub2Unlock</span><span class="tag">Playrole</span><span class="tag">LootLabs</span></div>
 <input type="text" class="inp" id="bypassUrl" placeholder="Paste link shortlink di sini...">
 <button class="btn-cyan" onclick="doBypass()">Bypass Sekarang</button>
 <div class="result" id="bypassResult"></div>
-</div>
-<div class="card">
-<div class="card-title">Catatan</div>
-<div class="step"><div class="step-num">!</div><div><span>LootLabs</span> nggak bisa di-bypass — WebSocket + Cloudflare BotD block semua server request. Buka manual, task 30 detik.</div></div>
 </div>
 </div>
 
@@ -368,6 +354,6 @@ function closeGen(){document.getElementById('genPanel').classList.remove('show')
 document.getElementById('genPanel').addEventListener('click',(e)=>{if(e.target.id==='genPanel')closeGen();});
 async function doLogin(){const pw=document.getElementById('genPw').value;if(!pw)return;try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:pw,uid:'1'})});const d=await r.json();if(d.error==='password salah'){document.getElementById('genPw').value='';document.getElementById('genPw').placeholder='password salah';}else if(d.ok){ownerPw=pw;document.getElementById('genForm').style.display='block';document.getElementById('genPw').disabled=true;}}catch(e){}}
 async function doGenerate(){const uid=document.getElementById('genUid').value.trim();const box=document.getElementById('genResult');if(!uid||!ownerPw)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Generating...';try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:ownerPw,uid:uid})});const d=await r.json();if(d.ok){box.className='result ok';box.innerHTML='<b>Username:</b> '+(d.username||'Unknown')+'<div class="key-line">'+d.key+'</div><b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b><a href="'+d.authLink+'" target="_blank" class="link-line">'+d.authLink+'</a><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';}else{box.className='result err';box.innerHTML=d.error||'Gagal';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
-async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Memproses...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='original'?'warn':(d.source==='unsupported'?'warn':'ok');box.className='result '+cls;let label='Bypass berhasil!';if(d.source==='unsupported')label='LootLabs nggak bisa di-bypass — buka manual:';if(d.source==='original')label='Bypass gagal — buka manual:';const src=d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">'+d.source+'</div>':'';box.innerHTML=label+src+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source==='unsupported'||d.source==='original'?'':'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
+async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Memproses (LootLabs bisa 20-25 detik)...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='browserless'?'ok':(d.source==='original'||d.source==='unsupported'?'warn':'ok');box.className='result '+cls;let label='Bypass berhasil!';if(d.source==='unsupported')label='Belum selesai — klik bypass lagi:';if(d.source==='original')label='Bypass gagal — buka manual:';const src=d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'';box.innerHTML=label+src+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source==='browserless'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 </script></body></html>`;
 }
