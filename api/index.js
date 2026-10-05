@@ -1,3 +1,543 @@
+// NANG KEY SERVER - Stable
+export default async function handler(req, res) {
+  try {
+    return await handle(req, res);
+  } catch (e) {
+    console.error("HANDLER ERROR:", e);
+    if (!res.headersSent) res.status(200).json({ error: "server error", detail: String(e.message || e) });
+  }
+}
+
+async function handle(req, res) {
+  const SECRET = "NANG2024";
+  const ADMIN_PW = "nangowner123";
+  const EXPIRE_S = 86400;
+  const WA_NUMBER = "6281252425581";
+  const AUTH_DOMAIN = req.headers.host || "localhost";
+
+  function simpleHash(str) {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) h = ((h * 31) + str.charCodeAt(i)) % 1000000007;
+    return h;
+  }
+  function getWindow(ts) { return Math.floor((ts || Date.now() / 1000) / EXPIRE_S); }
+  function makeKey(uid, w) {
+    const h = simpleHash(SECRET + uid + w);
+    const p1 = String(uid).slice(0, 5).padEnd(5, "0");
+    return "NANG-" + p1 + "-" + String(h % 10000).padStart(4, "0") + "-" + String(Math.floor(h / 10000) % 10000).padStart(4, "0");
+  }
+  function isValid(uid, key) {
+    const w = getWindow();
+    return makeKey(uid, w) === key || makeKey(uid, w - 1) === key;
+  }
+  function expiryStr() {
+    const now = Date.now() / 1000;
+    const next = (getWindow() + 1) * EXPIRE_S;
+    const left = Math.round(next - now);
+    const h = Math.floor(left / 3600);
+    const m = Math.floor((left % 3600) / 60);
+    return h + "j " + m + "m";
+  }
+
+  // base64url encode/decode manual (kompatibel Node lama)
+  function b64urlEncode(obj) {
+    const json = JSON.stringify(obj);
+    let b64 = Buffer.from(json, "utf8").toString("base64");
+    return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  function b64urlDecode(str) {
+    let s = str.replace(/-/g, "+").replace(/_/g, "/");
+    while (s.length % 4) s += "=";
+    return Buffer.from(s, "base64").toString("utf8");
+  }
+
+  function makeAuthLink(uid, key, username) {
+    const payload = { u: String(uid), k: key, n: username || "", e: (getWindow() + 1) * EXPIRE_S };
+    return "https://" + AUTH_DOMAIN + "/auth?d=" + b64urlEncode(payload);
+  }
+  async function getRobloxUser(uid) {
+    try {
+      const r = await fetch("https://users.roblox.com/v1/users/" + uid);
+      if (!r.ok) return null;
+      const d = await r.json();
+      return d.name || null;
+    } catch { return null; }
+  }
+
+  const url = new URL(req.url, "https://" + AUTH_DOMAIN);
+  const params = url.searchParams;
+  const path = url.pathname;
+  const method = req.method;
+
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (method === "OPTIONS") { res.status(200).end(); return; }
+
+  // POST validate
+  if (method === "POST") {
+    let body = "";
+    await new Promise(r => { req.on("data", c => body += c); req.on("end", r); });
+    let uid, key;
+    try { const j = JSON.parse(body); uid = j.uid; key = j.key; } catch { res.status(400).json({ valid: false, error: "bad json" }); return; }
+    const valid = isValid(uid, key);
+    let username = null;
+    if (valid) username = await getRobloxUser(uid);
+    res.status(200).json({ valid, expires: valid ? expiryStr() : null, username });
+    return;
+  }
+
+  // GET /auth — tampil key
+  if (path === "/auth" || path === "/auth/") {
+    const d = params.get("d");
+    if (!d) { res.status(400).send("Missing data"); return; }
+    let data;
+    try {
+      data = JSON.parse(b64urlDecode(d));
+    } catch (e) {
+      res.status(400).send("Invalid link: " + e.message);
+      return;
+    }
+    if (!data.u || !data.k) { res.status(400).send("Invalid data"); return; }
+    const valid = isValid(data.u, data.k);
+    const name = data.n || await getRobloxUser(data.u);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.status(200).send(authPage(data, valid, name));
+    return;
+  }
+
+  // GET validate
+  if (params.has("uid") && params.has("key")) {
+    const uid = params.get("uid");
+    const key = params.get("key");
+    const valid = isValid(uid, key);
+    let username = null;
+    if (valid) username = await getRobloxUser(uid);
+    res.status(200).json({ valid, expires: valid ? expiryStr() : null, username });
+    return;
+  }
+
+  // GET lookup
+  if (params.has("lookup")) {
+    const uid = params.get("lookup");
+    const name = await getRobloxUser(uid);
+    res.status(200).json({ uid, name });
+    return;
+  }
+
+  // GET generate
+  if (params.has("uid") && !params.has("key") && !params.has("admin") && !params.has("bypass")) {
+    const uid = params.get("uid");
+    const key = makeKey(uid, getWindow());
+    const name = await getRobloxUser(uid);
+    const authLink = makeAuthLink(uid, key, name);
+    res.status(200).json({ uid, key, expires: expiryStr(), username: name, authLink });
+    return;
+  }
+
+  // GET admin
+  if (params.has("admin")) {
+    if (params.get("admin") !== ADMIN_PW) { res.status(403).send("Forbidden"); return; }
+    const genUid = params.get("gen");
+    let genResult = "";
+    if (genUid) {
+      const key = makeKey(genUid, getWindow());
+      const name = await getRobloxUser(genUid) || "Unknown";
+      const authLink = makeAuthLink(genUid, key, name);
+      genResult = `<div class="result"><b>Username:</b> ${name}<br><b>Key:</b> <code>${key}</code><br><b>Expires:</b> ${expiryStr()}<br><b>Auth Link:</b><br><a href="${authLink}" style="color:#00ff88;word-break:break-all">${authLink}</a></div>`;
+    }
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.status(200).send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Admin</title>
+<style>*{box-sizing:border-box}body{background:#0a0a0a;color:#fff;font-family:sans-serif;padding:20px}
+h1{color:#00ff88}input{background:#1a1a1a;border:1px solid #333;color:#fff;padding:8px;border-radius:6px;width:300px}
+button{background:#00ff88;color:#000;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-weight:bold}
+.result{background:#1a1a1a;padding:12px;border-radius:8px;margin-top:12px;border:1px solid #00ff88}
+code{color:#00ff88;font-size:16px}</style></head><body>
+<h1>Admin Panel NANG</h1>
+<form method="GET"><input type="hidden" name="admin" value="${ADMIN_PW}">
+<input type="text" name="gen" placeholder="Roblox User ID" required>
+<button type="submit">Generate Key</button></form>
+${genResult}
+<hr style="border-color:#333;margin:20px 0">
+<a href="/" style="color:#888">Kembali</a></body></html>`);
+    return;
+  }
+
+  // GET bypass
+  if (params.has("bypass")) {
+    const link = params.get("bypass");
+    if (!link) { res.status(200).json({ error: "no link" }); return; }
+    const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
+
+    // Lapis 1: bypass.vip POST
+    try {
+      const r = await fetch("https://api.bypass.vip/", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA, "Accept": "application/json" },
+        body: "url=" + encodeURIComponent(link),
+      });
+      if (r.ok) {
+        const d = await r.json();
+        const result = d.result || d.url || d.destination || d.data;
+        if (result && typeof result === "string" && result.startsWith("http")) {
+          res.status(200).json({ result, source: "bypass.vip" });
+          return;
+        }
+      }
+    } catch {}
+
+    // Lapis 2: bypass.city POST
+    try {
+      const r = await fetch("https://api.bypass.city/api/bypass", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "User-Agent": UA },
+        body: JSON.stringify({ url: link }),
+      });
+      if (r.ok) {
+        const d = await r.json();
+        const result = d.result || d.destination || d.url || d.data;
+        if (result && typeof result === "string" && result.startsWith("http")) {
+          res.status(200).json({ result, source: "bypass.city" });
+          return;
+        }
+      }
+    } catch {}
+
+    // Lapis 3: bypass.city GET
+    try {
+      const r = await fetch("https://api.bypass.city/api/bypass?url=" + encodeURIComponent(link), {
+        headers: { "User-Agent": UA },
+      });
+      if (r.ok) {
+        const d = await r.json();
+        const result = d.result || d.destination || d.url || d.data;
+        if (result && typeof result === "string" && result.startsWith("http")) {
+          res.status(200).json({ result, source: "bypass.city-get" });
+          return;
+        }
+      }
+    } catch {}
+
+    // Lapis 4: HEAD redirect extract
+    try {
+      const r = await fetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } });
+      const loc = r.headers.get("location");
+      if (loc && loc.startsWith("http") && loc !== link) {
+        res.status(200).json({ result: loc, source: "redirect-extract" });
+        return;
+      }
+    } catch {}
+
+    // Fallback: return link asli
+    res.status(200).json({
+      result: link,
+      source: "original",
+      warning: "Semua API bypass gagal. Link asli dikembalikan — buka manual untuk lewati iklan.",
+    });
+    return;
+  }
+
+  // Main page
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.status(200).send(mainPage(WA_NUMBER));
+}
+
+// ═══════════════════════════════════════════
+// AUTH PAGE
+// ═══════════════════════════════════════════
+function authPage(data, valid, username) {
+  const key = data.k;
+  const uid = data.u;
+  const exp = data.e;
+  const now = Math.floor(Date.now() / 1000);
+  const left = Math.max(0, exp - now);
+  const hours = Math.floor(left / 3600);
+  const mins = Math.floor((left % 3600) / 60);
+
+  return `<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NANG Auth - Key</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#08080f;color:#e8e8f0;font-family:'Inter',sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px 16px}
+.card{background:#0f0f1a;border:1px solid #ffffff10;border-radius:20px;padding:32px 28px;max-width:440px;width:100%;position:relative;overflow:hidden}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,#e03c8a,#9b4de0,transparent)}
+.brand{text-align:center;margin-bottom:24px}
+.logo{font-size:1.8rem;font-weight:900;letter-spacing:-1px;background:linear-gradient(135deg,#e03c8a,#9b4de0,#00d4ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.status{display:inline-flex;align-items:center;gap:6px;font-size:.72rem;font-weight:700;padding:4px 12px;border-radius:20px;margin-top:8px}
+.status.ok{background:rgba(0,232,122,0.12);color:#00e87a;border:1px solid rgba(0,232,122,0.3)}
+.status.err{background:rgba(255,80,80,0.12);color:#ff6b6b;border:1px solid rgba(255,80,80,0.3)}
+.info-row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #ffffff0a;font-size:.85rem}
+.info-row:last-of-type{border-bottom:none}
+.info-label{color:#6b6b8a}
+.info-value{color:#e8e8f0;font-weight:600;text-align:right;word-break:break-all;max-width:60%}
+.key-box{background:#0a0a14;border:1px solid #e03c8a40;border-radius:14px;padding:20px;margin-top:20px;text-align:center;position:relative;overflow:hidden}
+.key-label{font-size:.68rem;color:#6b6b8a;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px}
+.key-value{font-family:'JetBrains Mono',monospace;font-size:1.15rem;font-weight:700;color:#00e87a;letter-spacing:1px;word-break:break-all;line-height:1.5}
+.copy-btn{width:100%;margin-top:16px;padding:12px;background:linear-gradient(135deg,#e03c8a,#9b4de0);color:#fff;border:none;border-radius:10px;font-weight:700;font-size:.9rem;cursor:pointer;font-family:inherit;transition:opacity .15s}
+.copy-btn:hover{opacity:.88}
+.copy-btn.copied{background:linear-gradient(135deg,#00e87a,#00b8b8)}
+.notice{margin-top:20px;padding:12px;background:#0a0a14;border-radius:10px;font-size:.75rem;color:#6b6b8a;line-height:1.7;text-align:center}
+.notice b{color:#e8e8f0}
+.footer{margin-top:20px;text-align:center;color:#6b6b8a;font-size:.7rem;opacity:0.6}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="brand">
+    <div class="logo">NANG AUTH</div>
+    <div class="status ${valid ? 'ok' : 'err'}">${valid ? 'VALID' : 'EXPIRED'}</div>
+  </div>
+  <div class="info-row"><span class="info-label">Username</span><span class="info-value">${username || "Unknown"}</span></div>
+  <div class="info-row"><span class="info-label">User ID</span><span class="info-value">${uid}</span></div>
+  <div class="info-row"><span class="info-label">Berlaku</span><span class="info-value">${hours}j ${mins}m</span></div>
+  <div class="key-box">
+    <div class="key-label">Your Key</div>
+    <div class="key-value" id="keyText">${key}</div>
+    <button class="copy-btn" id="copyBtn" onclick="copyKey()">SALIN KEY</button>
+  </div>
+  <div class="notice">Copy key di atas → paste di <b>popup script NANG</b> → klik VERIFIKASI<br>Key expired otomatis setelah 24 jam</div>
+</div>
+<div class="footer">NANG RBXM Tool &copy; 2025</div>
+<script>
+function copyKey(){
+  const t = document.getElementById('keyText').textContent;
+  navigator.clipboard.writeText(t).then(()=>{
+    const b = document.getElementById('copyBtn');
+    b.textContent = 'TERSALIN!';
+    b.classList.add('copied');
+    setTimeout(()=>{ b.textContent = 'SALIN KEY'; b.classList.remove('copied'); }, 1800);
+  });
+}
+</script>
+</body>
+</html>`;
+}
+
+// ═══════════════════════════════════════════
+// MAIN PAGE
+// ═══════════════════════════════════════════
+function mainPage(wa) {
+  return `<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NANG Key System</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--pink:#e03c8a;--purple:#9b4de0;--cyan:#00d4ff;--green:#00e87a;--bg:#08080f;--bg2:#0f0f1a;--bg3:#16162a;--border:#ffffff12;--text:#e8e8f0;--muted:#6b6b8a}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px 16px}
+.hero{text-align:center;margin-bottom:28px}
+.logo{font-size:2.6rem;font-weight:900;letter-spacing:-1px;background:linear-gradient(135deg,var(--pink),var(--purple),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;line-height:1}
+.logo-badge{display:inline-block;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;font-size:0.6rem;font-weight:700;padding:2px 7px;border-radius:20px;vertical-align:super;margin-left:4px;letter-spacing:1px}
+.sub{color:var(--muted);font-size:0.8rem;margin-top:6px}
+.nav{display:flex;gap:6px;background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:5px;margin-bottom:22px;width:100%;max-width:480px}
+.nav-btn{flex:1;padding:9px 6px;border:none;border-radius:10px;cursor:pointer;font-size:0.8rem;font-weight:600;background:transparent;color:var(--muted);transition:all .2s;font-family:inherit}
+.nav-btn.active{background:linear-gradient(135deg,rgba(224,60,138,0.2),rgba(155,77,224,0.2));color:#fff;border:1px solid rgba(224,60,138,0.3)}
+.panel{width:100%;max-width:480px;display:none}
+.panel.active{display:block}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:18px;margin-bottom:12px;position:relative;overflow:hidden}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(224,60,138,0.4),transparent)}
+.card-title{font-size:0.7rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:14px}
+.qr-wrap{display:flex;gap:14px;align-items:flex-start;margin-bottom:14px}
+.qr-img{width:100px;height:100px;border-radius:10px;border:2px solid var(--border);object-fit:cover;flex-shrink:0}
+.qr-img-placeholder{width:100px;height:100px;border-radius:10px;border:2px dashed var(--border);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:0.7rem;text-align:center;flex-shrink:0}
+.qr-info{flex:1}
+.price-badge{display:inline-flex;background:linear-gradient(135deg,rgba(0,232,122,0.15),rgba(0,212,255,0.1));border:1px solid rgba(0,232,122,0.3);border-radius:8px;padding:5px 10px;font-size:0.85rem;font-weight:700;color:var(--green);margin-bottom:8px}
+.qr-steps{font-size:0.75rem;color:var(--muted);line-height:1.8}
+.qr-steps span{color:var(--text)}
+.fmt-box{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:12px;font-size:0.75rem;color:var(--muted);line-height:1.9;margin-bottom:12px}
+.fmt-box .label{color:var(--pink);font-weight:600}
+.fmt-box .field{color:var(--text)}
+.wa-btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:13px;background:linear-gradient(135deg,#25d366,#128c7e);color:#fff;border:none;border-radius:12px;font-size:0.95rem;font-weight:700;cursor:pointer;text-decoration:none;font-family:inherit}
+.wa-btn:hover{opacity:.88}
+.wa-icon{width:18px;height:18px;fill:#fff}
+.inp{width:100%;padding:11px 14px;background:var(--bg3);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:0.88rem;outline:none;margin-bottom:10px;font-family:inherit}
+.inp:focus{border-color:rgba(224,60,138,0.5)}
+.inp::placeholder{color:var(--muted)}
+.btn-main{width:100%;padding:12px;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;border:none;border-radius:11px;font-weight:700;font-size:0.9rem;cursor:pointer;font-family:inherit;margin-bottom:8px}
+.btn-main:hover{opacity:.88}
+.btn-cyan{width:100%;padding:12px;background:linear-gradient(135deg,#0099cc,var(--cyan));color:#000;border:none;border-radius:11px;font-weight:700;font-size:0.9rem;cursor:pointer;font-family:inherit}
+.btn-green{width:100%;padding:11px;background:linear-gradient(135deg,#00b866,var(--green));color:#000;border:none;border-radius:11px;font-weight:700;font-size:0.85rem;cursor:pointer;font-family:inherit;margin-top:8px}
+.result{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:12px;font-size:0.78rem;margin-top:10px;display:none;word-break:break-all;line-height:1.6}
+.result.ok{border-color:rgba(0,232,122,0.3);color:var(--green)}
+.result.err{border-color:rgba(255,80,80,0.3);color:#ff6b6b;background:rgba(255,40,40,0.05)}
+.result .key-line{font-family:monospace;font-size:0.9rem;color:var(--green);font-weight:700;margin:6px 0;padding:8px;background:#0a1520;border-radius:6px;word-break:break-all}
+.result .link-line{font-family:monospace;font-size:0.7rem;color:var(--cyan);word-break:break-all;padding:6px;background:#0a1520;border-radius:6px;display:block;text-decoration:none;border:1px solid rgba(0,212,255,0.15);margin:6px 0}
+.tags{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px}
+.tag{background:rgba(0,212,255,0.08);color:var(--cyan);font-size:0.68rem;font-weight:600;padding:3px 9px;border-radius:20px;border:1px solid rgba(0,212,255,0.2)}
+.step{display:flex;gap:10px;align-items:flex-start;margin-bottom:10px;font-size:0.78rem;color:var(--muted)}
+.step-num{width:20px;height:20px;border-radius:50%;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;font-size:0.65rem;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.step span{color:var(--text)}
+.user-card{display:flex;align-items:center;gap:10px;background:var(--bg3);border:1px solid rgba(0,232,122,0.2);border-radius:10px;padding:10px;margin-top:10px}
+.user-avatar{width:36px;height:36px;border-radius:8px;background:linear-gradient(135deg,var(--pink),var(--purple));display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1rem;color:#fff}
+.user-info{flex:1}
+.user-name{font-weight:700;font-size:0.9rem;color:var(--text)}
+.user-id{font-size:0.72rem;color:var(--muted)}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,0.1);border-top-color:var(--pink);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opacity:0.5}
+</style>
+</head>
+<body>
+<div class="hero"><div class="logo">NANG<span class="logo-badge">KEY</span></div><div class="sub">Roblox Script Key System</div></div>
+<div class="nav">
+  <button class="nav-btn active" onclick="switchTab(0)">Beli Key</button>
+  <button class="nav-btn" onclick="switchTab(1)">Generate</button>
+  <button class="nav-btn" onclick="switchTab(2)">Bypass</button>
+</div>
+
+<div class="panel active" id="tab0">
+  <div class="card">
+    <div class="card-title">Pembayaran QRIS</div>
+    <div class="qr-wrap">
+      <img src="/qr.png" class="qr-img" alt="QR" onerror="this.outerHTML='<div class=qr-img-placeholder>QR<br>belum<br>tersedia</div>'">
+      <div class="qr-info">
+        <div class="price-badge">Rp500 / Key</div>
+        <div class="qr-steps">Scan QR di kiri<br>Transfer <span>Rp500</span><br>Chat WA owner<br>Key dikirim otomatis</div>
+      </div>
+    </div>
+    <div class="fmt-box">
+      <span class="label">Format pesan WA:</span><br>
+      <span class="field">Beli Key NANG</span><br>
+      Nama: <span class="field" id="waNama">[isi di bawah]</span><br>
+      Roblox ID: <span class="field" id="waUid">[isi di bawah]</span><br>
+      Bukti TF: <span class="field">[screenshot]</span>
+    </div>
+    <a href="https://wa.me/${wa}?text=Beli%20Key%20NANG" class="wa-btn" id="waBtn" target="_blank">
+      <svg class="wa-icon" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+      Chat WhatsApp Owner
+    </a>
+  </div>
+  <div class="card">
+    <div class="card-title">Cek Username Roblox</div>
+    <input type="text" class="inp" id="lookupId" placeholder="Masukkan Roblox User ID...">
+    <button class="btn-main" onclick="doLookup()">Cek Username</button>
+    <div id="lookupResult"></div>
+  </div>
+</div>
+
+<div class="panel" id="tab1">
+  <div class="card">
+    <div class="card-title">Generate Key + Auth Link</div>
+    <input type="text" class="inp" id="genUid" placeholder="Masukkan Roblox User ID...">
+    <button class="btn-main" onclick="doGenerate()">Generate Sekarang</button>
+    <div class="result" id="genResult"></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Cara Pakai</div>
+    <div class="step"><div class="step-num">1</div><div>Masukkan <span>Roblox User ID</span></div></div>
+    <div class="step"><div class="step-num">2</div><div>Klik <span>Generate Sekarang</span></div></div>
+    <div class="step"><div class="step-num">3</div><div>Klik link auth yang muncul</div></div>
+    <div class="step"><div class="step-num">4</div><div>Copy key dari halaman auth</div></div>
+    <div class="step"><div class="step-num">5</div><div>Paste di popup script NANG</div></div>
+  </div>
+</div>
+
+<div class="panel" id="tab2">
+  <div class="card">
+    <div class="card-title">Bypass Shortlink</div>
+    <div class="tags">
+      <span class="tag">Linkvertise</span><span class="tag">Lootlabs</span><span class="tag">Lootdest</span>
+      <span class="tag">Playrole</span><span class="tag">Sub2Unlock</span><span class="tag">Work.ink</span>
+    </div>
+    <input type="text" class="inp" id="bypassUrl" placeholder="Paste link shortlink di sini...">
+    <button class="btn-cyan" onclick="doBypass()">Bypass Sekarang</button>
+    <div class="result" id="bypassResult"></div>
+  </div>
+</div>
+
+<footer>NANG RBXM Tool &copy; 2025</footer>
+
+<script>
+const WA_NUMBER = "${wa}";
+let lastLookup = { uid: null, name: null };
+
+function switchTab(i){
+  document.querySelectorAll('.nav-btn').forEach((b,j)=>b.classList.toggle('active',i===j));
+  document.querySelectorAll('.panel').forEach((p,j)=>p.classList.toggle('active',i===j));
+}
+
+function updateWA(){
+  if(!lastLookup.name) return;
+  const text = "Beli Key NANG%0ANama: " + encodeURIComponent(lastLookup.name) + "%0ARoblox ID: " + lastLookup.uid + "%0ABukti TF: [screenshot]";
+  document.getElementById('waBtn').href = "https://wa.me/" + WA_NUMBER + "?text=" + text;
+  document.getElementById('waNama').textContent = lastLookup.name;
+  document.getElementById('waUid').textContent = lastLookup.uid;
+}
+
+async function doLookup(){
+  const uid = document.getElementById('lookupId').value.trim();
+  const box = document.getElementById('lookupResult');
+  if(!uid) return;
+  box.style.display = 'block';
+  box.className = 'result';
+  box.innerHTML = '<span class="spinner"></span>Mencari...';
+  try {
+    const r = await fetch('/?lookup=' + encodeURIComponent(uid));
+    const d = await r.json();
+    if(d.name){
+      lastLookup = { uid: d.uid, name: d.name };
+      updateWA();
+      box.style.display = 'none';
+      const existing = document.getElementById('userCard');
+      if(existing) existing.remove();
+      const card = document.createElement('div');
+      card.id = 'userCard';
+      card.className = 'user-card';
+      card.innerHTML = '<div class="user-avatar">' + d.name.charAt(0).toUpperCase() + '</div><div class="user-info"><div class="user-name">' + d.name + '</div><div class="user-id">ID: ' + d.uid + '</div></div>';
+      box.parentNode.insertBefore(card, box.nextSibling);
+    } else {
+      box.className = 'result err';
+      box.innerHTML = 'User ID tidak ditemukan';
+    }
+  } catch(e) {
+    box.className = 'result err';
+    box.innerHTML = 'Error: ' + e.message;
+  }
+}
+
+let lookupT;
+document.getElementById('lookupId').addEventListener('input', () => {
+  clearTimeout(lookupT);
+  lookupT = setTimeout(doLookup, 600);
+});
+
+async function doGenerate(){
+  const uid = document.getElementById('genUid').value.trim();
+  const box = document.getElementById('genResult');
+  if(!uid) return;
+  box.style.display = 'block';
+  box.className = 'result';
+  box.innerHTML = '<span class="spinner"></span>Generating...';
+  try {
+    const r = await fetch('/?uid=' + encodeURIComponent(uid));
+    const d = await r.json();
+    if(d.key){
+      lastLookup = { uid: d.uid, name: d.username };
+      updateWA();
+      box.className = 'result ok';
+      box.innerHTML = '<b>Username:</b> ' + (d.username || 'Unknown') +
+        '<div class="key-line">' + d.key + '</div>' +
+        '<b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b>' +
+        '<a href="' + d.authLink + '" target="_blank" class="link-line">' + d.authLink + '</a>' +
+        '<button class="btn-green" onclick="navigator.clipboard.writeText(\\'' + d.key + '\\');this.textContent=\\'KEY COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';
+    } else {
+      box.className = 'result err';
+      box.innerHTML = 'Gagal generate';
+    }
+  } catch(e) {
+    box.className = 'result err';
+    box.innerHTML = 'Error: ' + e.message;
+  }
+}
+
 async function doBypass(){
   const link = document.getElementById('bypassUrl').value.trim();
   const box = document.getElementById('bypassResult');
@@ -27,4 +567,8 @@ async function doBypass(){
     box.className = 'result err';
     box.innerHTML = 'Error: ' + e.message;
   }
+}
+</script>
+</body>
+</html>`;
 }
