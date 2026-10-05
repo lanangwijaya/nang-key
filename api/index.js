@@ -109,19 +109,40 @@ async function handle(req, res) {
     return;
   }
 
-  // ═══ BYPASS — FAST MODE ═══
+  // ═══ BYPASS — TURBO MODE ═══
   if (params.has("bypass")) {
     const link = params.get("bypass");
     if(!link) { res.status(200).json({ error:"no link" }); return; }
     const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-    const WRAPPED = ["lootlabs","lootlinks","lootdest","platorelay","platoboost","linkvertise","link-to","work.ink","sub2unlock","sub2get","playrole","ouo.io","exe.io","shrinkme","shrinkearn"];
+    const WRAPPED = ["lootlabs","lootlinks","lootdest","platorelay","platoboost","linkvertise","link-to","work.ink","sub2unlock","sub2get","playrole","ouo.io","exe.io","shrinkme","shrinkearn","rekonise","mboost","boost.ink"];
     const isClean = (u) => u && typeof u === "string" && u.startsWith("http") && !WRAPPED.some(s => u.toLowerCase().includes(s));
-    const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
 
-    // RACE 3 API paralel — ambil yang cepat jawab
-    const apiCalls = [
-      withTimeout(fetch("https://api.bypass.vip/", {
+    const fastRace = (promises) => new Promise((resolve) => {
+      let settled = false;
+      let remaining = promises.length;
+      if (remaining === 0) return resolve(null);
+      promises.forEach(p => {
+        Promise.resolve(p).then(r => {
+          if (settled) return;
+          if (isClean(r)) { settled = true; resolve(r); return; }
+          remaining--;
+          if (remaining === 0 && !settled) { settled = true; resolve(null); }
+        }).catch(() => {
+          remaining--;
+          if (remaining === 0 && !settled) { settled = true; resolve(null); }
+        });
+      });
+    });
+
+    const tf = (url, opts, ms) => Promise.race([
+      fetch(url, opts),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("t")), ms)),
+    ]).catch(() => null);
+
+    // ── 4 API paralel, timeout 3.5s ──
+    const fastApis = [
+      tf("https://api.bypass.vip/", {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
@@ -129,29 +150,47 @@ async function handle(req, res) {
           "User-Agent": UA, "Origin": "https://bypass.vip", "Referer": "https://bypass.vip/",
         },
         body: "url=" + encodeURIComponent(link),
-      }).then(r => r.ok ? r.json().then(d => d.result || d.destination || d.url) : null), 6000).catch(() => null),
+      }, 3500).then(r => r && r.ok ? r.json().then(d => d.result || d.destination || d.url).catch(() => null) : null),
 
-      withTimeout(fetch("https://api.bypass.city/api/bypass", {
+      tf("https://api.bypass.city/api/bypass", {
         method: "POST",
         headers: { "Content-Type": "application/json", "User-Agent": UA, "Origin": "https://bypass.city", "Referer": "https://bypass.city/" },
         body: JSON.stringify({ url: link }),
-      }).then(r => r.ok ? r.json().then(d => d.result || d.destination || d.url) : null), 6000).catch(() => null),
+      }, 3500).then(r => r && r.ok ? r.json().then(d => d.result || d.destination || d.url).catch(() => null) : null),
 
-      withTimeout(fetch("https://bypass.pm/bypass2?url=" + encodeURIComponent(link), {
+      tf("https://bypass.pm/bypass2?url=" + encodeURIComponent(link), {
         headers: { "User-Agent": UA },
-      }).then(r => r.ok ? r.text().then(t => {
+      }, 3500).then(r => r && r.ok ? r.text().then(t => {
         try { const d = JSON.parse(t); return d.result || d.destination || d.url; } catch {}
         const m = t.match(/https?:\/\/[^\s"'<>]+/);
         return m ? m[0] : null;
-      }) : null), 6000).catch(() => null),
+      }).catch(() => null) : null),
+
+      tf("https://api.bypass.tools/api/bypass", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "User-Agent": UA, "Origin": "https://bypass.tools", "Referer": "https://bypass.tools/" },
+        body: JSON.stringify({ url: link }),
+      }, 3500).then(r => r && r.ok ? r.json().then(d => d.result || d.destination || d.url).catch(() => null) : null),
     ];
 
-    const results = await Promise.all(apiCalls);
-    for(const r of results) {
-      if (isClean(r)) return res.status(200).json({ result: r, source: "api-fast" });
-    }
+    let result = await fastRace(fastApis);
+    if (result) return res.status(200).json({ result, source: "api-fast" });
 
-    // Browserless fallback — 1 klik per 3s, max 8 iterasi
+    // ── HEAD redirect ──
+    try {
+      const hr = await Promise.race([
+        fetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("t")), 2500)),
+      ]).catch(() => null);
+      if (hr) {
+        const loc = hr.headers.get("location");
+        if (loc && loc.startsWith("http") && loc !== link && isClean(loc)) {
+          return res.status(200).json({ result: loc, source: "redirect" });
+        }
+      }
+    } catch {}
+
+    // ── Browserless LAST RESORT ──
     try {
       const isLV = link.toLowerCase().includes("linkvertise") || link.toLowerCase().includes("link-to") || link.toLowerCase().includes("work.ink");
 
@@ -197,19 +236,18 @@ export default async function ({ page, context }) {
   try {
     await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
     await page.setViewport({ width: 1366, height: 768 });
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 });
-    await sleep(${isLV ? 5000 : 6500});
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20000 });
+    await sleep(${isLV ? 4500 : 5500});
 
-    for (let i = 0; i < 8; i++) {
-      const c = await clickOne();
-      if (c) console.log("[click]", c);
-      await sleep(2800);
+    for (let i = 0; i < 6; i++) {
+      await clickOne();
+      await sleep(2500);
       let cur = page.url();
-      if (isLegal(cur)) { try { await page.goBack({ waitUntil: "domcontentloaded", timeout: 5000 }); } catch {} await sleep(2000); continue; }
+      if (isLegal(cur)) { try { await page.goBack({ waitUntil: "domcontentloaded", timeout: 4000 }); } catch {} await sleep(1800); continue; }
       if (!isWrapped(cur)) return { url: cur, status: "resolved" };
     }
 
-    await sleep(4000);
+    await sleep(3000);
     const finalUrl = page.url();
     if (!isWrapped(finalUrl) && !isLegal(finalUrl)) return { url: finalUrl, status: "resolved" };
     return { url: finalUrl, status: "still_wrapped" };
@@ -218,25 +256,20 @@ export default async function ({ page, context }) {
   }
 }`;
 
-      const r = await fetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=45000", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: browserScript, context: { url: link } }),
-      });
+      const r = await Promise.race([
+        fetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=35000", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: browserScript, context: { url: link } }),
+        }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("t")), 38000)),
+      ]).catch(() => null);
 
-      if (r.ok) {
+      if (r && r.ok) {
         const d = await r.json();
         if (isClean(d && d.url)) return res.status(200).json({ result: d.url, source: "browserless" });
       }
     } catch (e) { console.error("Browserless:", e); }
-
-    try {
-      const r = await fetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } });
-      const loc = r.headers.get("location");
-      if (loc && loc.startsWith("http") && loc !== link && isClean(loc)) {
-        return res.status(200).json({ result: loc, source: "redirect" });
-      }
-    } catch {}
 
     res.status(200).json({ result: link, source: "original", warning: "Klik bypass lagi." });
     return;
@@ -302,13 +335,7 @@ function mainPage(wa) {
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-:root{
-  --pink:#e03c8a;--pink2:#ff5fa8;--purple:#9b4de0;--purple2:#b070f0;
-  --cyan:#00d4ff;--green:#00e87a;--red:#ff5566;
-  --bg:#05050b;--bg1:#0a0a14;--bg2:#0f0f1a;--bg3:#16162a;--bg4:#1e1e38;
-  --border:#ffffff10;--border2:#ffffff18;
-  --text:#f0f0f8;--muted:#8b8ba8;--dim:#5a5a78;
-}
+:root{--pink:#e03c8a;--pink2:#ff5fa8;--purple:#9b4de0;--cyan:#00d4ff;--green:#00e87a;--red:#ff5566;--bg:#05050b;--bg1:#0a0a14;--bg2:#0f0f1a;--bg3:#16162a;--border2:#ffffff18;--text:#f0f0f8;--muted:#8b8ba8;--dim:#5a5a78}
 html{scroll-behavior:smooth}
 body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;min-height:100vh;overflow-x:hidden;position:relative}
 body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;background:radial-gradient(circle at 15% 20%,rgba(224,60,138,0.15),transparent 45%),radial-gradient(circle at 85% 80%,rgba(155,77,224,0.15),transparent 45%),radial-gradient(circle at 50% 50%,rgba(0,212,255,0.05),transparent 60%)}
@@ -389,14 +416,7 @@ footer .heart{color:var(--pink)}
 #genPanel h3::before{content:'🔒';font-size:1rem;-webkit-text-fill-color:initial}
 #genPanel .close{position:absolute;top:16px;right:18px;cursor:pointer;color:var(--muted);font-size:24px;line-height:1;transition:color .2s;user-select:none}
 #genPanel .close:hover{color:var(--pink)}
-@media(max-width:480px){
-  .wrap{padding:20px 14px 40px}
-  .logo{font-size:2.4rem}
-  .card{padding:18px}
-  .qr-img,.qr-img-placeholder{width:96px;height:96px}
-  .price-badge{font-size:0.82rem;padding:6px 10px}
-  #ownerFab{width:42px;height:42px;bottom:16px;right:16px}
-}
+@media(max-width:480px){.wrap{padding:20px 14px 40px}.logo{font-size:2.4rem}.card{padding:18px}.qr-img,.qr-img-placeholder{width:96px;height:96px}.price-badge{font-size:0.82rem;padding:6px 10px}#ownerFab{width:42px;height:42px;bottom:16px;right:16px}}
 </style></head><body>
 <div class="wrap">
   <div class="hero">
@@ -422,12 +442,7 @@ footer .heart{color:var(--pink)}
         <img src="/qr.png" class="qr-img" alt="QR" onerror="this.outerHTML='<div class=qr-img-placeholder>QR<br>belum<br>tersedia</div>'">
         <div class="qr-info">
           <div class="price-badge">💰 Rp 500 / Key</div>
-          <div class="qr-steps">
-            ① Scan QR di kiri<br>
-            ② Transfer <span>Rp 500</span><br>
-            ③ Chat WA owner<br>
-            ④ Key otomatis dikirim
-          </div>
+          <div class="qr-steps">① Scan QR di kiri<br>② Transfer <span>Rp 500</span><br>③ Chat WA owner<br>④ Key otomatis dikirim</div>
         </div>
       </div>
       <div class="fmt-box">
@@ -485,131 +500,15 @@ footer .heart{color:var(--pink)}
 const WA_NUMBER="${wa}";
 let lastLookup={uid:null,name:null};
 let ownerPw=null;
-function switchTab(i){
-  document.querySelectorAll('.nav-btn').forEach((b,j)=>b.classList.toggle('active',i===j));
-  document.querySelectorAll('.panel').forEach((p,j)=>p.classList.toggle('active',i===j));
-}
-function updateWA(){
-  if(!lastLookup.name)return;
-  const text="Beli Key NANG%0ANama: "+encodeURIComponent(lastLookup.name)+"%0ARoblox ID: "+lastLookup.uid+"%0ABukti TF: [screenshot]";
-  document.getElementById('waBtn').href="https://wa.me/"+WA_NUMBER+"?text="+text;
-  document.getElementById('waNama').textContent=lastLookup.name;
-  document.getElementById('waUid').textContent=lastLookup.uid;
-}
-async function doLookup(){
-  const uid=document.getElementById('lookupId').value.trim();
-  const box=document.getElementById('lookupResult');
-  if(!uid)return;
-  box.style.display='block';box.className='result';
-  box.innerHTML='<span class="spinner"></span>Mencari...';
-  try{
-    const r=await fetch('/?lookup='+encodeURIComponent(uid));
-    const d=await r.json();
-    if(d.name){
-      lastLookup={uid:d.uid,name:d.name};updateWA();
-      box.style.display='none';
-      const existing=document.getElementById('userCard');
-      if(existing)existing.remove();
-      const card=document.createElement('div');
-      card.id='userCard';
-      card.className='user-card';
-      card.innerHTML='<div class="user-avatar">'+d.name.charAt(0).toUpperCase()+'</div><div class="user-info"><div class="user-name">'+d.name+'</div><div class="user-id">ID: '+d.uid+'</div></div>';
-      box.parentNode.insertBefore(card,box.nextSibling);
-    }else{
-      box.className='result err';
-      box.innerHTML='❌ User ID tidak ditemukan';
-    }
-  }catch(e){
-    box.className='result err';
-    box.innerHTML='❌ Error: '+e.message;
-  }
-}
-let lookupT;
-document.getElementById('lookupId').addEventListener('input',()=>{
-  clearTimeout(lookupT);lookupT=setTimeout(doLookup,600);
-});
+function switchTab(i){document.querySelectorAll('.nav-btn').forEach((b,j)=>b.classList.toggle('active',i===j));document.querySelectorAll('.panel').forEach((p,j)=>p.classList.toggle('active',i===j));}
+function updateWA(){if(!lastLookup.name)return;const text="Beli Key NANG%0ANama: "+encodeURIComponent(lastLookup.name)+"%0ARoblox ID: "+lastLookup.uid+"%0ABukti TF: [screenshot]";document.getElementById('waBtn').href="https://wa.me/"+WA_NUMBER+"?text="+text;document.getElementById('waNama').textContent=lastLookup.name;document.getElementById('waUid').textContent=lastLookup.uid;}
+async function doLookup(){const uid=document.getElementById('lookupId').value.trim();const box=document.getElementById('lookupResult');if(!uid)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Mencari...';try{const r=await fetch('/?lookup='+encodeURIComponent(uid));const d=await r.json();if(d.name){lastLookup={uid:d.uid,name:d.name};updateWA();box.style.display='none';const existing=document.getElementById('userCard');if(existing)existing.remove();const card=document.createElement('div');card.id='userCard';card.className='user-card';card.innerHTML='<div class="user-avatar">'+d.name.charAt(0).toUpperCase()+'</div><div class="user-info"><div class="user-name">'+d.name+'</div><div class="user-id">ID: '+d.uid+'</div></div>';box.parentNode.insertBefore(card,box.nextSibling);}else{box.className='result err';box.innerHTML='❌ User ID tidak ditemukan';}}catch(e){box.className='result err';box.innerHTML='❌ Error: '+e.message;}}
+let lookupT;document.getElementById('lookupId').addEventListener('input',()=>{clearTimeout(lookupT);lookupT=setTimeout(doLookup,600);});
 function openGen(){document.getElementById('genPanel').classList.add('show');}
-function closeGen(){
-  document.getElementById('genPanel').classList.remove('show');
-  document.getElementById('genPw').value='';
-  document.getElementById('genForm').style.display='none';
-  document.getElementById('genResult').style.display='none';
-  ownerPw=null;
-  document.getElementById('genPw').disabled=false;
-}
-document.getElementById('genPanel').addEventListener('click',(e)=>{
-  if(e.target.id==='genPanel')closeGen();
-});
-async function doLogin(){
-  const pw=document.getElementById('genPw').value;
-  if(!pw)return;
-  try{
-    const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:pw,uid:'1'})});
-    const d=await r.json();
-    if(d.error==='password salah'){
-      document.getElementById('genPw').value='';
-      document.getElementById('genPw').placeholder='password salah';
-    }else if(d.ok){
-      ownerPw=pw;
-      document.getElementById('genForm').style.display='block';
-      document.getElementById('genPw').disabled=true;
-    }
-  }catch(e){}
-}
-async function doGenerate(){
-  const uid=document.getElementById('genUid').value.trim();
-  const box=document.getElementById('genResult');
-  if(!uid||!ownerPw)return;
-  box.style.display='block';box.className='result';
-  box.innerHTML='<span class="spinner"></span>Generating...';
-  try{
-    const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:ownerPw,uid:uid})});
-    const d=await r.json();
-    if(d.ok){
-      box.className='result ok';
-      box.innerHTML='<b>Username:</b> '+(d.username||'Unknown')+
-        '<div class="key-line">'+d.key+'</div>'+
-        '<b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b>'+
-        '<a href="'+d.authLink+'" target="_blank" class="link-line">'+d.authLink+'</a>'+
-        '<button class="btn btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'✓ COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';
-    }else{
-      box.className='result err';
-      box.innerHTML=d.error||'Gagal';
-    }
-  }catch(e){
-    box.className='result err';
-    box.innerHTML='Error: '+e.message;
-  }
-}
-async function doBypass(){
-  const link=document.getElementById('bypassUrl').value.trim();
-  const box=document.getElementById('bypassResult');
-  if(!link)return;
-  box.style.display='block';box.className='result';
-  box.innerHTML='<span class="spinner"></span>Memproses (20-30 detik)...';
-  try{
-    const r=await fetch('/?bypass='+encodeURIComponent(link));
-    const d=await r.json();
-    if(d.result){
-      const url=d.result;
-      window._bypassUrl=url;
-      const cls=d.source==='original'?'warn':'ok';
-      box.className='result '+cls;
-      let label='✅ Bypass berhasil!';
-      if(d.source==='original')label='⚠ Belum selesai — klik bypass lagi:';
-      const src=d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'';
-      box.innerHTML=label+src+
-        '<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+
-        (d.source!=='original'?'<button class="btn btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'✓ COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+
-        (d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');
-    }else{
-      box.className='result err';
-      box.innerHTML='❌ '+(d.error||'Bypass gagal.');
-    }
-  }catch(e){
-    box.className='result err';
-    box.innerHTML='❌ Error: '+e.message;
-  }
-}
+function closeGen(){document.getElementById('genPanel').classList.remove('show');document.getElementById('genPw').value='';document.getElementById('genForm').style.display='none';document.getElementById('genResult').style.display='none';ownerPw=null;document.getElementById('genPw').disabled=false;}
+document.getElementById('genPanel').addEventListener('click',(e)=>{if(e.target.id==='genPanel')closeGen();});
+async function doLogin(){const pw=document.getElementById('genPw').value;if(!pw)return;try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:pw,uid:'1'})});const d=await r.json();if(d.error==='password salah'){document.getElementById('genPw').value='';document.getElementById('genPw').placeholder='password salah';}else if(d.ok){ownerPw=pw;document.getElementById('genForm').style.display='block';document.getElementById('genPw').disabled=true;}}catch(e){}}
+async function doGenerate(){const uid=document.getElementById('genUid').value.trim();const box=document.getElementById('genResult');if(!uid||!ownerPw)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Generating...';try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:ownerPw,uid:uid})});const d=await r.json();if(d.ok){box.className='result ok';box.innerHTML='<b>Username:</b> '+(d.username||'Unknown')+'<div class="key-line">'+d.key+'</div><b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b><a href="'+d.authLink+'" target="_blank" class="link-line">'+d.authLink+'</a><button class="btn btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'✓ COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';}else{box.className='result err';box.innerHTML=d.error||'Gagal';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
+async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Memproses...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='original'?'warn':'ok';box.className='result '+cls;let label='✅ Bypass berhasil!';if(d.source==='original')label='⚠ Belum selesai — klik bypass lagi:';const src=d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'';box.innerHTML=label+src+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'✓ COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML='❌ '+(d.error||'Bypass gagal.');}}catch(e){box.className='result err';box.innerHTML='❌ Error: '+e.message;}}
 </script></body></html>`;
 }
