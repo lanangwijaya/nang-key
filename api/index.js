@@ -115,19 +115,49 @@ ${genResult}
     return;
   }
 
-  // GET bypass (Syaa API)
+  // GET bypass (multi-API fallback)
   if (params.has("bypass")) {
     const link = params.get("bypass");
     if (!link) { res.json({ error: "no link" }); return; }
+
+    // Try Syaa API first
     try {
       const r = await fetch("https://syaabot.my.id/v1/bypass", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-API-Key": SYAA_KEY },
         body: JSON.stringify({ url: link })
       });
-      const d = await r.json();
-      res.json(d);
-    } catch (e) { res.json({ error: "bypass failed: " + e.message }); }
+      if (r.ok) {
+        const d = await r.json();
+        if (d.result || d.url || d.bypassed_url) { res.json(d); return; }
+      }
+    } catch {}
+
+    // Fallback: EvoBypass
+    try {
+      const r2 = await fetch("https://evobypasser.vercel.app/bypass?url=" + encodeURIComponent(link));
+      if (r2.ok) {
+        const d2 = await r2.json();
+        if (d2.result || d2.url || d2.bypassed_url || d2.destination) {
+          res.json({ result: d2.result || d2.url || d2.bypassed_url || d2.destination });
+          return;
+        }
+      }
+    } catch {}
+
+    // Fallback 2: bypass.vip
+    try {
+      const r3 = await fetch("https://bypass.vip/bypass?url=" + encodeURIComponent(link));
+      if (r3.ok) {
+        const d3 = await r3.json();
+        if (d3.result || d3.url || d3.destination) {
+          res.json({ result: d3.result || d3.url || d3.destination });
+          return;
+        }
+      }
+    } catch {}
+
+    res.json({ error: "Semua bypass gagal. Coba lagi nanti." });
     return;
   }
 
@@ -289,8 +319,9 @@ async function doBypass() {
     const d = await r.json();
     if (d.result || d.url || d.bypassed_url) {
       const url = d.result || d.url || d.bypassed_url;
+      window._bypassUrl = url;
       box.className='result-box ok';
-      box.innerHTML='✅ Bypass berhasil!<br><div style="margin-top:6px;background:#0a1a2a;padding:8px;border-radius:6px;border:1px solid #1a3d5d"><a href="'+url+'" target="_blank" style="color:#00ccff;word-break:break-all;font-size:0.8rem">'+url+'</a></div><button onclick="navigator.clipboard.writeText(\''+url.replace(/'/g,"\\'")+'\')" style="margin-top:8px;padding:6px 14px;background:#00ccff;color:#000;border:none;border-radius:6px;font-weight:bold;cursor:pointer;font-size:0.8rem">📋 Copy Link</button>';
+      box.innerHTML='✅ Bypass berhasil!<br><div style="margin-top:6px;background:#0a1a2a;padding:8px;border-radius:6px;border:1px solid #1a3d5d"><a href="'+url+'" target="_blank" style="color:#00ccff;word-break:break-all;font-size:0.8rem">'+url+'</a></div><button onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\'✅ Copied!\'" style="margin-top:8px;padding:6px 14px;background:#00ccff;color:#000;border:none;border-radius:6px;font-weight:bold;cursor:pointer;font-size:0.8rem">📋 Copy Link</button>';
     } else {
       box.className='result-box error';
       box.innerHTML='❌ '+(d.error||d.message||'Bypass gagal. Coba link lain.');
