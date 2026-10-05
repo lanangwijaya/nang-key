@@ -109,14 +109,14 @@ async function handle(req, res) {
     return;
   }
 
-  // ═══ BYPASS — FORCE ALL ═══
+  // ═══ BYPASS ═══
   if (params.has("bypass")) {
     const link = params.get("bypass");
     if(!link) { res.status(200).json({ error:"no link" }); return; }
     const low = link.toLowerCase();
     const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-    const WRAPPED = ["lootlabs","lootlinks","lootdest","platorelay","linkvertise","link-to.net","link-to","work.ink","sub2unlock","sub2get","playrole","adf.ly","exe.io","exey.io","shrinkme","shrinkearn","shorte.st","ouo.io","cuty.io","fc.lc","bc.vc","adfoc.us","rekonise","boost.ink","mboost.me","ytsubme","sub4unlock","social-unlock","letsboost","up-to-down","link1s","shrinke","clicksfly","mdiskshortner"];
+    const WRAPPED = ["lootlabs","lootlinks","lootdest","platorelay","platoboost","linkvertise","link-to.net","link-to","work.ink","sub2unlock","sub2get","playrole","adf.ly","exe.io","exey.io","shrinkme","shrinkearn","shorte.st","ouo.io","cuty.io","fc.lc","bc.vc","adfoc.us","rekonise","boost.ink","mboost.me","ytsubme","sub4unlock","social-unlock","letsboost","up-to-down"];
     const isClean = (u) => u && typeof u === "string" && u.startsWith("http") && !WRAPPED.some(s => u.toLowerCase().includes(s));
 
     // ── LAYER 1: API bypass (cepat) ──
@@ -169,27 +169,28 @@ async function handle(req, res) {
       } catch(e) { console.error(layer.name+":", e); }
     }
 
-    // ── LAYER 2: Browserless — force semua shortlink yang gak tembus API ──
-    const forceBrowser = true; // SELALU coba browserless
-    if (forceBrowser) {
-      try {
-        const isLV = low.includes("linkvertise") || low.includes("link-to") || low.includes("work.ink");
-        const isLoot = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest");
-        const isPR = low.includes("platorelay");
+    // ── LAYER 2: Browserless ──
+    try {
+      const isLV = low.includes("linkvertise") || low.includes("link-to") || low.includes("work.ink");
+      const isLoot = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest");
+      const isPR = low.includes("platorelay") || low.includes("platoboost");
 
-        const browserScript = `
+      const browserScript = `
 export default async function ({ page, context }) {
   const url = context.url;
   const low = url.toLowerCase();
   const isLV = ${isLV};
   const isLoot = ${isLoot};
   const isPR = ${isPR};
-  const WRAPPED = ["lootlabs","lootlinks","lootdest","platorelay","linkvertise","link-to","work.ink","sub2unlock","sub2get","playrole","ouo.io","exe.io","shrinkme"];
+  const WRAPPED = ["lootlabs","lootlinks","lootdest","platorelay","platoboost","linkvertise","link-to","work.ink","sub2unlock","sub2get","playrole","ouo.io","exe.io","shrinkme"];
+  const LEGAL = ["/legal","/report","/terms","/privacy","/abuse","/contact","/dmca","/policy","/copyright"];
   const isWrapped = (u) => WRAPPED.some(s => u.toLowerCase().includes(s));
+  const isLegal = (u) => LEGAL.some(s => u.toLowerCase().includes(s));
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
   async function clickAll(pats) {
     return page.evaluate((patterns) => {
+      const BLACKLIST = ["report","legal","abuse","terms","privacy","contact","help","faq","support","dmca","policy","copyright","about","blog","login","signup","register","logout","facebook","twitter","instagram","discord","telegram","youtube","tiktok","share","tweet","reddit","cookie","ads"];
       let n = 0;
       const els = document.querySelectorAll("button, a, [role=button], [onclick], input[type=submit], input[type=button], .btn, .button, div[onclick], span[onclick]");
       els.forEach(el => {
@@ -198,6 +199,10 @@ export default async function ({ page, context }) {
           const s = window.getComputedStyle(el);
           if (s.display === "none" || s.visibility === "hidden" || parseFloat(s.opacity) < 0.1) return;
           const t = (el.textContent || el.value || "").toLowerCase().trim();
+          const href = (el.href || "").toLowerCase();
+          if (BLACKLIST.some(b => t.includes(b) || href.includes(b))) return;
+          const rect = el.getBoundingClientRect();
+          if (rect.width < 20 || rect.height < 20) return;
           if (patterns.some(p => t.includes(p))) {
             try { el.scrollIntoView({block:"center",behavior:"instant"}); el.click(); n++; } catch {}
           }
@@ -211,7 +216,6 @@ export default async function ({ page, context }) {
     await page.evaluate(() => {
       try {
         document.querySelectorAll("[id*=countdown],[class*=countdown],[id*=timer],[class*=timer],[id*=wait],[class*=wait],[data-countdown]").forEach(el => { try { el.remove(); } catch {} });
-        // Force any disabled button to enabled
         document.querySelectorAll("button[disabled],[class*=disabled],.btn-disabled").forEach(el => {
           try { el.disabled = false; el.removeAttribute("disabled"); el.classList.remove("disabled"); el.classList.remove("btn-disabled"); } catch {}
         });
@@ -227,35 +231,47 @@ export default async function ({ page, context }) {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 35000 });
     await sleep(4500);
 
-    // Linkvertise flow
     if (isLV) {
       for (let i = 0; i < 20; i++) {
         await page.evaluate(() => { try { window.scrollTo(0, document.body.scrollHeight * (0.3 + Math.random()*0.4)); } catch {} });
         await sleep(700);
         await clickAll(["free access","continue","get link","visit","proceed","go to link","next","skip","lanjut","unlock","claim","downl"]);
         await sleep(2200);
-        const cur = page.url();
+        let cur = page.url();
+        if (isLegal(cur)) {
+          try { await page.goBack({ waitUntil: "domcontentloaded", timeout: 5000 }); } catch {}
+          await sleep(2000);
+          cur = page.url();
+        }
         if (!isWrapped(cur)) return { url: cur, status: "resolved" };
       }
     } else {
-      // LootLabs / platorelay / generic
       for (let i = 0; i < 14; i++) {
         if (isPR || isLoot) await killTimers();
         await clickAll(["continue","get link","unlock","proceed","go to link","visit","next","free access","lanjut","claim","go","enter","dapatkan","klik","tap","hold","press"]);
         await sleep(2400);
-        const cur = page.url();
+        let cur = page.url();
+        if (isLegal(cur)) {
+          try { await page.goBack({ waitUntil: "domcontentloaded", timeout: 5000 }); } catch {}
+          await sleep(2000);
+          cur = page.url();
+        }
         if (!isWrapped(cur)) return { url: cur, status: "resolved" };
       }
     }
 
     await sleep(7000);
-    const finalUrl = page.url();
+    let finalUrl = page.url();
+    if (isLegal(finalUrl)) {
+      try { await page.goBack({ waitUntil: "domcontentloaded", timeout: 5000 }); } catch {}
+      await sleep(2000);
+      finalUrl = page.url();
+    }
     if (!isWrapped(finalUrl)) return { url: finalUrl, status: "resolved" };
 
-    // Cari link keluar di DOM
     const found = await page.evaluate(() => {
       const links = [...document.querySelectorAll("a[href^=http]")];
-      const clean = links.find(a => !/lootlabs|lootlinks|platorelay|linkvertise|link-to|work\\.ink|sub2unlock|sub2get|playrole|google|cloudflare|discord|facebook|twitter|t\\.co/.test(a.href));
+      const clean = links.find(a => !/lootlabs|lootlinks|platorelay|platoboost|linkvertise|link-to|work\\.ink|sub2unlock|sub2get|playrole|google|cloudflare|discord|facebook|twitter|t\\.co|legal|report|terms|privacy/i.test(a.href));
       return clean ? clean.href : null;
     });
     if (found) return { url: found, status: "resolved" };
@@ -266,26 +282,24 @@ export default async function ({ page, context }) {
   }
 }`;
 
-        const r = await fetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=90000", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code: browserScript, context: { url: link } }),
-        });
+      const r = await fetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=90000", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: browserScript, context: { url: link } }),
+      });
 
-        if (r.ok) {
-          const d = await r.json();
-          if (isClean(d && d.url)) {
-            res.status(200).json({ result: d.url, source: "browserless" });
-            return;
-          }
-          if (d && d.status === "error") console.error("Browserless error:", d.error);
-        } else {
-          console.error("Browserless HTTP", r.status, (await r.text()).slice(0, 300));
+      if (r.ok) {
+        const d = await r.json();
+        if (isClean(d && d.url)) {
+          res.status(200).json({ result: d.url, source: "browserless" });
+          return;
         }
-      } catch (e) { console.error("Browserless:", e); }
-    }
+        if (d && d.status === "error") console.error("Browserless error:", d.error);
+      } else {
+        console.error("Browserless HTTP", r.status, (await r.text()).slice(0, 300));
+      }
+    } catch (e) { console.error("Browserless:", e); }
 
-    // ── LAYER 3: HEAD redirect ──
     try {
       const r = await fetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } });
       const loc = r.headers.get("location");
