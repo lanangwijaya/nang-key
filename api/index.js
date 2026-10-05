@@ -244,13 +244,34 @@ async function handle(req, res) {
         });
         if (r.ok) {
           const d = await r.json();
-          if (d && d.url && typeof d.url === "string" && d.url.startsWith("http") && !d.url.includes("lootlabs") && !d.url.includes("lootlinks") && !d.url.includes("platorelay")) {
+          const isClean = (u) => u && typeof u === "string" && u.startsWith("http") && !u.includes("lootlabs") && !u.includes("lootlinks") && !u.includes("lootdest") && !u.includes("platorelay");
+          if (isClean(d && d.url)) {
             res.status(200).json({ result: d.url, source: "browserless" });
             return;
           }
-          if (d && d.status === "still_wrapped") {
-            res.status(200).json({ result: link, source: "original", warning: "Masih ke-wrap. Klik bypass lagi 1-2x." });
-            return;
+          // Auto-retry sekali lagi kalau masih wrapped
+          if (d && (d.status === "still_wrapped" || d.status === "error")) {
+            try {
+              const r2 = await fetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=90000", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: (await (async () => { const prev = await r.clone().text().catch(() => ""); return prev; })()) || JSON.stringify({ code: "", context: { url: link } }),
+              }).catch(() => null);
+              // Retry dengan request body yang sama
+              const body2 = JSON.stringify({
+                code: `export default async function({page,context}){const url=context.url;const isPR=url.includes("platorelay");function sleep(ms){return new Promise(r=>setTimeout(r,ms));}try{await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");await page.setViewport({width:1366,height:768});await page.setRequestInterception(true);page.on("request",req=>{const u=req.url().toLowerCase();if(["google-analytics","googlesyndication","adsbygoogle","doubleclick","pagead","hotjar"].some(p=>u.includes(p))){req.abort();return;}req.continue();});await page.goto(url,{waitUntil:"domcontentloaded",timeout:35000});await sleep(5000);await page.evaluate(()=>{try{window.setTimeout=(fn,d,...a)=>window._origST?window._origST(fn,Math.min(d||0,50),...a):fn();document.querySelectorAll("button[disabled],[data-countdown],[class*='countdown'],[class*='timer'],[id*='countdown'],[id*='timer']").forEach(el=>{try{el.disabled=false;el.removeAttribute('disabled');el.classList.remove('disabled');}catch{}});}catch{}});await sleep(2000);for(let i=0;i<10;i++){await page.evaluate(()=>{document.querySelectorAll("button,a,[role='button'],[onclick],input[type='submit']").forEach(el=>{if(el.disabled)return;const s=window.getComputedStyle(el);if(s.display==='none'||s.visibility==='hidden')return;const t=(el.textContent||el.value||"").toLowerCase();if(["continue","get link","unlock","proceed","go to","visit","lanjut","claim","get","next","done","finish","open","dapatkan","klik","access","go","enter"].some(p=>t.includes(p))){try{el.click();}catch{}}});});await sleep(i<5?2000:3500);if(isPR)await page.evaluate(()=>{try{document.querySelectorAll("[class*='countdown'],[class*='timer'],[id*='countdown'],[id*='timer'],[class*='wait']").forEach(el=>{try{el.remove();}catch{}});}catch{}});const cur=page.url();if(!cur.includes("platorelay")&&!cur.includes("lootlabs")&&!cur.includes("lootlinks"))break;}if(isPR)await sleep(10000);const finalUrl=page.url();const isClean=!finalUrl.includes("platorelay")&&!finalUrl.includes("lootlabs")&&!finalUrl.includes("lootlinks");if(isClean)return{url:finalUrl,status:"resolved"};const found=await page.evaluate(()=>{const a=document.querySelector("a[href^='http']:not([href*='platorelay']):not([href*='lootlabs']):not([href*='google']):not([href*='cloudflare']):not([href*='discord'])");return a?a.href:null;});return{url:found||finalUrl,status:found?"resolved":"failed"};}catch(e){return{url:url,status:"error",error:String(e.message||e)};}}`,
+                context: { url: link },
+              });
+              const r2b = await fetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=90000", {
+                method: "POST", headers: { "Content-Type": "application/json" }, body: body2,
+              });
+              if (r2b.ok) {
+                const d2 = await r2b.json();
+                if (isClean(d2 && d2.url)) {
+                  res.status(200).json({ result: d2.url, source: "browserless" });
+                  return;
+                }
+              }
+            } catch (e2) { console.error("Browserless retry:", e2); }
           }
           if (d && d.status === "error") console.error("Browserless error:", d.error);
         } else {
