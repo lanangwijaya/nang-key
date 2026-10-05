@@ -128,41 +128,115 @@ async function handle(req, res) {
     // LAYER 1: Browserless
     if (needBrowser) {
       try {
-        const r = await fetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=60000", {
+        const r = await fetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=90000", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             code: `export default async function ({ page, context }) {
               const startUrl = context.url;
+              const isPlatorelay = startUrl.toLowerCase().includes("platorelay");
+              const isLoot = startUrl.toLowerCase().includes("lootlabs") || startUrl.toLowerCase().includes("lootlinks") || startUrl.toLowerCase().includes("lootdest");
+              function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+              async function clickButtons(pg) {
+                return pg.evaluate(() => {
+                  let clicked = 0;
+                  const els = document.querySelectorAll("button, a, [role='button'], [onclick], input[type='submit'], input[type='button']");
+                  els.forEach(el => {
+                    if (el.disabled) return;
+                    const style = window.getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return;
+                    const t = (el.textContent || el.value || "").toLowerCase().trim();
+                    const patterns = ["continue","get link","unlock","proceed","go to link","visit","lanjut","claim","get","next","done","finish","complete","open","dapatkan","klik di sini","klik","click here","access","go","enter"];
+                    if (patterns.some(p => t.includes(p))) {
+                      try { el.click(); clicked++; } catch {}
+                    }
+                  });
+                  return clicked;
+                });
+              }
+              async function skipCountdown(pg) {
+                // Try to force-skip timers by overriding setTimeout/setInterval on the page
+                await pg.evaluate(() => {
+                  try {
+                    // Override timers to expire immediately
+                    const orig = window.setTimeout;
+                    window.setTimeout = (fn, delay, ...args) => orig(fn, Math.min(delay || 0, 100), ...args);
+                    window.setInterval = (fn, delay, ...args) => {
+                      const id = orig(fn, Math.min(delay || 0, 100), ...args);
+                      return id;
+                    };
+                    // Try to find and click hidden/disabled buttons that become enabled after countdown
+                    document.querySelectorAll("button[disabled], a.disabled, .btn-disabled, [data-countdown]").forEach(el => {
+                      try {
+                        el.disabled = false;
+                        el.classList.remove('disabled');
+                        el.removeAttribute('disabled');
+                        el.click();
+                      } catch {}
+                    });
+                    // platorelay specific: look for countdown containers and remove them
+                    document.querySelectorAll("[id*='countdown'], [class*='countdown'], [id*='timer'], [class*='timer'], [id*='wait'], [class*='wait']").forEach(el => {
+                      try { el.style.display = 'none'; el.remove(); } catch {}
+                    });
+                  } catch {}
+                });
+              }
+              async function grabFinalUrl(pg) {
+                const cur = pg.url();
+                if (!cur.includes("platorelay") && !cur.includes("lootlabs") && !cur.includes("lootlinks") && !cur.includes("lootdest")) return cur;
+                // Try to find destination link in DOM
+                const found = await pg.evaluate(() => {
+                  const selectors = [
+                    "a[href^='http']:not([href*='platorelay']):not([href*='lootlabs']):not([href*='lootlinks']):not([href*='google']):not([href*='cloudflare']):not([href*='discord']):not([href*='facebook']):not([href*='twitter']):not([href*='t.co'])",
+                    "[data-url]", "[data-href]", "[data-link]", "input[type='hidden'][name*='url']", "input[type='hidden'][name*='link']"
+                  ];
+                  for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el) {
+                      const v = el.href || el.getAttribute("data-url") || el.getAttribute("data-href") || el.getAttribute("data-link") || el.value || "";
+                      if (v && v.startsWith("http")) return v;
+                    }
+                  }
+                  // Check page source for redirect patterns
+                  const scripts = [...document.querySelectorAll("script")].map(s => s.textContent || "").join(" ");
+                  const m = scripts.match(/(?:redirect|destination|final_url|target_url|go_url)['":\\s]+["'](https?:\/\/[^"']+)/i);
+                  if (m) return m[1];
+                  return null;
+                });
+                return found || cur;
+              }
               try {
                 await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
                 await page.setViewport({ width: 1366, height: 768 });
-                await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 25000 });
-                await new Promise(r => setTimeout(r, 5000));
-                for (let i = 0; i < 6; i++) {
-                  await page.evaluate(() => {
-                    const els = document.querySelectorAll("button, a, [role='button'], [onclick]");
-                    els.forEach(el => {
-                      const t = (el.textContent || "").toLowerCase().trim();
-                      if (t.includes("continue") || t.includes("get link") || t.includes("unlock") || t.includes("proceed") || t.includes("go to link") || t.includes("visit") || t.includes("lanjut")) {
-                        try { el.click(); } catch {}
-                      }
-                    });
-                  });
-                  await new Promise(r => setTimeout(r, 2500));
+                // Block ads/tracking to speed up
+                await page.setRequestInterception(true);
+                page.on("request", req => {
+                  const url = req.url().toLowerCase();
+                  const blockPatterns = ["google-analytics","googletagmanager","doubleclick","googlesyndication","adsbygoogle","amazon-adsystem","pagead","moatads","adsrvr","advertising","analytics","tracker","hotjar","fbevents","ga.js","gtag","clarity.ms"];
+                  if (blockPatterns.some(p => url.includes(p))) { req.abort(); return; }
+                  req.continue();
+                });
+                await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+                await sleep(isPlatorelay ? 3000 : 4000);
+                // platorelay: try to skip countdown immediately
+                if (isPlatorelay) await skipCountdown(page);
+                await sleep(1500);
+                // Click through multiple rounds
+                for (let i = 0; i < 8; i++) {
+                  const clicked = await clickButtons(page);
+                  await sleep(i < 3 ? 2000 : 3000);
+                  if (isPlatorelay && i % 2 === 1) await skipCountdown(page);
+                  const cur = page.url();
+                  if (!cur.includes("platorelay") && !cur.includes("lootlabs") && !cur.includes("lootlinks")) break;
                 }
-                await new Promise(r => setTimeout(r, 8000));
-                let finalUrl = page.url();
-                if (finalUrl.includes("lootlabs") || finalUrl.includes("lootlinks") || finalUrl.includes("platorelay")) {
-                  const href = await page.evaluate(() => {
-                    const a = document.querySelector("a[href^='http']:not([href*='lootlabs']):not([href*='lootlinks']):not([href*='platorelay']):not([href*='google']):not([href*='cloudflare']):not([href*='discord'])");
-                    return a ? a.href : null;
-                  });
-                  return { url: href || finalUrl, status: href ? "resolved" : "still_wrapped" };
-                }
-                return { url: finalUrl, status: "resolved" };
+                // Wait extra for platorelay (sometimes needs timer to fully expire)
+                if (isPlatorelay) await sleep(8000);
+                await sleep(isLoot ? 6000 : 3000);
+                const finalUrl = await grabFinalUrl(page);
+                const isCleaned = !finalUrl.includes("platorelay") && !finalUrl.includes("lootlabs") && !finalUrl.includes("lootlinks") && !finalUrl.includes("lootdest");
+                return { url: finalUrl, status: isCleaned ? "resolved" : "still_wrapped" };
               } catch (e) {
-                return { url: startUrl, status: "error", error: String(e) };
+                return { url: startUrl, status: "error", error: String(e.message || e) };
               }
             }`,
             context: { url: link },
