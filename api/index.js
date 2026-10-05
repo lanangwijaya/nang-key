@@ -168,6 +168,10 @@ button.primary:hover{opacity:.9}
 .result-box{background:#0a1a0a;border:1px solid #1a3d1a;border-radius:8px;padding:10px;font-size:0.8rem;color:#ccc;margin-top:8px;display:none;word-break:break-all}
 .result-box.error{background:#1a0a0a;border-color:#3d1a1a;color:#ff6666}
 .result-box.ok{background:#0a1a0a;border-color:#1a3d1a;color:#00ff88}
+.supported-box{background:#0d1020;border:1px solid #1a2a3d;border-radius:8px;padding:10px;margin-bottom:10px}
+.sup-title{font-size:0.75rem;color:#888;margin-bottom:8px}
+.sup-tags{display:flex;flex-wrap:wrap;gap:5px}
+.tag{background:#1a2a3d;color:#00ccff;font-size:0.7rem;padding:3px 8px;border-radius:20px;border:1px solid #1a3d5d}
 .spinner{display:inline-block;width:16px;height:16px;border:2px solid #333;border-top-color:#00ff88;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
 footer{margin-top:30px;color:#333;font-size:0.75rem;text-align:center}
@@ -175,7 +179,7 @@ footer{margin-top:30px;color:#333;font-size:0.75rem;text-align:center}
 </head>
 <body>
 <div class="logo">NANG</div>
-<div class="sub">Key System · Yahiko x Garuda Community</div>
+<div class="sub">Key System · NANG Tool</div>
 
 <div class="tabs">
   <button class="tab active" onclick="switchTab(0)">🛒 Beli Key</button>
@@ -212,14 +216,37 @@ footer{margin-top:30px;color:#333;font-size:0.75rem;text-align:center}
 <div class="panel" id="tab1">
   <div class="card">
     <h3>🔓 Bypass Shortlink</h3>
-    <p style="font-size:0.8rem;color:#888;margin-bottom:10px">Bypass linkvertise, lootdest, dll</p>
-    <input type="text" id="bypassUrl" placeholder="https://linkvertise.com/...">
-    <button class="primary" onclick="doBypass()">Bypass Sekarang</button>
+    <div class="supported-box">
+      <div class="sup-title">✅ Link yang didukung:</div>
+      <div class="sup-tags">
+        <span class="tag">Linkvertise</span>
+        <span class="tag">Lootlabs</span>
+        <span class="tag">Lootdest</span>
+        <span class="tag">Playrole</span>
+        <span class="tag">Sub2Unlock</span>
+        <span class="tag">Work.ink</span>
+        <span class="tag">Flux.li</span>
+        <span class="tag">Paste.to</span>
+        <span class="tag">Direct.lc</span>
+        <span class="tag">Pastebin</span>
+      </div>
+    </div>
+    <input type="text" id="bypassUrl" placeholder="Paste link di sini...">
+    <button class="primary" onclick="doBypass()">⚡ Bypass Sekarang</button>
     <div class="result-box" id="bypassResult"></div>
+  </div>
+  <div class="card">
+    <h3>📋 Cara Pakai</h3>
+    <div class="info-box">
+      1. Copy link dari game/script Roblox<br>
+      2. Paste di kolom di atas<br>
+      3. Klik Bypass Sekarang<br>
+      4. Copy link hasil bypass ✅
+    </div>
   </div>
 </div>
 
-<footer>NANG RBXM Tool · Yahiko x Garuda Community</footer>
+<footer>NANG RBXM Tool</footer>
 
 <script>
 function switchTab(i) {
@@ -263,10 +290,10 @@ async function doBypass() {
     if (d.result || d.url || d.bypassed_url) {
       const url = d.result || d.url || d.bypassed_url;
       box.className='result-box ok';
-      box.innerHTML='✅ Berhasil!<br><a href="'+url+'" target="_blank" style="color:#00ccff">'+url+'</a>';
+      box.innerHTML='✅ Bypass berhasil!<br><div style="margin-top:6px;background:#0a1a2a;padding:8px;border-radius:6px;border:1px solid #1a3d5d"><a href="'+url+'" target="_blank" style="color:#00ccff;word-break:break-all;font-size:0.8rem">'+url+'</a></div><button onclick="navigator.clipboard.writeText(\''+url.replace(/'/g,"\\'")+'\')" style="margin-top:8px;padding:6px 14px;background:#00ccff;color:#000;border:none;border-radius:6px;font-weight:bold;cursor:pointer;font-size:0.8rem">📋 Copy Link</button>';
     } else {
       box.className='result-box error';
-      box.innerHTML='❌ '+(d.error||d.message||'Bypass gagal');
+      box.innerHTML='❌ '+(d.error||d.message||'Bypass gagal. Coba link lain.');
     }
   } catch(e) {
     box.className='result-box error';
