@@ -10,18 +10,12 @@ function lz4DecompressBlock(input, expectedSize) {
     const token = input[ip++];
     let litLen = token >> 4;
     let matchLen = (token & 0x0F) + 4;
-    if (litLen === 15) {
-      let b;
-      do { b = input[ip++]; litLen += b; } while (b === 255);
-    }
+    if (litLen === 15) { let b; do { b = input[ip++]; litLen += b; } while (b === 255); }
     for (let i = 0; i < litLen; i++) out[op++] = input[ip++];
     if (op >= expectedSize) break;
     const offset = input[ip] | (input[ip + 1] << 8);
     ip += 2;
-    if (matchLen === 19) {
-      let b;
-      do { b = input[ip++]; matchLen += b; } while (b === 255);
-    }
+    if (matchLen === 19) { let b; do { b = input[ip++]; matchLen += b; } while (b === 255); }
     const matchStart = op - offset;
     for (let i = 0; i < matchLen; i++) out[op++] = out[matchStart + i];
   }
@@ -30,26 +24,19 @@ function lz4DecompressBlock(input, expectedSize) {
 
 function parseChunks(buf) {
   const hdr = buf.slice(0, 8).toString("binary");
-  if (hdr !== "<roblox!" && hdr !== "<roblox ") throw new Error("Bukan binary Roblox");
+  if (hdr !== "<roblox!" && hdr !== "<roblox ") throw new Error("Bukan file binary Roblox");
   if (!buf.slice(8, 14).equals(RBXM_MAGIC)) throw new Error("Binary magic salah");
-
   let off = 16;
-  const classCount = buf.readUInt32LE(off); off += 4;
-  const instCount = buf.readUInt32LE(off); off += 4;
-  off += 8;
-
+  off += 4; off += 4; off += 8;
   const chunks = [];
-  const validNames = new Set(["META", "SSTR", "INST", "PROP", "PRNT", "SIGN", "END\u0000"]);
-
+  const validNames = new Set(["META","SSTR","INST","PROP","PRNT","SIGN","END\u0000"]);
   while (off + 16 <= buf.length) {
     const name = buf.slice(off, off + 4).toString("binary");
     off += 4;
     if (!validNames.has(name)) throw new Error("Chunk header unknown: " + JSON.stringify(name));
-
     const compLen = buf.readUInt32LE(off); off += 4;
     const decompLen = buf.readUInt32LE(off); off += 4;
     off += 4;
-
     let data;
     if (compLen === 0) {
       data = buf.slice(off, off + decompLen);
@@ -71,8 +58,6 @@ class Reader {
   constructor(buf) { this.buf = buf; this.off = 0; }
   u8()  { return this.buf[this.off++]; }
   u32() { const v = this.buf.readUInt32LE(this.off); this.off += 4; return v; }
-  i32le() { const v = this.buf.readInt32LE(this.off); this.off += 4; return v; }
-  f32le() { const v = this.buf.readFloatLE(this.off); this.off += 4; return v; }
   f64le() { const v = this.buf.readDoubleLE(this.off); this.off += 8; return v; }
   bytes(n) { const s = this.buf.slice(this.off, this.off + n); this.off += n; return s; }
   skip(n) { this.off += n; }
@@ -82,19 +67,12 @@ class Reader {
     this.off += len;
     return s.replace(/\0+$/, "");
   }
-  eof() { return this.off >= this.buf.length; }
 }
 
-// ═══════════════════════════════════════════
-// INTERLEAVED ARRAYS — Roblox transpose order
-// out[i*size + s] = raw[s*count + i]
-// ═══════════════════════════════════════════
 function deinterleave(raw, count, size) {
   const out = Buffer.alloc(count * size);
   for (let i = 0; i < count; i++) {
-    for (let s = 0; s < size; s++) {
-      out[i * size + s] = raw[s * count + i];
-    }
+    for (let s = 0; s < size; s++) out[i * size + s] = raw[s * count + i];
   }
   return out;
 }
@@ -134,80 +112,39 @@ function readRefArray(reader, count) {
   return out;
 }
 
-// ═══════════════════════════════════════════
-// PROPERTY TYPE SKIP TABLE
-// fixed-size types: bytes per value
-// ═══════════════════════════════════════════
 const FIXED_SIZE = {
-  0x02: 1,   // Bool
-  0x03: 4,   // Int32
-  0x04: 4,   // Float32
-  0x05: 8,   // Float64
-  0x06: 8,   // UDim (2 floats)
-  0x07: 16,  // UDim2 (4 floats)
-  0x08: 24,  // Ray (Vector3 + Vector3)
-  0x09: 1,   // Faces
-  0x0A: 1,   // Axes
-  0x0B: 4,   // BrickColor
-  0x0C: 12,  // Color3 (3 floats)
-  0x0D: 8,   // Vector2
-  0x0E: 12,  // Vector3
-  0x0F: 4,   // Vector2int16
-  0x10: 48,  // CFrame (12 floats)
-  0x11: 16,  // Quaternion
-  0x12: 4,   // Enum
-  0x13: 4,   // Ref
-  0x14: 6,   // Vector3int16
-  0x17: 8,   // NumberRange
-  0x18: 16,  // Rect
-  0x1A: 3,   // Color3uint8
-  0x1B: 8,   // Int64
-  0x1C: 4,   // SharedString (index)
+  0x02: 1, 0x03: 4, 0x04: 4, 0x05: 8, 0x06: 8, 0x07: 16,
+  0x08: 24, 0x09: 1, 0x0A: 1, 0x0B: 4, 0x0C: 12, 0x0D: 8,
+  0x0E: 12, 0x0F: 4, 0x10: 48, 0x11: 16, 0x12: 4, 0x13: 4,
+  0x14: 6, 0x17: 8, 0x18: 16, 0x1A: 3, 0x1B: 8, 0x1C: 4,
 };
 
-// variable-size types handled one at a time
 function skipVariable(reader, typeByte, count) {
-  if (typeByte === 0x01 || typeByte === 0x1D) {
-    // String / ProtectedString
-    for (let i = 0; i < count; i++) reader.string();
-    return;
-  }
+  if (typeByte === 0x01 || typeByte === 0x1D) { for (let i = 0; i < count; i++) reader.string(); return; }
   if (typeByte === 0x15) {
-    // NumberSequence
     for (let i = 0; i < count; i++) {
       const has = reader.u8();
-      if (has) {
-        const kc = reader.u32();
-        reader.skip(kc * 12);
-      }
+      if (has) { const kc = reader.u32(); reader.skip(kc * 12); }
     }
     return;
   }
   if (typeByte === 0x16) {
-    // ColorSequence
     for (let i = 0; i < count; i++) {
       const has = reader.u8();
-      if (has) {
-        const kc = reader.u32();
-        reader.skip(kc * 20);
-      }
+      if (has) { const kc = reader.u32(); reader.skip(kc * 20); }
     }
     return;
   }
   if (typeByte === 0x19) {
-    // PhysicalProperties
     for (let i = 0; i < count; i++) {
       const has = reader.u8();
-      if (has) reader.skip(20); // density, friction, elasticity, frictionWeight, elasticityWeight (5 floats)
+      if (has) reader.skip(20);
     }
     return;
   }
   throw new Error("unknown variable type 0x" + typeByte.toString(16));
 }
 
-// ═══════════════════════════════════════════
-// DECODE CHUNKS
-// ═══════════════════════════════════════════
 function decodeINST(chunkBuf) {
   const r = new Reader(chunkBuf);
   const classId = r.u32();
@@ -218,8 +155,7 @@ function decodeINST(chunkBuf) {
   return { classId, className, isService, refs };
 }
 
-// We only care about these props for RBXLX output. Others are skipped but counted.
-const KEEP_STRINGS = new Set(["Name", "Source", "ContentText"]);
+const KEEP_STRINGS = new Set(["Name","Source","ContentText"]);
 
 function decodePROP(chunkBuf, classDefs) {
   const r = new Reader(chunkBuf);
@@ -229,15 +165,10 @@ function decodePROP(chunkBuf, classDefs) {
   const sizeof = classDef.refs.length;
   const propName = r.string();
   const typeByte = r.u8();
-
   const values = [];
   const keep = KEEP_STRINGS.has(propName);
-
   if (typeByte === 0x01 || typeByte === 0x1D) {
-    for (let i = 0; i < sizeof; i++) {
-      const s = r.string();
-      values.push(s);
-    }
+    for (let i = 0; i < sizeof; i++) values.push(r.string());
   } else if (typeByte === 0x02) {
     for (let i = 0; i < sizeof; i++) values.push(r.u8() !== 0);
   } else if (typeByte === 0x03) {
@@ -249,25 +180,16 @@ function decodePROP(chunkBuf, classDefs) {
   } else if (typeByte === 0x13) {
     values.push(...readRefArray(r, sizeof));
   } else {
-    // skip everything else properly
     const fixed = FIXED_SIZE[typeByte];
-    if (fixed !== undefined) {
-      r.skip(sizeof * fixed);
-    } else {
-      skipVariable(r, typeByte, sizeof);
-    }
+    if (fixed !== undefined) r.skip(sizeof * fixed);
+    else skipVariable(r, typeByte, sizeof);
   }
-
   return { classId, refs: classDef.refs, propName, props: values, kept: keep };
 }
 
-// ═══════════════════════════════════════════
-// XML EMIT
-// ═══════════════════════════════════════════
 function esc(s) {
   if (typeof s !== "string") return String(s);
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
 
 let REF = 0;
@@ -275,17 +197,13 @@ function nextRef() { return "RBX" + (REF++).toString(36).toUpperCase(); }
 
 function emitProp(name, value) {
   if (value === null || value === undefined) return "";
-  if (typeof value === "boolean") {
-    return `<bool name="${esc(name)}">${value ? "true" : "false"}</bool>`;
-  }
+  if (typeof value === "boolean") return `<bool name="${esc(name)}">${value ? "true" : "false"}</bool>`;
   if (typeof value === "number") {
     if (Number.isInteger(value)) return `<int name="${esc(name)}">${value}</int>`;
     return `<float name="${esc(name)}">${value}</float>`;
   }
   if (typeof value === "string") {
-    if (name === "Source" || name === "ContentText") {
-      return `<ProtectedString name="${esc(name)}"><![CDATA[${value}]]></ProtectedString>`;
-    }
+    if (name === "Source" || name === "ContentText") return `<ProtectedString name="${esc(name)}"><![CDATA[${value}]]></ProtectedString>`;
     return `<string name="${esc(name)}">${esc(value)}</string>`;
   }
   return "";
@@ -295,17 +213,14 @@ function emitItem(node, indent) {
   const pad = "  ".repeat(indent);
   const p2 = "  ".repeat(indent + 1);
   const p3 = "  ".repeat(indent + 2);
-
   let out = `${pad}<Item class="${esc(node.className)}" referent="${nextRef()}">\n`;
   out += `${p2}<Properties>\n`;
-
   const props = node.properties || {};
   if (props.Name === undefined) props.Name = node.className;
   for (const [k, v] of Object.entries(props)) {
     const line = emitProp(k, v);
     if (line) out += `${p3}${line}\n`;
   }
-
   out += `${p2}</Properties>\n`;
   for (const child of node.children || []) out += emitItem(child, indent + 1);
   out += `${pad}</Item>\n`;
@@ -335,9 +250,7 @@ function binaryToXml(buf) {
         const inst = instances.get(p.refs[i]);
         if (inst) inst.properties[p.propName] = p.props[i];
       }
-    } catch (e) {
-      console.warn("[convert] PROP skip:", e.message);
-    }
+    } catch (e) { console.warn("[convert] PROP skip:", e.message); }
   }
 
   for (const ch of chunks) {
@@ -382,14 +295,12 @@ export default async function handler(req, res) {
     const chunks = [];
     for await (const c of req) chunks.push(c);
     const body = Buffer.concat(chunks);
-
-    if (body.length < 32) { res.status(400).json({ error: "File kosong" }); return; }
+    if (body.length < 32) { res.status(400).json({ error: "File kosong / terlalu kecil" }); return; }
     const head = body.slice(0, 8).toString("binary");
     if (head !== "<roblox!" && head !== "<roblox ") {
       res.status(400).json({ error: "Bukan binary RBXL/RBXM. Header: " + JSON.stringify(head) });
       return;
     }
-
     const xml = binaryToXml(body);
     res.setHeader("Content-Type", "application/xml; charset=utf-8");
     res.setHeader("Content-Disposition", "attachment; filename=\"converted.rbxlx\"");
