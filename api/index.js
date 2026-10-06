@@ -71,15 +71,9 @@ async function handle(req, res) {
     let body = "";
     await new Promise(r => { req.on("data", c => body += c); req.on("end", r); });
 
-    // ── RBXL/RBXLX Import ──
     if (path === "/rbxl" || path === "/rbxl/") {
       try {
-        // Parse XML RBXLX → simplified JSON tree
         function parseRbxlx(xml) {
-          function getAttr(tag, attr) {
-            const m = tag.match(new RegExp(attr + '=["\']([^"\']*)["\']'));
-            return m ? m[1] : "";
-          }
           function parseValue(typeTag, content) {
             const t = typeTag.toLowerCase();
             if (t === "string" || t === "protectedstring") return content.replace(/<!\[CDATA\[|\]\]>/g, "").trim();
@@ -105,7 +99,6 @@ async function handle(req, res) {
             if (!classMatch) return null;
             const className = classMatch[1];
             const props = {};
-            // Parse properties block
             const propsMatch = itemXml.match(/<Properties>([\s\S]*?)<\/Properties>/);
             if (propsMatch) {
               const propsXml = propsMatch[1];
@@ -116,10 +109,8 @@ async function handle(req, res) {
                 if (val !== null && val !== undefined) props[m[2]] = val;
               }
             }
-            // Parse children
             const children = [];
             const childRe = /<Item class="[^"]*"[\s\S]*?<\/Item>/g;
-            // Remove properties block first to avoid false matches
             const withoutProps = itemXml.replace(/<Properties>[\s\S]*?<\/Properties>/, "");
             let cm;
             while ((cm = childRe.exec(withoutProps)) !== null) {
@@ -128,10 +119,8 @@ async function handle(req, res) {
             }
             return { class: className, properties: props, children };
           }
-          // Get top-level Items
           const items = [];
           const topRe = /<Item class="[^"]*"[\s\S]*?<\/Item>/g;
-          // Remove roblox wrapper
           const inner = xml.replace(/<roblox[^>]*>/, "").replace(/<\/roblox>/, "");
           let m;
           while ((m = topRe.exec(inner)) !== null) {
@@ -196,7 +185,6 @@ async function handle(req, res) {
     return;
   }
 
-  // ═══ BYPASS ═══
   if (params.has("bypass")) {
     const link = params.get("bypass");
     if (!link) { res.status(200).json({ error: "no link" }); return; }
@@ -206,8 +194,6 @@ async function handle(req, res) {
       !["lootlabs","lootlinks","lootdest","platorelay","linkvertise","work.ink","sub2unlock","sub2get","playrole"].some(s => u.toLowerCase().includes(s));
     const needBrowser = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest") || low.includes("platorelay") || low.includes("linkvertise") || low.includes("work.ink") || low.includes("sub2unlock") || low.includes("sub2get") || low.includes("playrole");
 
-    // ── LAYER 0: Dedicated API per platform (tercepat) ──
-    // Linkvertise → bypassall.lol
     if (low.includes("linkvertise") || low.includes("work.ink")) {
       try {
         const r = await fetch("https://bypassall.lol/api/bypass?url=" + encodeURIComponent(link), {
@@ -219,7 +205,6 @@ async function handle(req, res) {
           if (isCleanUrl(result)) { res.status(200).json({ result, source: "bypassall" }); return; }
         }
       } catch {}
-      // Fallback: bypass.bot for linkvertise
       try {
         const r = await fetch("https://bypass.bot.nu/bypass?url=" + encodeURIComponent(link), {
           headers: { "User-Agent": UA }
@@ -230,7 +215,6 @@ async function handle(req, res) {
           if (isCleanUrl(result)) { res.status(200).json({ result, source: "bypass.bot" }); return; }
         }
       } catch {}
-      // Fallback: linklm.com bypass API
       try {
         const r = await fetch("https://linklm.com/api/bypass?url=" + encodeURIComponent(link), {
           headers: { "User-Agent": UA, "Accept": "application/json" }
@@ -243,7 +227,6 @@ async function handle(req, res) {
       } catch {}
     }
 
-    // LAYER 1: Browserless
     if (needBrowser) {
       try {
         const r = await fetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=90000", {
@@ -276,17 +259,14 @@ async function handle(req, res) {
                 });
               }
               async function skipCountdown(pg) {
-                // Try to force-skip timers by overriding setTimeout/setInterval on the page
                 await pg.evaluate(() => {
                   try {
-                    // Override timers to expire immediately
                     const orig = window.setTimeout;
                     window.setTimeout = (fn, delay, ...args) => orig(fn, Math.min(delay || 0, 100), ...args);
                     window.setInterval = (fn, delay, ...args) => {
                       const id = orig(fn, Math.min(delay || 0, 100), ...args);
                       return id;
                     };
-                    // Try to find and click hidden/disabled buttons that become enabled after countdown
                     document.querySelectorAll("button[disabled], a.disabled, .btn-disabled, [data-countdown]").forEach(el => {
                       try {
                         el.disabled = false;
@@ -295,7 +275,6 @@ async function handle(req, res) {
                         el.click();
                       } catch {}
                     });
-                    // platorelay specific: look for countdown containers and remove them
                     document.querySelectorAll("[id*='countdown'], [class*='countdown'], [id*='timer'], [class*='timer'], [id*='wait'], [class*='wait']").forEach(el => {
                       try { el.style.display = 'none'; el.remove(); } catch {}
                     });
@@ -305,7 +284,6 @@ async function handle(req, res) {
               async function grabFinalUrl(pg) {
                 const cur = pg.url();
                 if (!isWrapped(cur)) return cur;
-                // Try to find destination link in DOM
                 const found = await pg.evaluate(() => {
                   const selectors = [
                     "a[href^='http']:not([href*='platorelay']):not([href*='lootlabs']):not([href*='lootlinks']):not([href*='linkvertise']):not([href*='work.ink']):not([href*='sub2unlock']):not([href*='playrole']):not([href*='google']):not([href*='cloudflare']):not([href*='discord']):not([href*='facebook']):not([href*='twitter']):not([href*='t.co'])",
@@ -318,7 +296,6 @@ async function handle(req, res) {
                       if (v && v.startsWith("http")) return v;
                     }
                   }
-                  // Check page source for redirect patterns
                   const scripts = [...document.querySelectorAll("script")].map(s => s.textContent || "").join(" ");
                   const m = scripts.match(/(?:redirect|destination|final_url|target_url|go_url)['":\\s]+["'](https?:\/\/[^"']+)/i);
                   if (m) return m[1];
@@ -329,7 +306,6 @@ async function handle(req, res) {
               try {
                 await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
                 await page.setViewport({ width: 1366, height: 768 });
-                // Block ads/tracking to speed up
                 await page.setRequestInterception(true);
                 page.on("request", req => {
                   const url = req.url().toLowerCase();
@@ -340,11 +316,9 @@ async function handle(req, res) {
                 await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
                 await sleep(isLinkvertise ? 5000 : isPlatorelay ? 3000 : 4000);
                 if (isPlatorelay) await skipCountdown(page);
-                // linkvertise: scroll + wait for the interstitial button
                 if (isLinkvertise) {
                   await page.evaluate(() => { window.scrollTo(0, document.body.scrollHeight / 2); });
                   await sleep(3000);
-                  // Try clicking the "Free Access" / "Continue" / "Visit" button
                   await page.evaluate(() => {
                     document.querySelectorAll("button,a,[role='button']").forEach(el => {
                       const t = (el.textContent || "").toLowerCase();
@@ -382,14 +356,8 @@ async function handle(req, res) {
             res.status(200).json({ result: d.url, source: "browserless" });
             return;
           }
-          // Auto-retry sekali lagi kalau masih wrapped
           if (d && (d.status === "still_wrapped" || d.status === "error")) {
             try {
-              const r2 = await fetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=90000", {
-                method: "POST", headers: { "Content-Type": "application/json" },
-                body: (await (async () => { const prev = await r.clone().text().catch(() => ""); return prev; })()) || JSON.stringify({ code: "", context: { url: link } }),
-              }).catch(() => null);
-              // Retry dengan request body yang sama
               const body2 = JSON.stringify({
                 code: `export default async function({page,context}){const url=context.url;const isPR=url.includes("platorelay");function sleep(ms){return new Promise(r=>setTimeout(r,ms));}try{await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");await page.setViewport({width:1366,height:768});await page.setRequestInterception(true);page.on("request",req=>{const u=req.url().toLowerCase();if(["google-analytics","googlesyndication","adsbygoogle","doubleclick","pagead","hotjar"].some(p=>u.includes(p))){req.abort();return;}req.continue();});await page.goto(url,{waitUntil:"domcontentloaded",timeout:35000});await sleep(5000);await page.evaluate(()=>{try{window.setTimeout=(fn,d,...a)=>window._origST?window._origST(fn,Math.min(d||0,50),...a):fn();document.querySelectorAll("button[disabled],[data-countdown],[class*='countdown'],[class*='timer'],[id*='countdown'],[id*='timer']").forEach(el=>{try{el.disabled=false;el.removeAttribute('disabled');el.classList.remove('disabled');}catch{}});}catch{}});await sleep(2000);for(let i=0;i<10;i++){await page.evaluate(()=>{document.querySelectorAll("button,a,[role='button'],[onclick],input[type='submit']").forEach(el=>{if(el.disabled)return;const s=window.getComputedStyle(el);if(s.display==='none'||s.visibility==='hidden')return;const t=(el.textContent||el.value||"").toLowerCase();if(["continue","get link","unlock","proceed","go to","visit","lanjut","claim","get","next","done","finish","open","dapatkan","klik","access","go","enter"].some(p=>t.includes(p))){try{el.click();}catch{}}});});await sleep(i<5?2000:3500);if(isPR)await page.evaluate(()=>{try{document.querySelectorAll("[class*='countdown'],[class*='timer'],[id*='countdown'],[id*='timer'],[class*='wait']").forEach(el=>{try{el.remove();}catch{}});}catch{}});const cur=page.url();if(!cur.includes("platorelay")&&!cur.includes("lootlabs")&&!cur.includes("lootlinks"))break;}if(isPR)await sleep(10000);const finalUrl=page.url();const isClean=!finalUrl.includes("platorelay")&&!finalUrl.includes("lootlabs")&&!finalUrl.includes("lootlinks");if(isClean)return{url:finalUrl,status:"resolved"};const found=await page.evaluate(()=>{const a=document.querySelector("a[href^='http']:not([href*='platorelay']):not([href*='lootlabs']):not([href*='google']):not([href*='cloudflare']):not([href*='discord'])");return a?a.href:null;});return{url:found||finalUrl,status:found?"resolved":"failed"};}catch(e){return{url:url,status:"error",error:String(e.message||e)};}}`,
                 context: { url: link },
@@ -413,7 +381,6 @@ async function handle(req, res) {
       } catch (e) { console.error("Browserless:", e); }
     }
 
-    // LAYER 2: bypass.vip
     try {
       const r = await fetch("https://api.bypass.vip/", {
         method: "POST",
@@ -427,7 +394,6 @@ async function handle(req, res) {
       }
     } catch {}
 
-    // LAYER 3: bypass.city
     try {
       const r = await fetch("https://api.bypass.city/api/bypass", {
         method: "POST",
@@ -441,7 +407,6 @@ async function handle(req, res) {
       }
     } catch {}
 
-    // LAYER 4: BypassKing API
     try {
       const r = await fetch("https://api.bypassking.com/bypass?url=" + encodeURIComponent(link), {
         headers: { "User-Agent": UA }
@@ -453,7 +418,6 @@ async function handle(req, res) {
       }
     } catch {}
 
-    // LAYER 5: HEAD redirect (untuk link simpel)
     if (!needBrowser) {
       try {
         const r = await fetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } });
@@ -582,7 +546,7 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 #genPanel .close{position:absolute;top:12px;right:16px;cursor:pointer;color:var(--muted);font-size:22px}
 </style></head><body>
 <div class="hero"><div class="logo">NANG<span class="logo-badge">KEY</span></div><div class="sub">Roblox Script Key System</div></div>
-<div class="nav"><button class="nav-btn active" onclick="switchTab(0)">Beli Key</button><button class="nav-btn" onclick="switchTab(1)">Bypass</button></div>
+<div class="nav"><button class="nav-btn active" onclick="switchTab(0)">Beli Key</button><button class="nav-btn" onclick="switchTab(1)">Bypass</button><button class="nav-btn" onclick="switchTab(2)">Convert</button></div>
 
 <div class="panel active" id="tab0">
 <div class="card">
@@ -607,6 +571,16 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 </div>
 </div>
 
+<div class="panel" id="tab2">
+<div class="card">
+<div class="card-title">RBXL / RBXM → RBXLX</div>
+<div class="fmt-box">Upload file biner <span class="field">.rbxl</span> atau <span class="field">.rbxm</span>, lalu download hasilnya sebagai <span class="field">.rbxlx</span> (XML). File XML bisa langsung dibaca script NANG atau dibuka di Roblox Studio.<br><br><b style="color:#ffc832">Limit: 10 MB per file.</b> Lebih dari itu pakai converter eksternal.</div>
+<input type="file" id="convFile" accept=".rbxl,.rbxm" style="display:none" onchange="doConvert()">
+<button class="btn-cyan" onclick="document.getElementById('convFile').click()">Pilih File (.rbxl / .rbxm)</button>
+<div class="result" id="convResult"></div>
+</div>
+</div>
+
 <footer>NANG RBXM Tool &copy; 2025</footer>
 
 <div id="ownerFab" onclick="openGen()" title="Owner Only">&#128274;</div>
@@ -626,5 +600,31 @@ document.getElementById('genPanel').addEventListener('click',(e)=>{if(e.target.i
 async function doLogin(){const pw=document.getElementById('genPw').value;if(!pw)return;try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:pw,uid:'1'})});const d=await r.json();if(d.error==='password salah'){document.getElementById('genPw').value='';document.getElementById('genPw').placeholder='password salah';}else if(d.ok){ownerPw=pw;document.getElementById('genForm').style.display='block';document.getElementById('genPw').disabled=true;}}catch(e){}}
 async function doGenerate(){const uid=document.getElementById('genUid').value.trim();const box=document.getElementById('genResult');if(!uid||!ownerPw)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Generating...';try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:ownerPw,uid:uid})});const d=await r.json();if(d.ok){box.className='result ok';box.innerHTML='<b>Username:</b> '+(d.username||'Unknown')+'<div class="key-line">'+d.key+'</div><b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b><a href="'+d.authLink+'" target="_blank" class="link-line">'+d.authLink+'</a><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';}else{box.className='result err';box.innerHTML=d.error||'Gagal';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Memproses (LootLabs/platorelay bisa 20-30 detik)...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='browserless'?'ok':(d.source==='original'?'warn':'ok');box.className='result '+cls;let label='Bypass berhasil!';if(d.source==='original')label='Belum selesai — klik bypass lagi:';const src=d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'';box.innerHTML=label+src+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
+async function doConvert(){
+  const input=document.getElementById('convFile');
+  const box=document.getElementById('convResult');
+  if(!input.files||!input.files[0])return;
+  const file=input.files[0];
+  if(file.size>10*1024*1024){box.style.display='block';box.className='result err';box.innerHTML='File > 10 MB, pakai converter eksternal.';return;}
+  box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Mengkonversi '+file.name+' ('+(file.size/1024).toFixed(1)+' KB)...';
+  try{
+    const buf=await file.arrayBuffer();
+    const r=await fetch('/api/convert',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:buf});
+    if(!r.ok){
+      const t=await r.text();
+      let msg=t;
+      try{msg=JSON.parse(t).error||t;}catch{}
+      box.className='result err';box.innerHTML='Gagal: '+msg;return;
+    }
+    const xml=await r.text();
+    const blob=new Blob([xml],{type:'application/xml'});
+    const url=URL.createObjectURL(blob);
+    const outName=file.name.replace(/\.(rbxl|rbxm)$/i,'.rbxlx');
+    box.className='result ok';
+    box.innerHTML='Berhasil! Ukuran output: '+(xml.length/1024).toFixed(1)+' KB<div class="key-line"><a href="'+url+'" download="'+outName+'" style="color:#00d4ff;text-decoration:none">Download '+outName+'</a></div>';
+  }catch(e){
+    box.className='result err';box.innerHTML='Error: '+e.message;
+  }
+}
 </script></body></html>`;
 }
