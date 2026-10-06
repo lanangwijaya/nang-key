@@ -1,4 +1,4 @@
-const BUILD = "66.2";
+const BUILD = "66.3";
 
 const LINK_PATTERNS = [
   { name: "LootLabs",     match: ["lootlabs","lootlinks","lootdest"],           auto: "low",    note: "Task-wall. Auto-bypass sering gagal." },
@@ -222,6 +222,35 @@ async function handle(req, res) {
     return;
   }
 
+  if (params.has("chat")) {
+    const action = params.get("chat");
+    global.__nangChat = global.__nangChat || [];
+    const now = Date.now();
+    global.__nangChat = global.__nangChat.filter(m => now - m.ts < 3600000);
+
+    if (action === "send") {
+      const user = String(params.get("user") || "anon").slice(0, 32);
+      const uid = String(params.get("uid") || "").slice(0, 20);
+      const text = String(params.get("text") || "").slice(0, 300);
+      if (!text) { res.status(200).json({ ok: false, error: "empty" }); return; }
+      const msg = { user, uid, text, ts: now };
+      global.__nangChat.push(msg);
+      if (global.__nangChat.length > 100) global.__nangChat = global.__nangChat.slice(-100);
+      res.status(200).json({ ok: true, msg });
+      return;
+    }
+
+    if (action === "get") {
+      const since = parseInt(params.get("since") || "0", 10);
+      const msgs = global.__nangChat.filter(m => m.ts > since);
+      res.status(200).json({ ok: true, msgs, total: global.__nangChat.length });
+      return;
+    }
+
+    res.status(200).json({ ok: false, error: "unknown action" });
+    return;
+  }
+
   if (params.has("bypass")) {
     const link = params.get("bypass");
     if (!link) { res.status(200).json({ error: "no link" }); return; }
@@ -387,24 +416,6 @@ async function handle(req, res) {
           const winner = await Promise.any(tasks);
           if (winner && sendOk(winner.result, winner.source)) return;
         } catch (e) {}
-
-        const forceProviders = [
-          ["https://api.bypass.vip/?url=" + encodeURIComponent(link), "force-bypass.vip"],
-          ["https://api.bypass.city/api/bypass?url=" + encodeURIComponent(link), "force-bypass.city"],
-          ["https://api.bypassall.lol/bypass?url=" + encodeURIComponent(link), "force-bypassall"],
-          ["https://bypass.bot.nu/bypass?url=" + encodeURIComponent(link), "force-bypass.bot"],
-          ["https://api.bypass.lol/bypass?url=" + encodeURIComponent(link), "force-bypass.lol"],
-          ["https://api.bypass.tf/api/bypass?url=" + encodeURIComponent(link), "force-bypass.tf"],
-        ];
-        for (const [fu, ftag] of forceProviders) {
-          try {
-            const fr = await tryFetch(fu, { method: "GET", headers: { "User-Agent": UA, "Accept": ACCEPT } }, 10000);
-            if (!fr.ok) continue;
-            const fd = await readJson(fr);
-            const fres = extract(fd);
-            if (isCleanUrl(fres) && sendOk(fres, ftag)) return;
-          } catch {}
-        }
       }
     }
 
@@ -833,7 +844,7 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 <div class="panel" id="tab2">
 <div class="card">
 <div class="card-title">RBXL / RBXM → RBXLX</div>
-<div class="fmt-box">Upload file <span class="field">.rbxl</span> / <span class="field">.rbxm</span> (biner) atau <span class="field">.rbxlx</span> / <span class="field">.rbxmx</span> (XML). File biner otomatis dikonversi ke XML. Hasil: <span class="field">.rbxlx</span> siap insert.</div>
+<div class="fmt-box">Upload file <span class="field">.rbxl</span> / <span class="field">.rbxm</span> (biner) atau <span class="field">.rbxlx</span> / <span class="rbxmx">.rbxmx</span> (XML). File biner otomatis dikonversi ke XML. Hasil: <span class="field">.rbxlx</span> siap insert.</div>
 <input type="file" id="convFile" accept=".rbxl,.rbxm,.rbxlx,.rbxmx" style="display:none" onchange="doConvert()">
 <button class="btn-cyan" onclick="document.getElementById('convFile').click()">Pilih File (.rbxl / .rbxm / .rbxlx)</button>
 <div class="result" id="convResult"></div>
