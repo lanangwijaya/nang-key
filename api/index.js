@@ -30,9 +30,6 @@ function detectLink(url) {
   return { type: "Invalid", auto: "none", note: "URL tidak valid. Harus mulai dengan http:// atau https://" };
 }
 
-// ═══════════════════════════════════════════
-// HARD REJECT — apapun yang nunjuk ke file statis / CDN / asset
-// ═══════════════════════════════════════════
 const CDN_HOSTS = [
   "jsdelivr.net","unpkg.com","cdnjs.cloudflare.com","cdn.jsdelivr.net",
   "gstatic.com","googleapis.com","googletagmanager.com","google-analytics.com",
@@ -63,7 +60,6 @@ function hardReject(u) {
   for (const p of CDN_PATH_HINTS) if (low.includes(p)) return "cdn-path:" + p;
   if (BAD_EXT.test(low)) return "bad-ext";
   if (VERSION_MARKER.test(low)) return "version-marker";
-  // URL harus punya minimal 3 segmen path
   try {
     const parsed = new URL(u);
     const segs = parsed.pathname.split("/").filter(Boolean);
@@ -142,7 +138,6 @@ async function handle(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (method === "OPTIONS") { res.status(200).end(); return; }
 
-  // build marker
   if (params.has("version")) {
     res.status(200).json({ version: BUILD, ts: Date.now() });
     return;
@@ -272,7 +267,6 @@ async function handle(req, res) {
     return;
   }
 
-  // debug endpoint
   if (params.has("testurl")) {
     const u = params.get("testurl");
     const reason = hardReject(u);
@@ -295,7 +289,7 @@ async function handle(req, res) {
     const isSocial  = (u) => typeof u === "string" && socialTokens.some(s => u.toLowerCase().includes(s));
     const isCleanUrl = (u) => u && typeof u === "string" && /^https?:\/\//.test(u) && !isWrapped(u) && !isSocial(u) && !hardReject(u);
 
-    const tryFetch = async (u, opts = {}, ms = 15000) => {
+    const tryFetch = async (u, opts = {}, ms = 10000) => {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), ms);
       try {
@@ -338,79 +332,114 @@ async function handle(req, res) {
       return null;
     };
 
-    const ok = (result, source) => {
+    const sendOk = (result, source) => {
       if (isCleanUrl(result)) {
-        res.status(200).json({ result, source, detection, build: BUILD });
+        res.status(200).json({ result, source, detection });
         return true;
       }
       return false;
     };
 
-    try {
+    const isLootLink    = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest");
+    const isPlatorelay  = low.includes("platorelay");
+    const isLinkvertise = low.includes("linkvertise") || low.includes("work.ink") || low.includes("boost.ink") || low.includes("mboost.me");
+    const isRekonise    = low.includes("rekonise") || low.includes("socialwolvez") || low.includes("cutsy");
+
+    // ROUND 1 — parallel API race
+    const apiTasks = [];
+
+    apiTasks.push((async () => {
       const r = await tryFetch("https://api.bypass.vip/", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA, "Accept": ACCEPT, "Origin": "https://bypass.vip", "Referer": "https://bypass.vip/" },
         body: "url=" + encodeURIComponent(link),
-      });
-      if (r.ok) { const d = await readJson(r); if (ok(extract(d), "bypass.vip")) return; }
-    } catch {}
+      }, 8000);
+      if (!r.ok) throw new Error("vip-bad");
+      const d = await readJson(r);
+      const result = extract(d);
+      if (!isCleanUrl(result)) throw new Error("vip-clean");
+      return { result, source: "bypass.vip" };
+    })());
 
-    try {
+    apiTasks.push((async () => {
       const r = await tryFetch("https://api.bypass.city/api/bypass", {
         method: "POST",
         headers: { "Content-Type": "application/json", "User-Agent": UA, "Accept": ACCEPT, "Origin": "https://bypass.city", "Referer": "https://bypass.city/" },
         body: JSON.stringify({ url: link }),
-      });
-      if (r.ok) { const d = await readJson(r); if (ok(extract(d), "bypass.city")) return; }
-    } catch {}
+      }, 8000);
+      if (!r.ok) throw new Error("city-bad");
+      const d = await readJson(r);
+      const result = extract(d);
+      if (!isCleanUrl(result)) throw new Error("city-clean");
+      return { result, source: "bypass.city" };
+    })());
 
-    const genericApis = [
-      "https://bypass.tools/api/bypass?url=" + encodeURIComponent(link),
-      "https://api.bypassall.lol/bypass?url=" + encodeURIComponent(link),
-      "https://bypassall.lol/api/bypass?url=" + encodeURIComponent(link),
-      "https://api.bypass-unlocked.workers.dev/?url=" + encodeURIComponent(link),
-      "https://bypass.pm/api/bypass?url=" + encodeURIComponent(link),
-      "https://api.bypasser.workers.dev/bypass?url=" + encodeURIComponent(link),
-      "https://bypasser.workers.dev/bypass?url=" + encodeURIComponent(link),
-      "https://api.bypass.pro/bypass?url=" + encodeURIComponent(link),
-    ];
-    for (const u of genericApis) {
-      try {
-        const r = await tryFetch(u, { method: "GET", headers: { "User-Agent": UA, "Accept": ACCEPT } });
-        if (!r.ok) continue;
-        const d = await readJson(r);
-        if (ok(extract(d), "generic-api")) return;
-      } catch {}
+    if (!isLootLink) {
+      const genericApis = [
+        "https://bypass.tools/api/bypass?url=" + encodeURIComponent(link),
+        "https://api.bypassall.lol/bypass?url=" + encodeURIComponent(link),
+        "https://bypassall.lol/api/bypass?url=" + encodeURIComponent(link),
+        "https://api.bypass-unlocked.workers.dev/?url=" + encodeURIComponent(link),
+        "https://api.bypasser.workers.dev/bypass?url=" + encodeURIComponent(link),
+        "https://bypasser.workers.dev/bypass?url=" + encodeURIComponent(link),
+      ];
+      for (const u of genericApis) {
+        apiTasks.push((async () => {
+          const r = await tryFetch(u, { method: "GET", headers: { "User-Agent": UA, "Accept": ACCEPT } }, 8000);
+          if (!r.ok) throw new Error("gen-bad");
+          const d = await readJson(r);
+          const result = extract(d);
+          if (!isCleanUrl(result)) throw new Error("gen-clean");
+          return { result, source: "generic-api" };
+        })());
+      }
     }
 
-    if (low.includes("linkvertise") || low.includes("work.ink") || low.includes("boost.ink") || low.includes("mboost.me")) {
+    if (isLinkvertise) {
       const lvApis = [
         "https://bypass.bot.nu/bypass?url=" + encodeURIComponent(link),
         "https://linklm.com/api/bypass?url=" + encodeURIComponent(link),
       ];
       for (const u of lvApis) {
-        try {
-          const r = await tryFetch(u, { method: "GET", headers: { "User-Agent": UA, "Accept": ACCEPT } });
-          if (!r.ok) continue;
+        apiTasks.push((async () => {
+          const r = await tryFetch(u, { method: "GET", headers: { "User-Agent": UA, "Accept": ACCEPT } }, 8000);
+          if (!r.ok) throw new Error("lv-bad");
           const d = await readJson(r);
-          if (ok(extract(d), "linkvertise-api")) return;
-        } catch {}
+          const result = extract(d);
+          if (!isCleanUrl(result)) throw new Error("lv-clean");
+          return { result, source: "linkvertise-api" };
+        })());
       }
     }
 
-    if (low.includes("rekonise") || low.includes("socialwolvez") || low.includes("cutsy")) {
-      try {
-        const slug = link.match(/rekonise\.com\/([a-z0-9]+)/i)?.[1] || "";
-        if (slug) {
-          const r = await tryFetch("https://api.rekonise.com/socialunlocks/" + slug, { headers: { "User-Agent": UA, "Accept": ACCEPT } });
-          if (r.ok) { const d = await readJson(r); if (ok(extract(d), "rekonise-api")) return; }
-        }
-      } catch {}
+    if (isRekonise) {
+      const slug = link.match(/rekonise\.com\/([a-z0-9]+)/i)?.[1] || "";
+      if (slug) {
+        apiTasks.push((async () => {
+          const r = await tryFetch("https://api.rekonise.com/socialunlocks/" + slug, { headers: { "User-Agent": UA, "Accept": ACCEPT } }, 8000);
+          if (!r.ok) throw new Error("rek-bad");
+          const d = await readJson(r);
+          const result = extract(d);
+          if (!isCleanUrl(result)) throw new Error("rek-clean");
+          return { result, source: "rekonise-api" };
+        })());
+      }
     }
 
+    if (apiTasks.length > 0) {
+      try {
+        const winner = await Promise.any(apiTasks);
+        if (winner && sendOk(winner.result, winner.source)) return;
+      } catch (e) {}
+    }
+
+    // ROUND 2 — browserless
     if (BROWSERLESS_TOKEN) {
-      const runBrowserless = async () => {
-        return await tryFetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=120000&stealth=true&blockAds=true&headless=false", {
+      const rounds = isLootLink ? 4 : 8;
+      const rDelay = isLootLink ? 1200 : 1500;
+
+      try {
+        const r = await tryFetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=45000&stealth=true&blockAds=true", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -443,8 +472,6 @@ async function handle(req, res) {
               const isSocial  = (u) => social.some(s => u.toLowerCase().includes(s));
               const isClean   = (u) => u && /^https?:\\/\\//.test(u) && !isWrapped(u) && !isSocial(u) && !hardReject(u);
               const isLoot = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest");
-              const isPlatorelay = low.includes("platorelay");
-              const isLinkvertise = low.includes("linkvertise") || low.includes("work.ink") || low.includes("boost.ink");
               function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
               const leaked = new Set();
               function harvest(text) {
@@ -461,19 +488,19 @@ async function handle(req, res) {
               }
               async function clickTask(pg) {
                 return pg.evaluate(() => {
-                  const skipWords = /\\b(survey|install|subscribe|casino|register|play store|app store|playing|watch a video|discord|telegram|instagram|youtube|tiktok|twitter|snapchat|facebook|repost|tag us)\\b/i;
-                  const preferWords = /\\b(human|verify|verification|captcha|confirm you|check the box|robot|quick verification|start verification|complete verification|click to verify|not a robot|confirm)\\b/i;
+                  const skip = /\\b(survey|install|subscribe|casino|register|play store|app store|playing|watch a video|discord|telegram|instagram|youtube|tiktok|twitter|snapchat|facebook|repost|tag us)\\b/i;
+                  const want = /\\b(human|verify|verification|captcha|confirm you|check the box|robot|quick verification|start verification|complete verification|click to verify|not a robot|confirm)\\b/i;
                   const all = [...document.querySelectorAll("button, a, [role='button'], [class*='task'], [class*='card'], [class*='option'], [class*='offer'], [onclick], div[role='button']")];
                   for (const el of all) {
                     const t = (el.textContent || "").toLowerCase().trim();
                     if (!t || t.length > 200) continue;
-                    if (skipWords.test(t)) continue;
-                    if (preferWords.test(t)) { try { el.scrollIntoView({block:'center'}); el.click(); return 1; } catch {} }
+                    if (skip.test(t)) continue;
+                    if (want.test(t)) { try { el.scrollIntoView({block:'center'}); el.click(); return 1; } catch {} }
                   }
                   for (const el of all) {
                     const t = (el.textContent || "").toLowerCase().trim();
                     if (!t || t.length > 200) continue;
-                    if (skipWords.test(t)) continue;
+                    if (skip.test(t)) continue;
                     if (/^(start|begin|open|complete|view|discover|confirm|check|select|continue|proceed|next|claim|unlock)/i.test(t)) {
                       try { el.scrollIntoView({block:'center'}); el.click(); return 1; } catch {}
                     }
@@ -484,8 +511,7 @@ async function handle(req, res) {
               async function clickClaim(pg) {
                 return pg.evaluate(() => {
                   let n = 0;
-                  const btns = document.querySelectorAll("button, a, [role='button'], input[type='submit']");
-                  for (const el of btns) {
+                  for (const el of document.querySelectorAll("button, a, [role='button'], input[type='submit']")) {
                     const t = (el.textContent || el.value || "").toLowerCase().trim();
                     if (/(claim reward|claim|get link|unlock|continue to|proceed|go to link|visit|access|download|reveal|show link|generate|finish|complete)/i.test(t)) {
                       try {
@@ -504,10 +530,7 @@ async function handle(req, res) {
                   for (const f of pg.frames()) {
                     const u = f.url(); if (!u) continue;
                     if (u.includes("challenges.cloudflare.com") || u.includes("turnstile")) {
-                      try { await f.evaluate(() => { const w = document.querySelector('input[type="checkbox"]'); if (w) w.click(); const lb = document.querySelector('.cb-lb, [role="checkbox"], .ctp-checkbox-label'); if (lb) lb.click(); }); await sleep(2500); } catch {}
-                    }
-                    if (u.includes("recaptcha") || u.includes("hcaptcha")) {
-                      try { await f.evaluate(() => { const cb = document.querySelector('.recaptcha-checkbox, #checkbox, .h-captcha, [role="checkbox"]'); if (cb) cb.click(); }); await sleep(2500); } catch {}
+                      try { await f.evaluate(() => { const w = document.querySelector('input[type="checkbox"]'); if (w) w.click(); const lb = document.querySelector('.cb-lb, [role="checkbox"], .ctp-checkbox-label'); if (lb) lb.click(); }); } catch {}
                     }
                   }
                 } catch {}
@@ -534,7 +557,7 @@ async function handle(req, res) {
                 await page.setRequestInterception(true);
                 page.on("request", req => {
                   const u = req.url().toLowerCase();
-                  const block = ["google-analytics","googletagmanager","doubleclick","googlesyndication","adsbygoogle","amazon-adsystem","pagead","moatads","adsrvr","advertising","analytics","tracker","hotjar","fbevents","ga.js","gtag","clarity.ms","criteo","taboola","outbrain","yandex","vungle","applovin"];
+                  const block = ["google-analytics","googletagmanager","doubleclick","googlesyndication","adsbygoogle","amazon-adsystem","pagead","moatads","adsrvr","advertising","analytics","tracker","hotjar","fbevents","ga.js","gtag","clarity.ms","criteo","taboola","outbrain","yandex","vungle","applovin","facebook","twitter","tiktok"];
                   if (block.some(p => u.includes(p))) { req.abort(); return; }
                   req.continue();
                 });
@@ -542,94 +565,37 @@ async function handle(req, res) {
                   try {
                     const u = resp.url();
                     if (!(u.includes("lootlabs") || u.includes("lootlinks") || u.includes("platorelay") || u.includes("linkvertise"))) return;
+                    if (u.endsWith(".js") || u.endsWith(".css")) return;
                     const ct = resp.headers()["content-type"] || "";
                     if (!(ct.includes("json") || ct.includes("text"))) return;
-                    if (u.endsWith(".js") || u.endsWith(".css")) return;
                     const t = await resp.text();
-                    try {
-                      const obj = JSON.parse(t);
-                      const s = JSON.stringify(obj);
-                      harvest(s);
-                    } catch {}
+                    try { harvest(JSON.stringify(JSON.parse(t))); } catch {}
                   } catch {}
                 });
-                await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 40000 });
-                await sleep(5000);
+                await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+                await sleep(2000);
                 await harvestDom(page);
 
-                if (isLoot) {
-                  for (let round = 0; round < 12; round++) {
-                    await clickTask(page);
-                    await sleep(2500);
-                    await tryCaptcha(page);
-                    await sleep(2000);
-                    await clickClaim(page);
-                    await sleep(2500);
-                    await harvestDom(page);
-                    const cur = page.url();
-                    if (isClean(cur)) return { url: cur, status: "resolved" };
-                    if (isSocial(cur)) {
-                      try { await page.goBack({ waitUntil: "domcontentloaded", timeout: 15000 }); } catch {
-                        try { await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 20000 }); } catch {}
-                      }
-                      await sleep(2000);
-                      continue;
-                    }
-                    if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
-                    const claimActive = await page.evaluate(() => {
-                      const bs = [...document.querySelectorAll("button, a, [role='button']")];
-                      for (const b of bs) {
-                        const t = (b.textContent || "").toLowerCase();
-                        if (t.includes("claim reward") || t.includes("continue") || t.includes("get link") || t.includes("unlock")) {
-                          if (!b.disabled && !b.classList.contains("disabled") && !b.classList.contains("opacity-50")) return true;
-                        }
-                      }
-                      return false;
-                    });
-                    if (claimActive) {
-                      await clickClaim(page);
-                      await sleep(3500);
-                      const c2 = page.url();
-                      if (isClean(c2)) return { url: c2, status: "resolved" };
-                    }
-                  }
-                  if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
-                  const fu = page.url();
-                  if (isClean(fu)) return { url: fu, status: "resolved" };
-                  return { url: startUrl, status: "still_wrapped" };
-                }
-
-                for (let i = 0; i < 20; i++) {
-                  const beforeUrl = page.url();
+                for (let round = 0; round < ${rounds}; round++) {
                   await clickTask(page);
+                  await tryCaptcha(page);
                   await clickClaim(page);
-                  if (isPlatorelay) {
-                    await page.evaluate(() => {
-                      try {
-                        const o = window.setTimeout;
-                        window.setTimeout = (fn, d, ...a) => o(fn, Math.min(d || 0, 60), ...a);
-                        window.setInterval = (fn, d, ...a) => o(fn, Math.min(d || 0, 60), ...a);
-                        document.querySelectorAll("[class*='countdown'],[class*='timer'],[id*='countdown'],[id*='timer'],[class*='wait']").forEach(el => { try { el.style.display='none'; el.remove(); } catch {} });
-                        document.querySelectorAll("button[disabled], a.disabled, .disabled").forEach(el => { try { el.disabled=false; el.removeAttribute('disabled'); el.classList.remove('disabled'); } catch {} });
-                      } catch {}
-                    });
-                  }
-                  await sleep(2200);
+                  await sleep(${rDelay});
+                  await harvestDom(page);
                   const cur = page.url();
+                  if (isClean(cur)) return { url: cur, status: "resolved" };
                   if (isSocial(cur)) {
-                    try { await page.goBack({ waitUntil: "domcontentloaded", timeout: 15000 }); } catch {
-                      try { await page.goto(beforeUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch {}
+                    try { await page.goBack({ waitUntil: "domcontentloaded", timeout: 8000 }); } catch {
+                      try { await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 10000 }); } catch {}
                     }
-                    await sleep(1500);
+                    await sleep(800);
                     continue;
                   }
-                  if (isClean(cur)) return { url: cur, status: "resolved" };
                   if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
                 }
-                await sleep(isLinkvertise ? 4000 : 2500);
+                if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
                 const fu = page.url();
                 if (isClean(fu)) return { url: fu, status: "resolved" };
-                if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
                 return { url: startUrl, status: "still_wrapped" };
               } catch (e) {
                 return { url: startUrl, status: "error", error: String(e.message || e) };
@@ -637,41 +603,35 @@ async function handle(req, res) {
             }`,
             context: { url: link },
           }),
-        }, 125000);
-      };
-
-      try {
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          const r = await runBrowserless();
-          if (r && r.ok) {
-            const d = await readJson(r);
-            if (d && isCleanUrl(d.url)) {
-              res.status(200).json({ result: d.url, source: "browserless", detection, build: BUILD });
-              return;
-            }
+        }, 50000);
+        if (r.ok) {
+          const d = await readJson(r);
+          if (d && isCleanUrl(d.url)) {
+            res.status(200).json({ result: d.url, source: "browserless", detection });
+            return;
           }
-          if (attempt < 3) await new Promise(rs => setTimeout(rs, 1500));
         }
       } catch (e) { console.error("Browserless:", e.message); }
     }
 
+    // ROUND 3 — HEAD redirect
     try {
-      const r = await tryFetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } }, 7000);
+      const r = await tryFetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } }, 4000);
       const loc = r.headers.get("location");
       if (loc && /^https?:\/\//.test(loc) && loc !== link && isCleanUrl(loc)) {
-        res.status(200).json({ result: loc, source: "redirect", detection, build: BUILD });
+        res.status(200).json({ result: loc, source: "redirect", detection });
         return;
       }
     } catch {}
 
     let warning = "Bypass gagal semua layer.";
     if (detection && detection.auto === "low") {
-      warning = detection.type + " kemungkinan pakai dinding follow/subscribe manual — auto-bypass memang sering gagal untuk tipe ini.";
+      warning = detection.type + " pakai dinding follow/task manual — auto-bypass sering gagal untuk tipe ini. Coba selesaikan manual di browser.";
     } else {
-      warning = "Provider publik kadang down. Coba lagi dalam 1-2 menit, atau ganti link.";
+      warning = "Provider publik kadang down. Coba lagi 1-2 menit, atau ganti link.";
     }
 
-    res.status(200).json({ result: link, source: "original", detection, warning, build: BUILD });
+    res.status(200).json({ result: link, source: "original", detection, warning });
     return;
   }
 
@@ -886,7 +846,7 @@ async function doBypass(){
   if(!link)return;
   box.style.display='block';box.className='result';
   const detLabel=lastDetect?'('+lastDetect.type+')':'';
-  box.innerHTML='<span class="spinner"></span>Memproses '+detLabel+' — LootLabs/platorelay bisa 20-40 detik...';
+  box.innerHTML='<span class="spinner"></span>Memproses '+detLabel+' — maksimal 45 detik...';
   try{
     const r=await fetch('/?bypass='+encodeURIComponent(link));
     const d=await r.json();
@@ -897,7 +857,7 @@ async function doBypass(){
       box.className='result '+cls;
       let label='Bypass berhasil!';
       if(d.source==='original')label='Belum selesai — klik bypass lagi:';
-      const detInfo=d.detection?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">Jenis: '+d.detection.type+' · via '+(d.source||'?')+(d.build?' · v'+d.build:'')+'</div>':(d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+(d.build?' · v'+d.build:'')+'</div>':'');
+      const detInfo=d.detection?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">Jenis: '+d.detection.type+' · via '+(d.source||'?')+'</div>':(d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'');
       box.innerHTML=label+detInfo+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');
     }else{
       box.className='result err';box.innerHTML=d.error||'Bypass gagal.';
