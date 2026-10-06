@@ -1,4 +1,4 @@
-const BUILD = "66.3";
+const BUILD = "66.4";
 
 const LINK_PATTERNS = [
   { name: "LootLabs",     match: ["lootlabs","lootlinks","lootdest"],           auto: "low",    note: "Task-wall. Auto-bypass sering gagal." },
@@ -324,7 +324,7 @@ async function handle(req, res) {
     const isRekonise    = low.includes("rekonise") || low.includes("socialwolvez") || low.includes("cutsy");
     const isPlatorelay  = low.includes("platorelay");
 
-    if (!isPlatorelay) {
+    if (!isPlatorelay && !isLootLink) {
       const q = encodeURIComponent(link);
       const tasks = [];
 
@@ -441,11 +441,23 @@ async function handle(req, res) {
           const popups = [];
           const apiCalls = [];
           let destinationFromApi = null;
+          const KEY_RE = /\\b(FREE_[A-Fa-f0-9]{16,}|NANG_[A-Za-z0-9]{16,}|[A-Z][A-Z0-9]{1,8}_[A-Za-z0-9]{16,})\\b/;
           function harvest(t) {
             if (!t) return;
             const re = /https?:\\/\\/[^"'\\s<>)]+/gi;
             let m;
             while ((m = re.exec(t)) !== null) if (!reject(m[0])) leaked.add(m[0]);
+          }
+          async function tryScrapeKey(pg) {
+            try {
+              const html = await pg.content();
+              const m = html.match(KEY_RE);
+              if (m) return m[1];
+              const txt = await pg.evaluate(() => document.body.innerText || "");
+              const m2 = txt.match(KEY_RE);
+              if (m2) return m2[1];
+            } catch {}
+            return null;
           }
           await page.addInitScript(() => {
             window.__nangApi = [];
@@ -511,10 +523,12 @@ async function handle(req, res) {
                 });
               } catch {}
             });
-            for (let r = 0; r < 8; r++) {
+            const initKey = await tryScrapeKey(page);
+            if (initKey) return { key: initKey, url: page.url(), status: "key-found" };
+            for (let r = 0; r < 10; r++) {
               const c = await page.evaluate(() => {
                 const all = [...document.querySelectorAll("button, a, [role='button'], input[type='submit']")];
-                const prio = ["continue", "lanjut", "next", "proceed", "click here", "klik", "claim", "get link", "unlock", "verify", "start", "open"];
+                const prio = ["continue", "lanjut", "next", "proceed", "click here", "klik", "claim", "get link", "unlock", "verify", "start", "open", "get reward", "reward"];
                 for (const el of all) {
                   const t = (el.textContent || el.value || "").toLowerCase().trim();
                   if (!t || t.length > 100) continue;
@@ -524,8 +538,10 @@ async function handle(req, res) {
                 }
                 return 0;
               });
-              if (!c) break;
+              if (!c) { await sleep(700); }
               await sleep(900);
+              const keyNow = await tryScrapeKey(page);
+              if (keyNow) return { key: keyNow, url: page.url(), status: "key-found" };
               for (let pi = 0; pi < popups.length; pi++) {
                 const p = popups[pi];
                 try {
@@ -547,6 +563,8 @@ async function handle(req, res) {
                     }).catch(()=>0);
                     if (!clicked) break;
                     await sleep(700);
+                    const pk = await tryScrapeKey(p);
+                    if (pk) return { key: pk, url: p.url(), status: "key-found" };
                     const popupApis = await p.evaluate(() => window.__nangApi || []).catch(()=>[]);
                     popupApis.forEach(a => { if (a && a.url) apiCalls.push({ ...a, from: "popup" }); });
                     const pu = p.url();
@@ -574,10 +592,16 @@ async function handle(req, res) {
                   }
                 }
               }
+              const keyMid = await tryScrapeKey(page);
+              if (keyMid) return { key: keyMid, url: page.url(), status: "key-found" };
               if (destinationFromApi) return { url: destinationFromApi, status: "api-intercept" };
               if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
               const cur = page.url();
-              if (!reject(cur)) return { url: cur, status: "resolved" };
+              if (!reject(cur)) {
+                const ck = await tryScrapeKey(page);
+                if (ck) return { key: ck, url: cur, status: "key-found" };
+                return { url: cur, status: "resolved" };
+              }
               const done = await page.evaluate(() => {
                 const body = document.body.innerText || "";
                 if (/completed\\s+1\\s+of\\s+1/i.test(body) || /task.*complete/i.test(body)) {
@@ -608,6 +632,8 @@ async function handle(req, res) {
                     } catch (e) { return { err: String(e) }; }
                   }, api);
                   if (r && r.body) {
+                    const km = r.body.match(KEY_RE);
+                    if (km) return { key: km[1], url: page.url(), status: "key-found" };
                     const m = r.body.match(/https?:\\/\\/[^"'\\s<>)]+/);
                     if (m && !reject(m[0])) return { url: m[0], status: "direct-api" };
                   }
@@ -627,6 +653,8 @@ async function handle(req, res) {
               });
               await page.reload({ waitUntil: "domcontentloaded", timeout: 4000 }).catch(()=>{});
               await sleep(1200);
+              const keyAfter = await tryScrapeKey(page);
+              if (keyAfter) return { key: keyAfter, url: page.url(), status: "key-found" };
               const newUrl = page.url();
               if (!reject(newUrl)) return { url: newUrl, status: "flag-set" };
               const btn = await page.evaluate(() => {
@@ -641,11 +669,15 @@ async function handle(req, res) {
               });
               if (btn) {
                 await sleep(1500);
+                const kf = await tryScrapeKey(page);
+                if (kf) return { key: kf, url: page.url(), status: "key-found" };
                 const u2 = page.url();
                 if (!reject(u2)) return { url: u2, status: "flag-then-click" };
               }
             } catch {}
             try { const html = await page.content(); harvest(html); } catch {}
+            const finalKey = await tryScrapeKey(page);
+            if (finalKey) return { key: finalKey, url: page.url(), status: "key-found" };
             if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
             return { url: startUrl, status: "wrapped", apis: apiCalls.slice(-10) };
           } catch (e) {
@@ -662,6 +694,10 @@ async function handle(req, res) {
         }, 9500);
         if (r && r.ok) {
           const d = await readJson(r);
+          if (d && d.key) {
+            res.status(200).json({ result: d.key, key: d.key, source: "key-scrape", detection });
+            return;
+          }
           if (d && isCleanUrl(d.url)) {
             res.status(200).json({ result: d.url, source: "browserless-" + (d.status || "?"), detection });
             return;
@@ -844,7 +880,7 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 <div class="panel" id="tab2">
 <div class="card">
 <div class="card-title">RBXL / RBXM → RBXLX</div>
-<div class="fmt-box">Upload file <span class="field">.rbxl</span> / <span class="field">.rbxm</span> (biner) atau <span class="field">.rbxlx</span> / <span class="rbxmx">.rbxmx</span> (XML). File biner otomatis dikonversi ke XML. Hasil: <span class="field">.rbxlx</span> siap insert.</div>
+<div class="fmt-box">Upload file <span class="field">.rbxl</span> / <span class="field">.rbxm</span> (biner) atau <span class="field">.rbxlx</span> / <span class="field">.rbxmx</span> (XML). File biner otomatis dikonversi ke XML. Hasil: <span class="field">.rbxlx</span> siap insert.</div>
 <input type="file" id="convFile" accept=".rbxl,.rbxm,.rbxlx,.rbxmx" style="display:none" onchange="doConvert()">
 <button class="btn-cyan" onclick="document.getElementById('convFile').click()">Pilih File (.rbxl / .rbxm / .rbxlx)</button>
 <div class="result" id="convResult"></div>
@@ -873,7 +909,35 @@ async function doLogin(){const pw=document.getElementById('genPw').value;if(!pw)
 async function doGenerate(){const uid=document.getElementById('genUid').value.trim();const box=document.getElementById('genResult');if(!uid||!ownerPw)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Generating...';try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:ownerPw,uid:uid})});const d=await r.json();if(d.ok){box.className='result ok';box.innerHTML='<b>Username:</b> '+(d.username||'Unknown')+'<div class="key-line">'+d.key+'</div><b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b><a href="'+d.authLink+'" target="_blank" class="link-line">'+d.authLink+'</a><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';}else{box.className='result err';box.innerHTML=d.error||'Gagal';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 async function detectLinkNow(url){const box=document.getElementById('detectBox');const badge=document.getElementById('detectBadge');const text=document.getElementById('detectText');if(!url||url.length<8){box.classList.remove('show');lastDetect=null;return;}try{const r=await fetch('/?detect='+encodeURIComponent(url));const d=await r.json();const det=d.detection;if(!det){box.classList.remove('show');return;}lastDetect=det;box.className='detect show '+det.auto;const labels={high:'AUTO',medium:'COBA',low:'MANUAL',none:'INVALID'};badge.textContent=det.type+' · '+labels[det.auto];text.textContent=det.note;}catch(e){box.classList.remove('show');}}
 document.getElementById('bypassUrl').addEventListener('input',()=>{clearTimeout(detectTimer);detectTimer=setTimeout(()=>detectLinkNow(document.getElementById('bypassUrl').value.trim()),500);});
-async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';const detLabel=lastDetect?'('+lastDetect.type+')':'';box.innerHTML='<span class="spinner"></span>Memproses '+detLabel+' — max 10 detik...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='browserless'?'ok':(d.source==='original'?'warn':'ok');box.className='result '+cls;let label='Bypass berhasil!';if(d.source==='original')label='Belum selesai — klik bypass lagi:';const detInfo=d.detection?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">Jenis: '+d.detection.type+' · via '+(d.source||'?')+'</div>':(d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'');box.innerHTML=label+detInfo+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
+async function doBypass(){
+  const link=document.getElementById('bypassUrl').value.trim();
+  const box=document.getElementById('bypassResult');
+  if(!link)return;
+  box.style.display='block';box.className='result';
+  const detLabel=lastDetect?'('+lastDetect.type+')':'';
+  box.innerHTML='<span class="spinner"></span>Memproses '+detLabel+' — max 10 detik...';
+  try{
+    const r=await fetch('/?bypass='+encodeURIComponent(link));
+    const d=await r.json();
+    if(d.key){
+      box.className='result ok';
+      box.innerHTML='<b>KEY DITEMUKAN</b><div class="key-line">'+d.key+'</div><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button><div style="font-size:.7rem;color:#6b6b8a;margin-top:6px">via '+(d.source||'?')+'</div>';
+      return;
+    }
+    if(d.result){
+      const url=d.result;
+      window._bypassUrl=url;
+      const cls=d.source==='browserless'?'ok':(d.source==='original'?'warn':'ok');
+      box.className='result '+cls;
+      let label='Bypass berhasil!';
+      if(d.source==='original')label='Belum selesai — klik bypass lagi:';
+      const detInfo=d.detection?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">Jenis: '+d.detection.type+' · via '+(d.source||'?')+'</div>':(d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'');
+      box.innerHTML=label+detInfo+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');
+    }else{
+      box.className='result err';box.innerHTML=d.error||'Bypass gagal.';
+    }
+  }catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}
+}
 async function doConvert(){
   const input=document.getElementById('convFile');
   const box=document.getElementById('convResult');
