@@ -1,3 +1,38 @@
+// ═══════════════════════════════════════════
+// LINK DETECTION TABLE
+// ═══════════════════════════════════════════
+const LINK_PATTERNS = [
+  { name: "LootLabs",     match: ["lootlabs","lootlinks","lootdest"],           auto: "low",    note: "Follow-wall (Instagram/YouTube) sering muncul. Auto-bypass mungkin gagal, butuh follow manual." },
+  { name: "Platorelay",   match: ["platorelay"],                                  auto: "medium", note: "Bisa auto-bypass dengan browser otomatis. Kadang butuh 20-40 detik." },
+  { name: "Linkvertise",  match: ["linkvertise"],                                 auto: "high",   note: "Bisa auto-bypass via API publik." },
+  { name: "Work.ink",     match: ["work.ink","boost.ink","mboost.me"],            auto: "medium", note: "Bisa auto-bypass, kadang butuh retry." },
+  { name: "Rekonise",     match: ["rekonise"],                                    auto: "high",   note: "Bisa auto-bypass via API." },
+  { name: "Sub2Unlock",   match: ["sub2unlock","sub2get","playrole"],             auto: "low",    note: "Sering butuh social unlock. Auto-bypass mungkin gagal." },
+  { name: "SocialWolvez", match: ["socialwolvez","cutsy"],                        auto: "low",    note: "Butuh social unlock. Auto-bypass mungkin gagal." },
+  { name: "Adf.ly",       match: ["adf.ly","adfoc"],                              auto: "high",   note: "Bisa auto-bypass via redirect." },
+  { name: "GPLinks",      match: ["gplinks","gplink","tnlink","tnshort"],         auto: "medium", note: "Coba auto-bypass, kadang butuh retry." },
+  { name: "ShrinkMe",     match: ["shrinkme","shrinkearn","shrinkforearn"],       auto: "medium", note: "Coba auto-bypass, kadang butuh retry." },
+  { name: "Ouo.io",       match: ["ouo.io","exe.io","fc.lc","ez4short"],          auto: "high",   note: "Bisa auto-bypass via redirect." },
+  { name: "Shortener",    match: ["shorte.st","bc.vc","cutt.ly","tii.ai","linkpoi","clk.sh","clicksfly","droplink","yoshort","spaste","za.gl","za.gd","try2link","kyshort","zshort","gtlink","omg10","weboasi","link1s","linkshortify","arolinks","ez4mod","atglinks","indlink","pndk","ldo.tn","mightytr.ee","urlshort","shortlink"], auto: "medium", note: "Shortener umum. Coba auto-bypass." },
+];
+
+function detectLink(url) {
+  if (!url || typeof url !== "string") return null;
+  const low = url.toLowerCase();
+  for (const p of LINK_PATTERNS) {
+    if (p.match.some(m => low.includes(m))) {
+      return { type: p.name, auto: p.auto, note: p.note };
+    }
+  }
+  if (/^https?:\/\//.test(url)) {
+    try {
+      const h = new URL(url).hostname;
+      return { type: "Unknown (" + h + ")", auto: "medium", note: "Bukan shortlink umum. Coba auto-bypass, mungkin ini link langsung." };
+    } catch {}
+  }
+  return { type: "Invalid", auto: "none", note: "URL tidak valid. Harus mulai dengan http:// atau https://" };
+}
+
 export default async function handler(req, res) {
   try { return await handle(req, res); }
   catch (e) {
@@ -185,9 +220,18 @@ async function handle(req, res) {
     return;
   }
 
+  // DETECT ENDPOINT — user ketik link, langsung tahu jenisnya
+  if (params.has("detect")) {
+    const u = params.get("detect");
+    res.status(200).json({ detection: detectLink(u) });
+    return;
+  }
+
   if (params.has("bypass")) {
     const link = params.get("bypass");
     if (!link) { res.status(200).json({ error: "no link" }); return; }
+
+    const detection = detectLink(link);
 
     const low = link.toLowerCase();
     const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
@@ -205,8 +249,15 @@ async function handle(req, res) {
       "kyshort","zshort","gtlink","omg10","weboasi","link1s","linkshortify",
       "arolinks","ez4mod","atglinks","indlink","pndk","ldo.tn"
     ];
+    const socialTokens = [
+      "instagram.com","youtube.com","youtu.be","tiktok.com","twitter.com",
+      "x.com","facebook.com","fb.com","fb.watch","discord.gg","discord.com",
+      "snapchat.com","whatsapp.com","wa.me","telegram","t.me","twitch.tv",
+      "reddit.com","pinterest.com","linkedin.com","threads.net"
+    ];
     const isWrapped = (u) => typeof u === "string" && wrappedTokens.some(s => u.toLowerCase().includes(s));
-    const isCleanUrl = (u) => u && typeof u === "string" && /^https?:\/\//.test(u) && !isWrapped(u);
+    const isSocial  = (u) => typeof u === "string" && socialTokens.some(s => u.toLowerCase().includes(s));
+    const isCleanUrl = (u) => u && typeof u === "string" && /^https?:\/\//.test(u) && !isWrapped(u) && !isSocial(u);
 
     const tryFetch = async (u, opts = {}, ms = 15000) => {
       const ctrl = new AbortController();
@@ -253,7 +304,7 @@ async function handle(req, res) {
 
     const ok = (result, source) => {
       if (isCleanUrl(result)) {
-        res.status(200).json({ result, source });
+        res.status(200).json({ result, source, detection });
         return true;
       }
       return false;
@@ -363,26 +414,36 @@ async function handle(req, res) {
               const startUrl = context.url;
               const low = startUrl.toLowerCase();
               const wrapped = ${JSON.stringify(wrappedTokens)};
+              const social  = ${JSON.stringify(socialTokens)};
               const isWrapped = (u) => wrapped.some(s => u.toLowerCase().includes(s));
+              const isSocial  = (u) => social.some(s => u.toLowerCase().includes(s));
+              const isClean   = (u) => u && /^https?:\\/\\//.test(u) && !isWrapped(u) && !isSocial(u);
               const isPlatorelay = low.includes("platorelay");
               const isLoot = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest");
               const isLinkvertise = low.includes("linkvertise") || low.includes("work.ink") || low.includes("boost.ink");
               function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
               async function clickAll(pg) {
-                return pg.evaluate(() => {
+                return pg.evaluate((wrappedList, socialList) => {
                   let n = 0;
+                  const badText = /follow|subscribe|instagram|youtube|tiktok|twitter|snapchat|share|like us|follow us|share us|repost|tag us/i;
                   const els = document.querySelectorAll("button, a, [role='button'], [onclick], input[type='submit'], input[type='button'], [class*='btn'], [id*='btn']");
                   els.forEach(el => {
                     if (el.disabled) return;
                     const st = getComputedStyle(el);
                     if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return;
                     const t = (el.textContent || el.value || "").toLowerCase().trim();
+                    if (badText.test(t)) return;
+                    const href = (el.href || el.getAttribute('href') || "").toLowerCase();
+                    if (href && socialList.some(s => href.includes(s))) return;
+                    if (href && wrappedList.some(s => href.includes(s))) return;
                     const pat = ["continue","get link","unlock","proceed","go to link","visit","lanjut","claim","next","done","finish","complete","open","dapatkan","klik","click here","access","enter","download","get now","continue to","reveal","show link","generate link","free access","visit now","verify","submit"];
                     if (pat.some(p => t.includes(p))) { try { el.click(); n++; } catch {} }
                   });
                   return n;
-                });
+                }, wrapped, social);
               }
+
               async function skipTimers(pg) {
                 await pg.evaluate(() => {
                   try {
@@ -399,41 +460,67 @@ async function handle(req, res) {
                   } catch {}
                 });
               }
+
               try {
                 await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
                 await page.setViewport({ width: 1366, height: 900 });
                 await page.setRequestInterception(true);
                 page.on("request", req => {
                   const u = req.url().toLowerCase();
-                  const block = ["google-analytics","googletagmanager","doubleclick","googlesyndication","adsbygoogle","amazon-adsystem","pagead","moatads","adsrvr","advertising","analytics","tracker","hotjar","fbevents","ga.js","gtag","clarity.ms","facebook.com","twitter.com","tiktok.com","criteo","taboola","outbrain","yandex","vungle","applovin"];
+                  const block = ["google-analytics","googletagmanager","doubleclick","googlesyndication","adsbygoogle","amazon-adsystem","pagead","moatads","adsrvr","advertising","analytics","tracker","hotjar","fbevents","ga.js","gtag","clarity.ms","criteo","taboola","outbrain","yandex","vungle","applovin"];
                   if (block.some(p => u.includes(p))) { req.abort(); return; }
                   req.continue();
                 });
                 await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 35000 });
                 await sleep(4500);
+
                 for (let i = 0; i < 15; i++) {
+                  const beforeUrl = page.url();
                   await clickAll(page);
                   if (isPlatorelay || isLoot) await skipTimers(page);
                   await sleep(2200);
                   const cur = page.url();
-                  if (!isWrapped(cur)) return { url: cur, status: "resolved" };
+                  if (isSocial(cur)) {
+                    try { await page.goto(beforeUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch {}
+                    await sleep(1500);
+                    continue;
+                  }
+                  if (isClean(cur)) return { url: cur, status: "resolved" };
                 }
+
                 await sleep(isLoot ? 6000 : isLinkvertise ? 4000 : 2500);
-                const finalUrl = page.url();
-                if (!isWrapped(finalUrl)) return { url: finalUrl, status: "resolved" };
-                const found = await page.evaluate(() => {
+
+                let finalUrl = page.url();
+                if (isSocial(finalUrl)) {
+                  try { await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 20000 }); } catch {}
+                  await sleep(2500);
+                  for (let i = 0; i < 8; i++) {
+                    await clickAll(page);
+                    await sleep(2000);
+                    const cur = page.url();
+                    if (isSocial(cur)) {
+                      try { await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch {}
+                      await sleep(1500);
+                      continue;
+                    }
+                    if (isClean(cur)) return { url: cur, status: "resolved" };
+                  }
+                  finalUrl = page.url();
+                }
+                if (isClean(finalUrl)) return { url: finalUrl, status: "resolved" };
+
+                const found = await page.evaluate((socialList) => {
                   const all = [...document.querySelectorAll("a[href^='http']")];
-                  const bad = ${JSON.stringify(wrappedTokens)};
                   for (const a of all) {
                     const h = a.href;
-                    if (bad.some(s => h.toLowerCase().includes(s))) continue;
+                    if (socialList.some(s => h.toLowerCase().includes(s))) continue;
                     if (h.includes("google") || h.includes("cloudflare") || h.includes("discord") || h.includes("facebook") || h.includes("twitter") || h.includes("tiktok")) continue;
                     return h;
                   }
                   return null;
-                });
-                if (found && !isWrapped(found)) return { url: found, status: "resolved" };
-                return { url: finalUrl, status: "still_wrapped" };
+                }, social);
+                if (found && isClean(found)) return { url: found, status: "resolved" };
+                return { url: startUrl, status: "still_wrapped" };
               } catch (e) {
                 return { url: startUrl, status: "error", error: String(e.message || e) };
               }
@@ -444,7 +531,7 @@ async function handle(req, res) {
         if (r.ok) {
           const d = await readJson(r);
           if (d && isCleanUrl(d.url)) {
-            res.status(200).json({ result: d.url, source: "browserless" });
+            res.status(200).json({ result: d.url, source: "browserless", detection });
             return;
           }
         }
@@ -455,16 +542,24 @@ async function handle(req, res) {
     try {
       const r = await tryFetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } }, 7000);
       const loc = r.headers.get("location");
-      if (loc && /^https?:\/\//.test(loc) && loc !== link && !isWrapped(loc)) {
-        res.status(200).json({ result: loc, source: "redirect" });
+      if (loc && /^https?:\/\//.test(loc) && loc !== link && isCleanUrl(loc)) {
+        res.status(200).json({ result: loc, source: "redirect", detection });
         return;
       }
     } catch {}
 
+    let warning = "Bypass gagal semua layer.";
+    if (detection && detection.auto === "low") {
+      warning = detection.type + " kemungkinan pakai dinding follow/subscribe manual — auto-bypass memang sering gagal untuk tipe ini.";
+    } else {
+      warning = "Provider publik kadang down. Coba lagi dalam 1-2 menit, atau ganti link.";
+    }
+
     res.status(200).json({
       result: link,
       source: "original",
-      warning: "Semua provider bypass gagal. Coba lagi dalam 1-2 menit, atau ganti link.",
+      detection,
+      warning,
     });
     return;
   }
@@ -522,7 +617,7 @@ function mainPage(wa) {
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-:root{--pink:#e03c8a;--purple:#9b4de0;--cyan:#00d4ff;--green:#00e87a;--bg:#08080f;--bg2:#0f0f1a;--bg3:#16162a;--border:#ffffff12;--text:#e8e8f0;--muted:#6b6b8a}
+:root{--pink:#e03c8a;--purple:#9b4de0;--cyan:#00d4ff;--green:#00e87a;--yellow:#ffc832;--red:#ff6b6b;--bg:#08080f;--bg2:#0f0f1a;--bg3:#16162a;--border:#ffffff12;--text:#e8e8f0;--muted:#6b6b8a}
 body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px 16px}
 .hero{text-align:center;margin-bottom:28px}
 .logo{font-size:2.6rem;font-weight:900;background:linear-gradient(135deg,var(--pink),var(--purple),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;line-height:1}
@@ -569,6 +664,18 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
 .user-id{font-size:0.72rem;color:var(--muted)}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,0.1);border-top-color:var(--pink);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
+.detect{display:none;margin-top:-4px;margin-bottom:10px;padding:8px 12px;border-radius:9px;font-size:0.75rem;line-height:1.5;align-items:flex-start;gap:8px}
+.detect.show{display:flex}
+.detect .d-badge{font-weight:700;padding:2px 8px;border-radius:6px;font-size:0.68rem;white-space:nowrap;flex-shrink:0}
+.detect .d-text{flex:1}
+.detect.high{background:rgba(0,232,122,0.06);border:1px solid rgba(0,232,122,0.25);color:var(--text)}
+.detect.high .d-badge{background:rgba(0,232,122,0.15);color:var(--green)}
+.detect.medium{background:rgba(0,212,255,0.06);border:1px solid rgba(0,212,255,0.25);color:var(--text)}
+.detect.medium .d-badge{background:rgba(0,212,255,0.15);color:var(--cyan)}
+.detect.low{background:rgba(255,200,50,0.06);border:1px solid rgba(255,200,50,0.25);color:var(--text)}
+.detect.low .d-badge{background:rgba(255,200,50,0.15);color:var(--yellow)}
+.detect.none{background:rgba(255,80,80,0.06);border:1px solid rgba(255,80,80,0.25);color:var(--text)}
+.detect.none .d-badge{background:rgba(255,80,80,0.15);color:var(--red)}
 footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opacity:0.5}
 #ownerFab{position:fixed;bottom:20px;right:20px;width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,var(--pink),var(--purple));display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 12px rgba(224,60,138,0.4);font-size:20px;user-select:none;opacity:0.35;transition:opacity .2s}
 #ownerFab:hover{opacity:1}
@@ -598,7 +705,11 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 <div class="card">
 <div class="card-title">Bypass Shortlink</div>
 <div class="tags"><span class="tag">Linkvertise</span><span class="tag">Work.ink</span><span class="tag">Sub2Unlock</span><span class="tag">Playrole</span><span class="tag">LootLabs</span><span class="tag">Platorelay</span><span class="tag">Rekonise</span><span class="tag">Adf.ly</span><span class="tag">GPLinks</span></div>
-<input type="text" class="inp" id="bypassUrl" placeholder="Paste link shortlink di sini...">
+<input type="text" class="inp" id="bypassUrl" placeholder="Paste link shortlink di sini..." autocomplete="off" spellcheck="false">
+<div class="detect" id="detectBox">
+  <span class="d-badge" id="detectBadge">—</span>
+  <span class="d-text" id="detectText">Ketik link untuk deteksi otomatis</span>
+</div>
 <button class="btn-cyan" onclick="doBypass()">Bypass Sekarang</button>
 <div class="result" id="bypassResult"></div>
 </div>
@@ -623,6 +734,8 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 const WA_NUMBER="${wa}";
 let lastLookup={uid:null,name:null};
 let ownerPw=null;
+let detectTimer=null;
+let lastDetect=null;
 function switchTab(i){document.querySelectorAll('.nav-btn').forEach((b,j)=>b.classList.toggle('active',i===j));document.querySelectorAll('.panel').forEach((p,j)=>p.classList.toggle('active',i===j));}
 function updateWA(){if(!lastLookup.name)return;const text="Beli Key NANG%0ANama: "+encodeURIComponent(lastLookup.name)+"%0ARoblox ID: "+lastLookup.uid+"%0ABukti TF: [screenshot]";document.getElementById('waBtn').href="https://wa.me/"+WA_NUMBER+"?text="+text;document.getElementById('waNama').textContent=lastLookup.name;document.getElementById('waUid').textContent=lastLookup.uid;}
 async function doLookup(){const uid=document.getElementById('lookupId').value.trim();const box=document.getElementById('lookupResult');if(!uid)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Mencari...';try{const r=await fetch('/?lookup='+encodeURIComponent(uid));const d=await r.json();if(d.name){lastLookup={uid:d.uid,name:d.name};updateWA();box.style.display='none';const existing=document.getElementById('userCard');if(existing)existing.remove();const card=document.createElement('div');card.id='userCard';card.className='user-card';card.innerHTML='<div class="user-avatar">'+d.name.charAt(0).toUpperCase()+'</div><div class="user-info"><div class="user-name">'+d.name+'</div><div class="user-id">ID: '+d.uid+'</div></div>';box.parentNode.insertBefore(card,box.nextSibling);}else{box.className='result err';box.innerHTML='User ID tidak ditemukan';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
@@ -632,7 +745,56 @@ function closeGen(){document.getElementById('genPanel').classList.remove('show')
 document.getElementById('genPanel').addEventListener('click',(e)=>{if(e.target.id==='genPanel')closeGen();});
 async function doLogin(){const pw=document.getElementById('genPw').value;if(!pw)return;try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:pw,uid:'1'})});const d=await r.json();if(d.error==='password salah'){document.getElementById('genPw').value='';document.getElementById('genPw').placeholder='password salah';}else if(d.ok){ownerPw=pw;document.getElementById('genForm').style.display='block';document.getElementById('genPw').disabled=true;}}catch(e){}}
 async function doGenerate(){const uid=document.getElementById('genUid').value.trim();const box=document.getElementById('genResult');if(!uid||!ownerPw)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Generating...';try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:ownerPw,uid:uid})});const d=await r.json();if(d.ok){box.className='result ok';box.innerHTML='<b>Username:</b> '+(d.username||'Unknown')+'<div class="key-line">'+d.key+'</div><b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b><a href="'+d.authLink+'" target="_blank" class="link-line">'+d.authLink+'</a><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';}else{box.className='result err';box.innerHTML=d.error||'Gagal';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
-async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Memproses (LootLabs/platorelay bisa 20-40 detik)...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='browserless'?'ok':(d.source==='original'?'warn':'ok');box.className='result '+cls;let label='Bypass berhasil!';if(d.source==='original')label='Belum selesai — klik bypass lagi:';const src=d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'';box.innerHTML=label+src+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
+
+async function detectLinkNow(url){
+  const box=document.getElementById('detectBox');
+  const badge=document.getElementById('detectBadge');
+  const text=document.getElementById('detectText');
+  if(!url||url.length<8){box.classList.remove('show');lastDetect=null;return;}
+  try{
+    const r=await fetch('/?detect='+encodeURIComponent(url));
+    const d=await r.json();
+    const det=d.detection;
+    if(!det){box.classList.remove('show');return;}
+    lastDetect=det;
+    box.className='detect show '+det.auto;
+    badge.textContent=det.type;
+    const labels={high:'AUTO',medium:'COBA',low:'MANUAL',none:'INVALID'};
+    badge.textContent=det.type+' · '+labels[det.auto];
+    text.textContent=det.note;
+  }catch(e){box.classList.remove('show');}
+}
+
+document.getElementById('bypassUrl').addEventListener('input',()=>{
+  clearTimeout(detectTimer);
+  detectTimer=setTimeout(()=>detectLinkNow(document.getElementById('bypassUrl').value.trim()),500);
+});
+
+async function doBypass(){
+  const link=document.getElementById('bypassUrl').value.trim();
+  const box=document.getElementById('bypassResult');
+  if(!link)return;
+  box.style.display='block';box.className='result';
+  const detLabel=lastDetect?'('+lastDetect.type+')':'';
+  box.innerHTML='<span class="spinner"></span>Memproses '+detLabel+' — LootLabs/platorelay bisa 20-40 detik...';
+  try{
+    const r=await fetch('/?bypass='+encodeURIComponent(link));
+    const d=await r.json();
+    if(d.result){
+      const url=d.result;
+      window._bypassUrl=url;
+      const cls=d.source==='browserless'?'ok':(d.source==='original'?'warn':'ok');
+      box.className='result '+cls;
+      let label='Bypass berhasil!';
+      if(d.source==='original')label='Belum selesai — klik bypass lagi:';
+      const detInfo=d.detection?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">Jenis: '+d.detection.type+' · via '+(d.source||'?')+'</div>':(d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'');
+      box.innerHTML=label+detInfo+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');
+    }else{
+      box.className='result err';box.innerHTML=d.error||'Bypass gagal.';
+    }
+  }catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}
+}
+
 async function doConvert(){
   const input=document.getElementById('convFile');
   const box=document.getElementById('convResult');
