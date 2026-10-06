@@ -1,12 +1,12 @@
-const BUILD = "65.6";
+const BUILD = "65.7";
 
 const LINK_PATTERNS = [
   { name: "LootLabs",     match: ["lootlabs","lootlinks","lootdest"],           auto: "low",    note: "Follow-wall / task-wall. Auto-bypass coba maksimal tapi sering gagal." },
-  { name: "Platorelay",   match: ["platorelay"],                                  auto: "medium", note: "Bisa auto-bypass, tapi di server gratis bisa timeout." },
-  { name: "Linkvertise",  match: ["linkvertise"],                                 auto: "high",   note: "Auto-bypass via API publik." },
-  { name: "Work.ink",     match: ["work.ink","boost.ink","mboost.me"],            auto: "high",   note: "Auto-bypass via API publik." },
-  { name: "Rekonise",     match: ["rekonise"],                                    auto: "high",   note: "Auto-bypass via API resmi." },
-  { name: "Sub2Unlock",   match: ["sub2unlock","sub2get","playrole"],             auto: "low",    note: "Butuh social unlock manual. Auto-bypass sering gagal." },
+  { name: "Platorelay",   match: ["platorelay"],                                  auto: "high",   note: "Auto-bypass via ticket API." },
+  { name: "Linkvertise",  match: ["linkvertise"],                                 auto: "high",   note: "Auto-bypass via API." },
+  { name: "Work.ink",     match: ["work.ink","boost.ink","mboost.me"],            auto: "high",   note: "Auto-bypass via API." },
+  { name: "Rekonise",     match: ["rekonise"],                                    auto: "high",   note: "Auto-bypass via API." },
+  { name: "Sub2Unlock",   match: ["sub2unlock","sub2get","playrole"],             auto: "low",    note: "Butuh social unlock manual." },
   { name: "SocialWolvez", match: ["socialwolvez","cutsy"],                        auto: "low",    note: "Butuh social unlock manual." },
   { name: "Adf.ly",       match: ["adf.ly","adfoc"],                              auto: "high",   note: "Auto-bypass via redirect." },
   { name: "GPLinks",      match: ["gplinks","gplink","tnlink","tnshort"],         auto: "high",   note: "Auto-bypass via API." },
@@ -22,10 +22,7 @@ function detectLink(url) {
     if (p.match.some(m => low.includes(m))) return { type: p.name, auto: p.auto, note: p.note };
   }
   if (/^https?:\/\//.test(url)) {
-    try {
-      const h = new URL(url).hostname;
-      return { type: "Unknown (" + h + ")", auto: "medium", note: "Coba auto-bypass." };
-    } catch {}
+    try { const h = new URL(url).hostname; return { type: "Unknown (" + h + ")", auto: "medium", note: "Coba auto-bypass." }; } catch {}
   }
   return { type: "Invalid", auto: "none", note: "URL tidak valid." };
 }
@@ -39,6 +36,7 @@ const CDN_HOSTS = [
   "fonts.gstatic.com","code.jquery.com","stackpath.bootstrapcdn.com",
   "raw.githack.com","gitcdn.link","statically.io","esm.sh","skypack.dev",
   "cdn.skypack.dev","esm.run","bundle.run","cdn.esm.sh",
+  "bauval.org","adfoc.us","adf.ly","short.economy","link4rev",
 ];
 const CDN_PATH_HINTS = ["/npm/","/node_modules/","/dist/","/vendor/","/build/","/assets/","/static/","/chunks/","/chunk-","/runtime.","/polyfill","/polyfills/","/bundle.","/bundle/","/lib/","/umd/","/esm/","/cjs/"];
 const BAD_EXT = /\.(js|mjs|cjs|css|map|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|wav|ogg|pdf|zip|rar|7z|tar|gz|wasm|json|xml|txt|md|yml|yaml|toml|lock)(\?|#|$)/i;
@@ -233,7 +231,18 @@ async function handle(req, res) {
     const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
     const ACCEPT = "application/json, text/plain, */*";
 
-    const wrappedTokens = ["lootlabs","lootlinks","lootdest","platorelay","linkvertise","work.ink","sub2unlock","sub2get","playrole","boost.ink","socialwolvez","cutsy","mboost.me","rekonise","adfoc","adf.ly","shrinkme","shrinkearn","ouo.io","exe.io","fc.lc","ez4short","shorte.st","bc.vc","cutt.ly","tii.ai","linkpoi","gplinks","gplink","tnlink","tnshort","mdiskshortner","indianshortner","urlshort","shortlink","clk.sh","clicksfly","mightytr.ee","droplink","yoshort","spaste","za.gl","za.gd","shrinkforearn","try2link","kyshort","zshort","gtlink","omg10","weboasi","link1s","linkshortify","arolinks","ez4mod","atglinks","indlink","pndk","ldo.tn"];
+    const wrappedTokens = [
+      "lootlabs","lootlinks","lootdest","platorelay","auth.platorelay","api.platorelay",
+      "linkvertise","work.ink","sub2unlock","sub2get","playrole","boost.ink",
+      "socialwolvez","cutsy","mboost.me","rekonise","adfoc","adf.ly","adfoc.us",
+      "shrinkme","shrinkearn","ouo.io","exe.io","fc.lc","ez4short",
+      "shorte.st","bc.vc","cutt.ly","tii.ai","linkpoi","bauval.org",
+      "gplinks","gplink","tnlink","tnshort","mdiskshortner","indianshortner",
+      "urlshort","shortlink","clk.sh","clicksfly","mightytr.ee","droplink",
+      "yoshort","spaste","za.gl","za.gd","shrinkforearn","try2link",
+      "kyshort","zshort","gtlink","omg10","weboasi","link1s","linkshortify",
+      "arolinks","ez4mod","atglinks","indlink","pndk","ldo.tn"
+    ];
     const socialTokens = ["instagram.com","youtube.com","youtu.be","tiktok.com","twitter.com","x.com","facebook.com","fb.com","fb.watch","discord.gg","discord.com","snapchat.com","whatsapp.com","wa.me","telegram","t.me","twitch.tv","reddit.com","pinterest.com","linkedin.com","threads.net"];
     const isWrapped = (u) => typeof u === "string" && wrappedTokens.some(s => u.toLowerCase().includes(s));
     const isSocial  = (u) => typeof u === "string" && socialTokens.some(s => u.toLowerCase().includes(s));
@@ -286,13 +295,33 @@ async function handle(req, res) {
     const isRekonise    = low.includes("rekonise") || low.includes("socialwolvez") || low.includes("cutsy");
     const isPlatorelay  = low.includes("platorelay");
 
-    // ═══════════════════════════════════════════
-    // MASSIVE PARALLEL API RACE — puluhan provider sekaligus
-    // ═══════════════════════════════════════════
+    // ═══ PLATORELAY SPECIAL — ticket API ═══
+    if (isPlatorelay) {
+      // extract d= ticket
+      const dMatch = link.match(/[?&]d=([^&]+)/);
+      if (dMatch && dMatch[1]) {
+        const ticket = decodeURIComponent(dMatch[1]);
+        const platoApis = [
+          "https://api.platorelay.com/bypass?d=" + encodeURIComponent(ticket),
+          "https://api.platorelay.com/bypass?ticket=" + encodeURIComponent(ticket),
+          "https://platorelay.com/api/bypass?d=" + encodeURIComponent(ticket),
+        ];
+        for (const u of platoApis) {
+          try {
+            const r = await tryFetch(u, { method: "GET", headers: { "User-Agent": UA, "Accept": ACCEPT, "Referer": "https://platorelay.com/" } }, 8000);
+            if (!r.ok) continue;
+            const d = await readJson(r);
+            const result = extract(d);
+            if (isCleanUrl(result) && sendOk(result, "platorelay-ticket")) return;
+          } catch {}
+        }
+      }
+    }
+
+    // ═══ MASSIVE PARALLEL API RACE ═══
     const q = encodeURIComponent(link);
     const tasks = [];
 
-    // POST-style universal bypass
     tasks.push((async () => {
       const r = await tryFetch("https://api.bypass.vip/", {
         method: "POST",
@@ -317,11 +346,9 @@ async function handle(req, res) {
       return { result: res, source: "bypass.city" };
     })());
 
-    // GET-style providers — puluhan, dijalanin paralel
     const getProviders = [
       ["https://api.bypassall.lol/bypass?url=" + q, "bypassall"],
       ["https://bypassall.lol/api/bypass?url=" + q, "bypassall-2"],
-      ["https://api.bypassall.lol/api/v1/bypass?url=" + q, "bypassall-v1"],
       ["https://bypass.bot.nu/bypass?url=" + q, "bypass.bot"],
       ["https://linklm.com/api/bypass?url=" + q, "linklm"],
       ["https://api.bypass-unlocked.workers.dev/?url=" + q, "unlocked"],
@@ -333,27 +360,18 @@ async function handle(req, res) {
       ["https://api.bypass.tf/api/bypass?url=" + q, "bypass.tf"],
       ["https://bypass.link/api/bypass?url=" + q, "bypass.link"],
       ["https://api.bypass.lol/bypass?url=" + q, "bypass.lol"],
-      ["https://api.lootlabs.gg/api/bypass?url=" + q, "lootlabs-api"],
+      ["https://api.platorelay.com/bypass?url=" + q, "platorelay-api"],
       ["https://api.bypass.workers.dev/bypass?url=" + q, "bypass-workers"],
       ["https://bypass.workers.dev/bypass?url=" + q, "bypass-workers-2"],
-      ["https://bypass-fast.vercel.app/api/bypass?url=" + q, "bypass-fast"],
-      ["https://bypasser-api.vercel.app/api/bypass?url=" + q, "bypasser-api"],
       ["https://api.linkvertise-bypass.com/bypass?url=" + q, "lv-bypass"],
       ["https://bypass.unlockit.workers.dev/?url=" + q, "unlockit"],
-      ["https://universal-bypass.vercel.app/api/bypass?url=" + q, "universal"],
       ["https://api.allbypass.workers.dev/bypass?url=" + q, "allbypass"],
       ["https://api.b-pass.workers.dev/?url=" + q, "b-pass"],
-      ["https://api.bypass-v2.workers.dev/bypass?url=" + q, "bypass-v2"],
-      ["https://api.cracked-bypass.workers.dev/?url=" + q, "cracked"],
       ["https://api.bypass.re/bypass?url=" + q, "bypass.re"],
       ["https://api.shortlink-bypass.com/bypass?url=" + q, "shortlink-bypass"],
       ["https://api.bypasser.io/bypass?url=" + q, "bypasser-io"],
-      ["https://api.bypass.link/bypass?url=" + q, "bypass.link-2"],
       ["https://bypass.host/api/bypass?url=" + q, "bypass.host"],
       ["https://api.unbypass.workers.dev/?url=" + q, "unbypass"],
-      ["https://api.nobypass.workers.dev/?url=" + q, "nobypass"],
-      ["https://api.bypassall.workers.dev/?url=" + q, "bypassall-workers"],
-      ["https://api.bypasser-all.workers.dev/?url=" + q, "bypasser-all"],
       ["https://api.cleanbypass.workers.dev/?url=" + q, "cleanbypass"],
       ["https://api.fastbypass.workers.dev/?url=" + q, "fastbypass"],
     ];
@@ -368,7 +386,6 @@ async function handle(req, res) {
       })());
     }
 
-    // linkvertise-specific
     if (isLinkvertise) {
       const lvId = link.match(/linkvertise\.com\/(\d+)/i)?.[1];
       if (lvId) {
@@ -379,28 +396,25 @@ async function handle(req, res) {
           if (!r.ok) throw 0;
           const d = await readJson(r);
           const target = d?.data?.link?.target;
-          if (!target) throw 0;
+          if (!target || !isCleanUrl(target)) throw 0;
           return { result: target, source: "linkvertise-static" };
         })());
       }
     }
 
-    // rekonise
     if (isRekonise) {
       const slug = link.match(/rekonise\.com\/([a-z0-9]+)/i)?.[1];
       if (slug) {
         tasks.push((async () => {
           const r = await tryFetch("https://api.rekonise.com/socialunlocks/" + slug, { headers: { "User-Agent": UA, "Accept": ACCEPT } });
           if (!r.ok) throw 0;
-          const d = await readJson(r);
-          const res = extract(d);
+          const res = extract(await readJson(r));
           if (!isCleanUrl(res)) throw 0;
           return { result: res, source: "rekonise-api" };
         })());
       }
     }
 
-    // race — siapapun duluan
     if (tasks.length > 0) {
       try {
         const winner = await Promise.any(tasks);
@@ -408,10 +422,7 @@ async function handle(req, res) {
       } catch (e) {}
     }
 
-    // ═══════════════════════════════════════════
-    // Browserless — HANYA kalo lootlabs/platorelay & belum dapet
-    // budget 7 detik sebelum Vercel kill di 10s
-    // ═══════════════════════════════════════════
+    // ═══ BROWSERLESS — only for loot/plato ═══
     if (BROWSERLESS_TOKEN && (isLootLink || isPlatorelay)) {
       try {
         const r = await tryFetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=6000&stealth=true", {
@@ -420,7 +431,6 @@ async function handle(req, res) {
           body: JSON.stringify({
             code: `export default async function ({ page, context }) {
               const startUrl = context.url;
-              const low = startUrl.toLowerCase();
               const wrapped = ${JSON.stringify(wrappedTokens)};
               const social  = ${JSON.stringify(socialTokens)};
               const cdnHosts = ${JSON.stringify(CDN_HOSTS)};
@@ -535,7 +545,6 @@ async function handle(req, res) {
   res.status(200).send(mainPage(WA_NUMBER));
 }
 
-// authPage + mainPage sama kayak sebelumnya — gak berubah
 function authPage(data, valid, username) {
   const key = data.k, uid = data.u, exp = data.e;
   const now = Math.floor(Date.now() / 1000);
@@ -712,7 +721,7 @@ async function doLogin(){const pw=document.getElementById('genPw').value;if(!pw)
 async function doGenerate(){const uid=document.getElementById('genUid').value.trim();const box=document.getElementById('genResult');if(!uid||!ownerPw)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Generating...';try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:ownerPw,uid:uid})});const d=await r.json();if(d.ok){box.className='result ok';box.innerHTML='<b>Username:</b> '+(d.username||'Unknown')+'<div class="key-line">'+d.key+'</div><b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b><a href="'+d.authLink+'" target="_blank" class="link-line">'+d.authLink+'</a><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';}else{box.className='result err';box.innerHTML=d.error||'Gagal';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 async function detectLinkNow(url){const box=document.getElementById('detectBox');const badge=document.getElementById('detectBadge');const text=document.getElementById('detectText');if(!url||url.length<8){box.classList.remove('show');lastDetect=null;return;}try{const r=await fetch('/?detect='+encodeURIComponent(url));const d=await r.json();const det=d.detection;if(!det){box.classList.remove('show');return;}lastDetect=det;box.className='detect show '+det.auto;const labels={high:'AUTO',medium:'COBA',low:'MANUAL',none:'INVALID'};badge.textContent=det.type+' · '+labels[det.auto];text.textContent=det.note;}catch(e){box.classList.remove('show');}}
 document.getElementById('bypassUrl').addEventListener('input',()=>{clearTimeout(detectTimer);detectTimer=setTimeout(()=>detectLinkNow(document.getElementById('bypassUrl').value.trim()),500);});
-async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';const detLabel=lastDetect?'('+lastDetect.type+')':'';box.innerHTML='<span class="spinner"></span>Memproses '+detLabel+' — paralel 40+ provider...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='browserless'?'ok':(d.source==='original'?'warn':'ok');box.className='result '+cls;let label='Bypass berhasil!';if(d.source==='original')label='Belum selesai — klik bypass lagi:';const detInfo=d.detection?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">Jenis: '+d.detection.type+' · via '+(d.source||'?')+'</div>':(d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'');box.innerHTML=label+detInfo+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
+async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';const detLabel=lastDetect?'('+lastDetect.type+')':'';box.innerHTML='<span class="spinner"></span>Memproses '+detLabel+' — paralel 30+ provider...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='browserless'?'ok':(d.source==='original'?'warn':'ok');box.className='result '+cls;let label='Bypass berhasil!';if(d.source==='original')label='Belum selesai — klik bypass lagi:';const detInfo=d.detection?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">Jenis: '+d.detection.type+' · via '+(d.source||'?')+'</div>':(d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'');box.innerHTML=label+detInfo+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 async function doConvert(){const input=document.getElementById('convFile');const box=document.getElementById('convResult');if(!input.files||!input.files[0])return;const file=input.files[0];if(file.size>50*1024*1024){box.style.display='block';box.className='result err';box.innerHTML='File > 50 MB.';return;}box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Mengkonversi '+file.name+'...';try{const buf=await file.arrayBuffer();const r=await fetch('/api/convert',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:buf});const text=await r.text();if(!r.ok){let msg=text;try{msg=JSON.parse(text).error||text;}catch{}box.className='result err';box.innerHTML='Gagal ('+r.status+'): '+msg;return;}const blob=new Blob([text],{type:'application/xml'});const url=URL.createObjectURL(blob);const outName=file.name.replace(/\.(rbxl|rbxm)$/i,'.rbxlx');box.className='result ok';box.innerHTML='Berhasil!<div class="key-line"><a href="'+url+'" download="'+outName+'" style="color:#00d4ff;text-decoration:none">Download '+outName+'</a></div>';}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 </script></body></html>`;
 }
