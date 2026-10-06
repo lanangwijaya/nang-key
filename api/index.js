@@ -574,7 +574,7 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 <div class="panel" id="tab2">
 <div class="card">
 <div class="card-title">RBXL / RBXM → RBXLX</div>
-<div class="fmt-box">Upload file biner <span class="field">.rbxl</span> atau <span class="field">.rbxm</span>, lalu download hasilnya sebagai <span class="field">.rbxlx</span> (XML). File XML bisa langsung dibaca script NANG atau dibuka di Roblox Studio.<br><br><b style="color:#ffc832">Limit: 10 MB per file.</b> Lebih dari itu pakai converter eksternal.</div>
+<div class="fmt-box">Upload file biner <span class="field">.rbxl</span> atau <span class="field">.rbxm</span>, lalu download hasilnya sebagai <span class="field">.rbxlx</span> (XML). File XML bisa langsung dibaca script NANG atau dibuka di Roblox Studio.<br><br><b style="color:#ffc832">Limit: 50 MB per file.</b></div>
 <input type="file" id="convFile" accept=".rbxl,.rbxm" style="display:none" onchange="doConvert()">
 <button class="btn-cyan" onclick="document.getElementById('convFile').click()">Pilih File (.rbxl / .rbxm)</button>
 <div class="result" id="convResult"></div>
@@ -605,23 +605,22 @@ async function doConvert(){
   const box=document.getElementById('convResult');
   if(!input.files||!input.files[0])return;
   const file=input.files[0];
-  if(file.size>10*1024*1024){box.style.display='block';box.className='result err';box.innerHTML='File > 10 MB, pakai converter eksternal.';return;}
+  if(file.size>50*1024*1024){box.style.display='block';box.className='result err';box.innerHTML='File > 50 MB, terlalu besar.';return;}
   box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Mengkonversi '+file.name+' ('+(file.size/1024).toFixed(1)+' KB)...';
   try{
     const buf=await file.arrayBuffer();
     const r=await fetch('/api/convert',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:buf});
+    const text=await r.text();
     if(!r.ok){
-      const t=await r.text();
-      let msg=t;
-      try{msg=JSON.parse(t).error||t;}catch{}
-      box.className='result err';box.innerHTML='Gagal: '+msg;return;
+      let msg=text;
+      try{msg=JSON.parse(text).error||text;}catch{}
+      box.className='result err';box.innerHTML='Gagal ('+r.status+'): '+msg;return;
     }
-    const xml=await r.text();
-    const blob=new Blob([xml],{type:'application/xml'});
+    const blob=new Blob([text],{type:'application/xml'});
     const url=URL.createObjectURL(blob);
     const outName=file.name.replace(/\.(rbxl|rbxm)$/i,'.rbxlx');
     box.className='result ok';
-    box.innerHTML='Berhasil! Ukuran output: '+(xml.length/1024).toFixed(1)+' KB<div class="key-line"><a href="'+url+'" download="'+outName+'" style="color:#00d4ff;text-decoration:none">Download '+outName+'</a></div>';
+    box.innerHTML='Berhasil! Ukuran output: '+(text.length/1024).toFixed(1)+' KB<div class="key-line"><a href="'+url+'" download="'+outName+'" style="color:#00d4ff;text-decoration:none">Download '+outName+'</a></div>';
   }catch(e){
     box.className='result err';box.innerHTML='Error: '+e.message;
   }
