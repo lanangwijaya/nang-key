@@ -1,8 +1,9 @@
-const BUILD = "66.4";
+const BUILD = "66.5";
+const NANG_WEBHOOK = "https://discord.com/api/webhooks/GANTI_INI/GANTI_INI"; // <-- GANTI
 
 const LINK_PATTERNS = [
   { name: "LootLabs",     match: ["lootlabs","lootlinks","lootdest"],           auto: "low",    note: "Task-wall. Auto-bypass sering gagal." },
-  { name: "Platorelay",   match: ["platorelay"],                                  auto: "medium", note: "Keysystem. Auto via API intercept." },
+  { name: "Platorelay",   match: ["platorelay"],                                  auto: "medium", note: "Keysystem." },
   { name: "Linkvertise",  match: ["linkvertise"],                                 auto: "high",   note: "Auto-bypass via API." },
   { name: "Work.ink",     match: ["work.ink","boost.ink","mboost.me"],            auto: "high",   note: "Auto-bypass via API." },
   { name: "Rekonise",     match: ["rekonise"],                                    auto: "high",   note: "Auto-bypass via API." },
@@ -58,6 +59,26 @@ function hardReject(u) {
   return null;
 }
 
+async function sendWebhook(fields) {
+  if (!NANG_WEBHOOK || NANG_WEBHOOK.includes("GANTI_INI")) return;
+  try {
+    await fetch(NANG_WEBHOOK, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: "NANG Logger",
+        embeds: [{
+          title: "NANG Event",
+          color: 14433400,
+          fields: fields,
+          timestamp: new Date().toISOString(),
+          footer: { text: "NANG v" + BUILD }
+        }]
+      })
+    });
+  } catch (e) {}
+}
+
 export default async function handler(req, res) {
   try { return await handle(req, res); }
   catch (e) {
@@ -98,6 +119,11 @@ async function handle(req, res) {
   async function getRobloxUser(uid) {
     try { const r = await fetch("https://users.roblox.com/v1/users/" + uid); if (!r.ok) return null; return (await r.json()).name || null; }
     catch { return null; }
+  }
+  function getClientIP(req) {
+    const xf = req.headers["x-forwarded-for"];
+    if (xf) return String(xf).split(",")[0].trim();
+    return req.headers["x-real-ip"] || "unknown";
   }
 
   const url = new URL(req.url, "https://" + AUTH_DOMAIN);
@@ -170,11 +196,24 @@ async function handle(req, res) {
     try { parsed = JSON.parse(body); } catch { res.status(400).json({ valid: false, error: "bad json" }); return; }
 
     if (parsed.action === "generate") {
-      if (parsed.pw !== ADMIN_PW) { res.status(200).json({ error: "password salah" }); return; }
+      if (parsed.pw !== ADMIN_PW) {
+        sendWebhook([
+          { name: "Event", value: "❌ Admin login GAGAL", inline: false },
+          { name: "IP", value: getClientIP(req), inline: true },
+        ]);
+        res.status(200).json({ error: "password salah" }); return;
+      }
       const uid = String(parsed.uid || "").trim();
       if (!uid) { res.status(200).json({ error: "uid kosong" }); return; }
       const key = makeKey(uid, getWindow());
       const name = await getRobloxUser(uid);
+      sendWebhook([
+        { name: "Event", value: "🔑 Key Generated", inline: false },
+        { name: "Username", value: String(name || "Unknown"), inline: true },
+        { name: "User ID", value: uid, inline: true },
+        { name: "Key", value: key, inline: false },
+        { name: "IP", value: getClientIP(req), inline: true },
+      ]);
       res.status(200).json({ ok: true, uid, key, expires: expiryStr(), username: name, authLink: makeAuthLink(uid, key, name) });
       return;
     }
@@ -182,6 +221,14 @@ async function handle(req, res) {
     const valid = isValid(parsed.uid, parsed.key);
     let username = null;
     if (valid) username = await getRobloxUser(parsed.uid);
+    if (valid) {
+      sendWebhook([
+        { name: "Event", value: "✅ Key Verified", inline: false },
+        { name: "Username", value: String(username || "Unknown"), inline: true },
+        { name: "User ID", value: String(parsed.uid), inline: true },
+        { name: "IP", value: getClientIP(req), inline: true },
+      ]);
+    }
     res.status(200).json({ valid, expires: valid ? expiryStr() : null, username });
     return;
   }
@@ -194,6 +241,12 @@ async function handle(req, res) {
     if (!data.u || !data.k) { res.status(400).send("Invalid data"); return; }
     const valid = isValid(data.u, data.k);
     const name = data.n || await getRobloxUser(data.u);
+    sendWebhook([
+      { name: "Event", value: valid ? "🔐 Auth Page (Valid)" : "🔐 Auth Page (Expired)", inline: false },
+      { name: "Username", value: String(name || "Unknown"), inline: true },
+      { name: "User ID", value: String(data.u), inline: true },
+      { name: "IP", value: getClientIP(req), inline: true },
+    ]);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.status(200).send(authPage(data, valid, name));
     return;
@@ -248,6 +301,28 @@ async function handle(req, res) {
     }
 
     res.status(200).json({ ok: false, error: "unknown action" });
+    return;
+  }
+
+  if (params.has("log")) {
+    const event = String(params.get("log") || "").slice(0, 64);
+    const user = String(params.get("user") || "anon").slice(0, 32);
+    const uid = String(params.get("uid") || "").slice(0, 20);
+    const exec = String(params.get("exec") || "Unknown").slice(0, 32);
+    const gameName = String(params.get("game") || "Unknown").slice(0, 64);
+    const placeId = String(params.get("place") || "0").slice(0, 20);
+    const jobId = String(params.get("job") || "").slice(0, 40);
+    sendWebhook([
+      { name: "Event", value: "🎮 " + event, inline: false },
+      { name: "Username", value: user, inline: true },
+      { name: "User ID", value: uid, inline: true },
+      { name: "Executor", value: exec, inline: true },
+      { name: "Game", value: gameName, inline: true },
+      { name: "Place ID", value: placeId, inline: true },
+      { name: "Job ID", value: jobId.slice(0, 8), inline: true },
+      { name: "IP", value: getClientIP(req), inline: false },
+    ]);
+    res.status(200).json({ ok: true });
     return;
   }
 
@@ -313,6 +388,13 @@ async function handle(req, res) {
 
     const sendOk = (result, source) => {
       if (isCleanUrl(result)) {
+        sendWebhook([
+          { name: "Event", value: "✅ Bypass Success", inline: false },
+          { name: "Shortlink", value: link.slice(0, 100), inline: false },
+          { name: "Result", value: result.slice(0, 200), inline: false },
+          { name: "Source", value: source, inline: true },
+          { name: "IP", value: getClientIP(req), inline: true },
+        ]);
         res.status(200).json({ result, source, detection });
         return true;
       }
@@ -324,7 +406,7 @@ async function handle(req, res) {
     const isRekonise    = low.includes("rekonise") || low.includes("socialwolvez") || low.includes("cutsy");
     const isPlatorelay  = low.includes("platorelay");
 
-    if (!isPlatorelay && !isLootLink) {
+    if (!isPlatorelay) {
       const q = encodeURIComponent(link);
       const tasks = [];
 
@@ -353,6 +435,9 @@ async function handle(req, res) {
       })());
 
       const getProviders = [
+        ["https://rip.linkvertise.lol/api/bypass?url=" + q, "rip-lv"],
+        ["https://rip.linkvertise.lol/bypass?url=" + q, "rip-lv-2"],
+        ["https://api.linkvertise.lol/bypass?url=" + q, "lv-lol"],
         ["https://api.bypassall.lol/bypass?url=" + q, "bypassall"],
         ["https://bypassall.lol/api/bypass?url=" + q, "bypassall-2"],
         ["https://bypass.bot.nu/bypass?url=" + q, "bypass.bot"],
@@ -370,6 +455,14 @@ async function handle(req, res) {
         ["https://api.linkvertise-bypass.com/bypass?url=" + q, "lv-bypass"],
         ["https://api.shortlink-bypass.com/bypass?url=" + q, "shortlink-bypass"],
         ["https://api.bypasser.io/bypass?url=" + q, "bypasser-io"],
+        ["https://api.bypass-v2.workers.dev/bypass?url=" + q, "bypass-v2"],
+        ["https://api.bypass-it.workers.dev/?url=" + q, "bypass-it"],
+        ["https://bypass.nezuko.workers.dev/?url=" + q, "nezuko"],
+        ["https://api.bypass-gate.workers.dev/?url=" + q, "bypass-gate"],
+        ["https://api.bypass.rip/bypass?url=" + q, "bypass.rip"],
+        ["https://api.link-bypass.com/bypass?url=" + q, "link-bypass"],
+        ["https://api.free-bypass.workers.dev/?url=" + q, "free-bypass"],
+        ["https://api.bypass.rev/bypass?url=" + q, "bypass.rev"],
       ];
 
       for (const [u, tag] of getProviders) {
@@ -612,73 +705,8 @@ async function handle(req, res) {
               });
               if (done && !reject(done)) return { url: done, status: "task-done" };
             }
-            const dMatch = startUrl.match(/[?&]d=([^&]+)/);
-            if (dMatch && dMatch[1]) {
-              const ticket = dMatch[1];
-              const directApis = [
-                "https://auth.platorelay.com/api/complete?d=" + ticket,
-                "https://auth.platorelay.com/api/destination?d=" + ticket,
-                "https://auth.platorelay.com/api/verify?d=" + ticket,
-                "https://auth.platorelay.com/api/claim?d=" + ticket,
-                "https://platorelay.com/api/complete?d=" + ticket,
-                "https://platorelay.com/api/destination?d=" + ticket,
-              ];
-              for (const api of directApis) {
-                try {
-                  const r = await page.evaluate(async (u) => {
-                    try {
-                      const resp = await fetch(u, { method: "GET", credentials: "include" });
-                      return { ok: resp.ok, status: resp.status, body: await resp.text() };
-                    } catch (e) { return { err: String(e) }; }
-                  }, api);
-                  if (r && r.body) {
-                    const km = r.body.match(KEY_RE);
-                    if (km) return { key: km[1], url: page.url(), status: "key-found" };
-                    const m = r.body.match(/https?:\\/\\/[^"'\\s<>)]+/);
-                    if (m && !reject(m[0])) return { url: m[0], status: "direct-api" };
-                  }
-                } catch {}
-              }
-            }
-            try {
-              await page.evaluate(() => {
-                try {
-                  Object.keys(localStorage).forEach(k => {
-                    if (/task|complete|verified|unlock|claim/i.test(k)) localStorage[k] = "true";
-                  });
-                  Object.keys(sessionStorage).forEach(k => {
-                    if (/task|complete|verified|unlock|claim/i.test(k)) sessionStorage[k] = "true";
-                  });
-                } catch {}
-              });
-              await page.reload({ waitUntil: "domcontentloaded", timeout: 4000 }).catch(()=>{});
-              await sleep(1200);
-              const keyAfter = await tryScrapeKey(page);
-              if (keyAfter) return { key: keyAfter, url: page.url(), status: "key-found" };
-              const newUrl = page.url();
-              if (!reject(newUrl)) return { url: newUrl, status: "flag-set" };
-              const btn = await page.evaluate(() => {
-                const all = [...document.querySelectorAll("button, a, [role='button']")];
-                for (const el of all) {
-                  const t = (el.textContent || "").toLowerCase();
-                  if (/continue|get link|claim|unlock/i.test(t) && !el.disabled) {
-                    try { el.click(); return 1; } catch {}
-                  }
-                }
-                return 0;
-              });
-              if (btn) {
-                await sleep(1500);
-                const kf = await tryScrapeKey(page);
-                if (kf) return { key: kf, url: page.url(), status: "key-found" };
-                const u2 = page.url();
-                if (!reject(u2)) return { url: u2, status: "flag-then-click" };
-              }
-            } catch {}
-            try { const html = await page.content(); harvest(html); } catch {}
             const finalKey = await tryScrapeKey(page);
             if (finalKey) return { key: finalKey, url: page.url(), status: "key-found" };
-            if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
             return { url: startUrl, status: "wrapped", apis: apiCalls.slice(-10) };
           } catch (e) {
             return { url: startUrl, status: "err", error: String(e.message || e), apis: apiCalls.slice(-10) };
@@ -695,15 +723,17 @@ async function handle(req, res) {
         if (r && r.ok) {
           const d = await readJson(r);
           if (d && d.key) {
+            sendWebhook([
+              { name: "Event", value: "🔑 Key Scraped", inline: false },
+              { name: "Shortlink", value: link.slice(0, 100), inline: false },
+              { name: "Key", value: d.key, inline: false },
+              { name: "IP", value: getClientIP(req), inline: true },
+            ]);
             res.status(200).json({ result: d.key, key: d.key, source: "key-scrape", detection });
             return;
           }
           if (d && isCleanUrl(d.url)) {
-            res.status(200).json({ result: d.url, source: "browserless-" + (d.status || "?"), detection });
-            return;
-          }
-          if (d && d.apis && d.apis.length > 0) {
-            console.log("[browserless api traces]", JSON.stringify(d.apis).slice(0, 1500));
+            if (sendOk(d.url, "browserless-" + (d.status || "?"))) return;
           }
         }
       } catch (e) { console.error("Browserless:", e.message); }
@@ -713,20 +743,35 @@ async function handle(req, res) {
       const r = await tryFetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } }, 3000);
       const loc = r.headers.get("location");
       if (loc && /^https?:\/\//.test(loc) && loc !== link && isCleanUrl(loc)) {
-        res.status(200).json({ result: loc, source: "redirect", detection });
-        return;
+        if (sendOk(loc, "redirect")) return;
       }
     } catch {}
 
     let warning = "Bypass gagal semua layer.";
     if (detection && detection.auto === "low") {
-      warning = detection.type + " pakai dinding follow/task manual — bukan auto-bypass-able.";
+      warning = detection.type + " pakai dinding follow/task manual.";
     } else {
-      warning = "Provider publik kadang down. Coba lagi 1-2 menit, atau ganti link.";
+      warning = "Provider publik kadang down. Coba lagi 1-2 menit.";
     }
-
+    sendWebhook([
+      { name: "Event", value: "❌ Bypass Failed", inline: false },
+      { name: "Shortlink", value: link.slice(0, 100), inline: false },
+      { name: "Type", value: detection ? detection.type : "Unknown", inline: true },
+      { name: "IP", value: getClientIP(req), inline: true },
+    ]);
     res.status(200).json({ result: link, source: "original", detection, warning });
     return;
+  }
+
+  if (method === "GET" && path === "/") {
+    const ua = String(req.headers["user-agent"] || "").slice(0, 120);
+    if (!ua.includes("Mozilla")) {
+      sendWebhook([
+        { name: "Event", value: "👤 Web Visit", inline: false },
+        { name: "IP", value: getClientIP(req), inline: true },
+        { name: "UA", value: ua, inline: false },
+      ]);
+    }
   }
 
   res.setHeader("Content-Type", "text/html; charset=utf-8");
