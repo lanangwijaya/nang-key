@@ -1,4 +1,4 @@
-const BUILD = "66.1";
+const BUILD = "66.2";
 
 const LINK_PATTERNS = [
   { name: "LootLabs",     match: ["lootlabs","lootlinks","lootdest"],           auto: "low",    note: "Task-wall. Auto-bypass sering gagal." },
@@ -113,33 +113,8 @@ async function handle(req, res) {
   if (params.has("version")) { res.status(200).json({ version: BUILD, ts: Date.now() }); return; }
 
   if (method === "POST") {
-    // Collect body as Buffer (binary-safe)
-    const bodyBuf = await new Promise(r => { const c = []; req.on("data", d => c.push(d)); req.on("end", () => r(Buffer.concat(c))); });
-    const body = bodyBuf.toString("utf8");
-
-    // /api/convert — binary .rbxl/.rbxm → .rbxlx XML
-    if (path === "/api/convert" || path === "/api/convert/") {
-      try {
-        const ct = req.headers["content-type"] || "";
-        // Detect RBXM binary (starts with "<roblox!" or binary magic 3C726F626C6F78)
-        // RBXL binary also possible; try to detect if it's already XML
-        const str = bodyBuf.toString("utf8", 0, 5);
-        let xmlOut;
-        if (str.startsWith("<?xml") || str.startsWith("<robl")) {
-          // Already XML — strip binary padding if any and return as-is
-          xmlOut = bodyBuf.toString("utf8");
-        } else {
-          // Binary RBXM/RBXL — we can't fully decode binary on serverless without native libs.
-          // Return meaningful error so user knows what happened.
-          res.status(200).json({ ok: false, error: "File biner (.rbxm) tidak bisa dikonversi di server — upload file .rbxlx (XML) atau export dulu dari Roblox Studio ke format XML." });
-          return;
-        }
-        res.setHeader("Content-Type", "application/xml; charset=utf-8");
-        res.setHeader("Content-Disposition", "attachment; filename=\"model.rbxlx\"");
-        res.status(200).send(xmlOut);
-        return;
-      } catch (e) { res.status(200).json({ ok: false, error: String(e.message || e) }); return; }
-    }
+    let body = "";
+    await new Promise(r => { req.on("data", c => body += c); req.on("end", r); });
 
     if (path === "/rbxl" || path === "/rbxl/") {
       try {
@@ -413,7 +388,6 @@ async function handle(req, res) {
           if (winner && sendOk(winner.result, winner.source)) return;
         } catch (e) {}
 
-        // FORCE MODE: semua gagal, coba satu per satu dengan timeout lebih panjang
         const forceProviders = [
           ["https://api.bypass.vip/?url=" + encodeURIComponent(link), "force-bypass.vip"],
           ["https://api.bypass.city/api/bypass?url=" + encodeURIComponent(link), "force-bypass.city"],
@@ -859,7 +833,7 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 <div class="panel" id="tab2">
 <div class="card">
 <div class="card-title">RBXL / RBXM → RBXLX</div>
-<div class="fmt-box">Upload file <span class="field">.rbxl</span> / <span class="field">.rbxlx</span> (XML format dari Roblox Studio). File biner harus di-export dulu ke XML dari Studio sebelum diupload. Hasil: <span class="field">.rbxlx</span> siap insert.</div>
+<div class="fmt-box">Upload file <span class="field">.rbxl</span> / <span class="field">.rbxm</span> (biner) atau <span class="field">.rbxlx</span> / <span class="field">.rbxmx</span> (XML). File biner otomatis dikonversi ke XML. Hasil: <span class="field">.rbxlx</span> siap insert.</div>
 <input type="file" id="convFile" accept=".rbxl,.rbxm,.rbxlx,.rbxmx" style="display:none" onchange="doConvert()">
 <button class="btn-cyan" onclick="document.getElementById('convFile').click()">Pilih File (.rbxl / .rbxm / .rbxlx)</button>
 <div class="result" id="convResult"></div>
@@ -900,11 +874,9 @@ async function doConvert(){
     const buf=await file.arrayBuffer();
     const r=await fetch('/api/convert',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:buf});
     const text=await r.text();
-    // Check if response is JSON error
     let errMsg=null;
     try{const j=JSON.parse(text);if(j&&j.ok===false){errMsg=j.error||'Konversi gagal';}}catch{}
     if(!r.ok||errMsg){box.className='result err';box.innerHTML='Gagal: '+(errMsg||text.slice(0,200));return;}
-    // Success — XML response
     const outName=file.name.replace(/\.(rbxl|rbxm)$/i,'.rbxlx')||('converted-'+Date.now()+'.rbxlx');
     const blob=new Blob([text],{type:'text/xml'});
     const url=URL.createObjectURL(blob);
