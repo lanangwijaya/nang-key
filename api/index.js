@@ -188,48 +188,103 @@ async function handle(req, res) {
   if (params.has("bypass")) {
     const link = params.get("bypass");
     if (!link) { res.status(200).json({ error: "no link" }); return; }
-    const low = link.toLowerCase();
-    const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36";
-    const isCleanUrl = (u) => u && typeof u === "string" && u.startsWith("http") &&
-      !["lootlabs","lootlinks","lootdest","platorelay","linkvertise","work.ink","sub2unlock","sub2get","playrole"].some(s => u.toLowerCase().includes(s));
-    const needBrowser = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest") || low.includes("platorelay") || low.includes("linkvertise") || low.includes("work.ink") || low.includes("sub2unlock") || low.includes("sub2get") || low.includes("playrole");
 
+    const low = link.toLowerCase();
+    const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+    const ACCEPT = "application/json, text/plain, */*";
+    const wrappedTokens = ["lootlabs","lootlinks","lootdest","platorelay","linkvertise","work.ink","sub2unlock","sub2get","playrole","boost.ink","socialwolvez","cutsy"];
+    const isWrapped = (u) => typeof u === "string" && wrappedTokens.some(s => u.toLowerCase().includes(s));
+    const isCleanUrl = (u) => u && typeof u === "string" && /^https?:\/\//.test(u) && !isWrapped(u);
+    const needBrowser = wrappedTokens.some(s => low.includes(s));
+
+    const tryFetch = async (u, opts = {}, ms = 12000) => {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), ms);
+      try {
+        const r = await fetch(u, { ...opts, signal: ctrl.signal });
+        clearTimeout(t);
+        return r;
+      } catch (e) {
+        clearTimeout(t);
+        throw e;
+      }
+    };
+
+    const readJson = async (r) => {
+      const ct = r.headers.get("content-type") || "";
+      if (ct.includes("json")) {
+        try { return await r.json(); } catch { return null; }
+      }
+      const txt = await r.text();
+      try { return JSON.parse(txt); } catch { return null; }
+    };
+
+    const extract = (d) => {
+      if (!d || typeof d !== "object") return null;
+      const keys = ["result","destination","url","bypassed","bypassed_url","final","target","data","link","out"];
+      for (const k of keys) {
+        const v = d[k];
+        if (typeof v === "string" && /^https?:\/\//.test(v)) return v;
+        if (v && typeof v === "object") {
+          for (const k2 of keys) {
+            const v2 = v[k2];
+            if (typeof v2 === "string" && /^https?:\/\//.test(v2)) return v2;
+          }
+        }
+      }
+      return null;
+    };
+
+    // LAYER 1 — bypass.vip
+    try {
+      const r = await tryFetch("https://api.bypass.vip/bypass?url=" + encodeURIComponent(link), {
+        method: "GET",
+        headers: { "User-Agent": UA, "Accept": ACCEPT, "Origin": "https://bypass.vip", "Referer": "https://bypass.vip/" },
+      });
+      if (r.ok) {
+        const d = await readJson(r);
+        const result = extract(d);
+        if (isCleanUrl(result)) { res.status(200).json({ result, source: "bypass.vip" }); return; }
+      }
+    } catch {}
+
+    // LAYER 2 — bypass.city
+    try {
+      const r = await tryFetch("https://api.bypass.city/api/bypass?url=" + encodeURIComponent(link), {
+        method: "GET",
+        headers: { "User-Agent": UA, "Accept": ACCEPT, "Origin": "https://bypass.city", "Referer": "https://bypass.city/" },
+      });
+      if (r.ok) {
+        const d = await readJson(r);
+        const result = extract(d);
+        if (isCleanUrl(result)) { res.status(200).json({ result, source: "bypass.city" }); return; }
+      }
+    } catch {}
+
+    // LAYER 3 — linkvertise-dedicated providers
     if (low.includes("linkvertise") || low.includes("work.ink")) {
-      try {
-        const r = await fetch("https://bypassall.lol/api/bypass?url=" + encodeURIComponent(link), {
-          headers: { "User-Agent": UA }
-        });
-        if (r.ok) {
-          const d = await r.json();
-          const result = d.destination || d.result || d.url || d.bypassed;
-          if (isCleanUrl(result)) { res.status(200).json({ result, source: "bypassall" }); return; }
-        }
-      } catch {}
-      try {
-        const r = await fetch("https://bypass.bot.nu/bypass?url=" + encodeURIComponent(link), {
-          headers: { "User-Agent": UA }
-        });
-        if (r.ok) {
-          const d = await r.json();
-          const result = d.result || d.destination || d.url;
-          if (isCleanUrl(result)) { res.status(200).json({ result, source: "bypass.bot" }); return; }
-        }
-      } catch {}
-      try {
-        const r = await fetch("https://linklm.com/api/bypass?url=" + encodeURIComponent(link), {
-          headers: { "User-Agent": UA, "Accept": "application/json" }
-        });
-        if (r.ok) {
-          const d = await r.json();
-          const result = d.result || d.destination || d.url || d.data;
-          if (isCleanUrl(result)) { res.status(200).json({ result, source: "linklm" }); return; }
-        }
-      } catch {}
+      const lvApis = [
+        "https://bypassall.lol/api/bypass?url=" + encodeURIComponent(link),
+        "https://api.bypassall.lol/bypass?url=" + encodeURIComponent(link),
+        "https://bypass.bot.nu/bypass?url=" + encodeURIComponent(link),
+        "https://linklm.com/api/bypass?url=" + encodeURIComponent(link),
+        "https://api.bypass-unlocked.workers.dev/?url=" + encodeURIComponent(link),
+      ];
+      for (const u of lvApis) {
+        try {
+          const r = await tryFetch(u, { method: "GET", headers: { "User-Agent": UA, "Accept": ACCEPT } });
+          if (!r.ok) continue;
+          const d = await readJson(r);
+          const result = extract(d);
+          if (isCleanUrl(result)) { res.status(200).json({ result, source: "linkvertise-api" }); return; }
+        } catch {}
+      }
     }
 
-    if (needBrowser) {
+    // LAYER 4 — browserless headless
+    if (needBrowser && BROWSERLESS_TOKEN) {
       try {
-        const r = await fetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=90000", {
+        const r = await tryFetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=90000", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -239,194 +294,89 @@ async function handle(req, res) {
               const isPlatorelay = low.includes("platorelay");
               const isLoot = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest");
               const isLinkvertise = low.includes("linkvertise") || low.includes("work.ink");
-              const isWrapped = (u) => ["platorelay","lootlabs","lootlinks","lootdest","linkvertise","work.ink","sub2unlock","sub2get","playrole"].some(s => u.toLowerCase().includes(s));
+              const wrapped = ["platorelay","lootlabs","lootlinks","lootdest","linkvertise","work.ink","sub2unlock","sub2get","playrole","boost.ink","socialwolvez","cutsy"];
+              const isWrapped = (u) => wrapped.some(s => u.toLowerCase().includes(s));
               function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
               async function clickButtons(pg) {
                 return pg.evaluate(() => {
-                  let clicked = 0;
-                  const els = document.querySelectorAll("button, a, [role='button'], [onclick], input[type='submit'], input[type='button']");
+                  let n = 0;
+                  const els = document.querySelectorAll("button, a, [role='button'], [onclick], input[type='submit']");
                   els.forEach(el => {
                     if (el.disabled) return;
-                    const style = window.getComputedStyle(el);
-                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return;
+                    const st = getComputedStyle(el);
+                    if (st.display === 'none' || st.visibility === 'hidden') return;
                     const t = (el.textContent || el.value || "").toLowerCase().trim();
-                    const patterns = ["continue","get link","unlock","proceed","go to link","visit","lanjut","claim","get","next","done","finish","complete","open","dapatkan","klik di sini","klik","click here","access","go","enter"];
-                    if (patterns.some(p => t.includes(p))) {
-                      try { el.click(); clicked++; } catch {}
-                    }
+                    const pat = ["continue","get link","unlock","proceed","go to link","visit","lanjut","claim","next","done","finish","complete","open","dapatkan","klik","click here","access","enter","download"];
+                    if (pat.some(p => t.includes(p))) { try { el.click(); n++; } catch {} }
                   });
-                  return clicked;
+                  return n;
                 });
-              }
-              async function skipCountdown(pg) {
-                await pg.evaluate(() => {
-                  try {
-                    const orig = window.setTimeout;
-                    window.setTimeout = (fn, delay, ...args) => orig(fn, Math.min(delay || 0, 100), ...args);
-                    window.setInterval = (fn, delay, ...args) => {
-                      const id = orig(fn, Math.min(delay || 0, 100), ...args);
-                      return id;
-                    };
-                    document.querySelectorAll("button[disabled], a.disabled, .btn-disabled, [data-countdown]").forEach(el => {
-                      try {
-                        el.disabled = false;
-                        el.classList.remove('disabled');
-                        el.removeAttribute('disabled');
-                        el.click();
-                      } catch {}
-                    });
-                    document.querySelectorAll("[id*='countdown'], [class*='countdown'], [id*='timer'], [class*='timer'], [id*='wait'], [class*='wait']").forEach(el => {
-                      try { el.style.display = 'none'; el.remove(); } catch {}
-                    });
-                  } catch {}
-                });
-              }
-              async function grabFinalUrl(pg) {
-                const cur = pg.url();
-                if (!isWrapped(cur)) return cur;
-                const found = await pg.evaluate(() => {
-                  const selectors = [
-                    "a[href^='http']:not([href*='platorelay']):not([href*='lootlabs']):not([href*='lootlinks']):not([href*='linkvertise']):not([href*='work.ink']):not([href*='sub2unlock']):not([href*='playrole']):not([href*='google']):not([href*='cloudflare']):not([href*='discord']):not([href*='facebook']):not([href*='twitter']):not([href*='t.co'])",
-                    "[data-url]", "[data-href]", "[data-link]", "input[type='hidden'][name*='url']", "input[type='hidden'][name*='link']"
-                  ];
-                  for (const sel of selectors) {
-                    const el = document.querySelector(sel);
-                    if (el) {
-                      const v = el.href || el.getAttribute("data-url") || el.getAttribute("data-href") || el.getAttribute("data-link") || el.value || "";
-                      if (v && v.startsWith("http")) return v;
-                    }
-                  }
-                  const scripts = [...document.querySelectorAll("script")].map(s => s.textContent || "").join(" ");
-                  const m = scripts.match(/(?:redirect|destination|final_url|target_url|go_url)['":\\s]+["'](https?:\/\/[^"']+)/i);
-                  if (m) return m[1];
-                  return null;
-                });
-                return found || cur;
               }
               try {
                 await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
                 await page.setViewport({ width: 1366, height: 768 });
                 await page.setRequestInterception(true);
                 page.on("request", req => {
-                  const url = req.url().toLowerCase();
-                  const blockPatterns = ["google-analytics","googletagmanager","doubleclick","googlesyndication","adsbygoogle","amazon-adsystem","pagead","moatads","adsrvr","advertising","analytics","tracker","hotjar","fbevents","ga.js","gtag","clarity.ms"];
-                  if (blockPatterns.some(p => url.includes(p))) { req.abort(); return; }
+                  const u = req.url().toLowerCase();
+                  const block = ["google-analytics","googletagmanager","doubleclick","googlesyndication","adsbygoogle","amazon-adsystem","pagead","moatads","adsrvr","advertising","analytics","tracker","hotjar","fbevents","ga.js","gtag","clarity.ms","facebook","twitter","tiktok"];
+                  if (block.some(p => u.includes(p))) { req.abort(); return; }
                   req.continue();
                 });
                 await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-                await sleep(isLinkvertise ? 5000 : isPlatorelay ? 3000 : 4000);
-                if (isPlatorelay) await skipCountdown(page);
-                if (isLinkvertise) {
-                  await page.evaluate(() => { window.scrollTo(0, document.body.scrollHeight / 2); });
-                  await sleep(3000);
-                  await page.evaluate(() => {
-                    document.querySelectorAll("button,a,[role='button']").forEach(el => {
-                      const t = (el.textContent || "").toLowerCase();
-                      if (t.includes("free access") || t.includes("continue") || t.includes("visit now") || t.includes("get") || t.includes("unlock") || t.includes("proceed")) {
-                        try { el.click(); } catch {}
-                      }
-                    });
-                  });
-                  await sleep(4000);
-                }
-                await sleep(1500);
-                for (let i = 0; i < 8; i++) {
+                await sleep(4000);
+                for (let i = 0; i < 12; i++) {
                   await clickButtons(page);
-                  await sleep(i < 3 ? 2000 : 3000);
-                  if (isPlatorelay && i % 2 === 1) await skipCountdown(page);
+                  if (isPlatorelay) {
+                    await page.evaluate(() => {
+                      try {
+                        const orig = window.setTimeout;
+                        window.setTimeout = (fn, d, ...a) => orig(fn, Math.min(d || 0, 80), ...a);
+                        document.querySelectorAll("[class*='countdown'],[class*='timer'],[id*='countdown'],[id*='timer'],[class*='wait'],button[disabled]").forEach(el => {
+                          try { el.disabled = false; el.removeAttribute('disabled'); el.classList.remove('disabled'); el.remove(); } catch {}
+                        });
+                      } catch {}
+                    });
+                  }
+                  await sleep(2500);
                   const cur = page.url();
                   if (!isWrapped(cur)) break;
                 }
-                if (isPlatorelay) await sleep(8000);
-                await sleep(isLoot ? 6000 : isLinkvertise ? 4000 : 3000);
-                const finalUrl = await grabFinalUrl(page);
-                const isCleaned = !isWrapped(finalUrl);
-                return { url: finalUrl, status: isCleaned ? "resolved" : "still_wrapped" };
+                await sleep(isLoot ? 5000 : isLinkvertise ? 3000 : 2000);
+                const finalUrl = page.url();
+                if (!isWrapped(finalUrl)) return { url: finalUrl, status: "resolved" };
+                const found = await page.evaluate(() => {
+                  const sel = "a[href^='http']:not([href*='platorelay']):not([href*='lootlabs']):not([href*='lootlinks']):not([href*='linkvertise']):not([href*='work.ink']):not([href*='google']):not([href*='cloudflare']):not([href*='discord']):not([href*='facebook']):not([href*='twitter'])";
+                  const a = document.querySelector(sel);
+                  return a ? a.href : null;
+                });
+                if (found && !isWrapped(found)) return { url: found, status: "resolved" };
+                return { url: finalUrl, status: "still_wrapped" };
               } catch (e) {
                 return { url: startUrl, status: "error", error: String(e.message || e) };
               }
             }`,
             context: { url: link },
           }),
-        });
+        }, 95000);
         if (r.ok) {
-          const d = await r.json();
-          const isClean = (u) => u && typeof u === "string" && u.startsWith("http") && !u.includes("lootlabs") && !u.includes("lootlinks") && !u.includes("lootdest") && !u.includes("platorelay") && !u.includes("linkvertise") && !u.includes("work.ink") && !u.includes("sub2unlock") && !u.includes("sub2get") && !u.includes("playrole");
-          if (isClean(d && d.url)) {
+          const d = await readJson(r);
+          if (d && isCleanUrl(d.url)) {
             res.status(200).json({ result: d.url, source: "browserless" });
             return;
           }
-          if (d && (d.status === "still_wrapped" || d.status === "error")) {
-            try {
-              const body2 = JSON.stringify({
-                code: `export default async function({page,context}){const url=context.url;const isPR=url.includes("platorelay");function sleep(ms){return new Promise(r=>setTimeout(r,ms));}try{await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");await page.setViewport({width:1366,height:768});await page.setRequestInterception(true);page.on("request",req=>{const u=req.url().toLowerCase();if(["google-analytics","googlesyndication","adsbygoogle","doubleclick","pagead","hotjar"].some(p=>u.includes(p))){req.abort();return;}req.continue();});await page.goto(url,{waitUntil:"domcontentloaded",timeout:35000});await sleep(5000);await page.evaluate(()=>{try{window.setTimeout=(fn,d,...a)=>window._origST?window._origST(fn,Math.min(d||0,50),...a):fn();document.querySelectorAll("button[disabled],[data-countdown],[class*='countdown'],[class*='timer'],[id*='countdown'],[id*='timer']").forEach(el=>{try{el.disabled=false;el.removeAttribute('disabled');el.classList.remove('disabled');}catch{}});}catch{}});await sleep(2000);for(let i=0;i<10;i++){await page.evaluate(()=>{document.querySelectorAll("button,a,[role='button'],[onclick],input[type='submit']").forEach(el=>{if(el.disabled)return;const s=window.getComputedStyle(el);if(s.display==='none'||s.visibility==='hidden')return;const t=(el.textContent||el.value||"").toLowerCase();if(["continue","get link","unlock","proceed","go to","visit","lanjut","claim","get","next","done","finish","open","dapatkan","klik","access","go","enter"].some(p=>t.includes(p))){try{el.click();}catch{}}});});await sleep(i<5?2000:3500);if(isPR)await page.evaluate(()=>{try{document.querySelectorAll("[class*='countdown'],[class*='timer'],[id*='countdown'],[id*='timer'],[class*='wait']").forEach(el=>{try{el.remove();}catch{}});}catch{}});const cur=page.url();if(!cur.includes("platorelay")&&!cur.includes("lootlabs")&&!cur.includes("lootlinks"))break;}if(isPR)await sleep(10000);const finalUrl=page.url();const isClean=!finalUrl.includes("platorelay")&&!finalUrl.includes("lootlabs")&&!finalUrl.includes("lootlinks");if(isClean)return{url:finalUrl,status:"resolved"};const found=await page.evaluate(()=>{const a=document.querySelector("a[href^='http']:not([href*='platorelay']):not([href*='lootlabs']):not([href*='google']):not([href*='cloudflare']):not([href*='discord'])");return a?a.href:null;});return{url:found||finalUrl,status:found?"resolved":"failed"};}catch(e){return{url:url,status:"error",error:String(e.message||e)};}}`,
-                context: { url: link },
-              });
-              const r2b = await fetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=90000", {
-                method: "POST", headers: { "Content-Type": "application/json" }, body: body2,
-              });
-              if (r2b.ok) {
-                const d2 = await r2b.json();
-                if (isClean(d2 && d2.url)) {
-                  res.status(200).json({ result: d2.url, source: "browserless" });
-                  return;
-                }
-              }
-            } catch (e2) { console.error("Browserless retry:", e2); }
-          }
-          if (d && d.status === "error") console.error("Browserless error:", d.error);
-        } else {
-          console.error("Browserless HTTP", r.status, (await r.text()).slice(0, 300));
         }
-      } catch (e) { console.error("Browserless:", e); }
+      } catch (e) { console.error("Browserless:", e.message); }
     }
 
+    // LAYER 5 — HEAD redirect
     try {
-      const r = await fetch("https://api.bypass.vip/", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA, "Origin": "https://bypass.vip", "Referer": "https://bypass.vip/" },
-        body: "url=" + encodeURIComponent(link),
-      });
-      if (r.ok) {
-        const d = await r.json();
-        const result = d.result || d.url || d.destination || d.data;
-        if (isCleanUrl(result)) { res.status(200).json({ result, source: "bypass.vip" }); return; }
+      const r = await tryFetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } }, 6000);
+      const loc = r.headers.get("location");
+      if (loc && /^https?:\/\//.test(loc) && loc !== link && !isWrapped(loc)) {
+        res.status(200).json({ result: loc, source: "redirect" });
+        return;
       }
     } catch {}
-
-    try {
-      const r = await fetch("https://api.bypass.city/api/bypass", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "User-Agent": UA, "Origin": "https://bypass.city", "Referer": "https://bypass.city/" },
-        body: JSON.stringify({ url: link }),
-      });
-      if (r.ok) {
-        const d = await r.json();
-        const result = d.result || d.destination || d.url || d.data;
-        if (isCleanUrl(result)) { res.status(200).json({ result, source: "bypass.city" }); return; }
-      }
-    } catch {}
-
-    try {
-      const r = await fetch("https://api.bypassking.com/bypass?url=" + encodeURIComponent(link), {
-        headers: { "User-Agent": UA }
-      });
-      if (r.ok) {
-        const d = await r.json();
-        const result = d.destination || d.result || d.url;
-        if (isCleanUrl(result)) { res.status(200).json({ result, source: "bypassking" }); return; }
-      }
-    } catch {}
-
-    if (!needBrowser) {
-      try {
-        const r = await fetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } });
-        const loc = r.headers.get("location");
-        if (loc && loc.startsWith("http") && loc !== link) {
-          res.status(200).json({ result: loc, source: "redirect" }); return;
-        }
-      } catch {}
-    }
 
     res.status(200).json({
       result: link,
@@ -599,7 +549,7 @@ function closeGen(){document.getElementById('genPanel').classList.remove('show')
 document.getElementById('genPanel').addEventListener('click',(e)=>{if(e.target.id==='genPanel')closeGen();});
 async function doLogin(){const pw=document.getElementById('genPw').value;if(!pw)return;try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:pw,uid:'1'})});const d=await r.json();if(d.error==='password salah'){document.getElementById('genPw').value='';document.getElementById('genPw').placeholder='password salah';}else if(d.ok){ownerPw=pw;document.getElementById('genForm').style.display='block';document.getElementById('genPw').disabled=true;}}catch(e){}}
 async function doGenerate(){const uid=document.getElementById('genUid').value.trim();const box=document.getElementById('genResult');if(!uid||!ownerPw)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Generating...';try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:ownerPw,uid:uid})});const d=await r.json();if(d.ok){box.className='result ok';box.innerHTML='<b>Username:</b> '+(d.username||'Unknown')+'<div class="key-line">'+d.key+'</div><b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b><a href="'+d.authLink+'" target="_blank" class="link-line">'+d.authLink+'</a><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';}else{box.className='result err';box.innerHTML=d.error||'Gagal';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
-async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Memproses (LootLabs/platorelay bisa 20-30 detik)...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='browserless'?'ok':(d.source==='original'?'warn':'ok');box.className='result '+cls;let label='Bypass berhasil!';if(d.source==='original')label='Belum selesai — klik bypass lagi:';const src=d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'';box.innerHTML=label+src+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
+async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Memproses (LootLabs/platorelay bisa 20-40 detik)...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='browserless'?'ok':(d.source==='original'?'warn':'ok');box.className='result '+cls;let label='Bypass berhasil!';if(d.source==='original')label='Belum selesai — klik bypass lagi:';const src=d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'';box.innerHTML=label+src+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 async function doConvert(){
   const input=document.getElementById('convFile');
   const box=document.getElementById('convResult');
