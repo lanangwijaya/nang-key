@@ -1,8 +1,8 @@
-const BUILD = "65.9";
+const BUILD = "66.0";
 
 const LINK_PATTERNS = [
   { name: "LootLabs",     match: ["lootlabs","lootlinks","lootdest"],           auto: "low",    note: "Task-wall. Auto-bypass sering gagal." },
-  { name: "Platorelay",   match: ["platorelay"],                                  auto: "medium", note: "Keysystem chain. Auto-bypass via popup follow." },
+  { name: "Platorelay",   match: ["platorelay"],                                  auto: "medium", note: "Keysystem. Auto via API intercept." },
   { name: "Linkvertise",  match: ["linkvertise"],                                 auto: "high",   note: "Auto-bypass via API." },
   { name: "Work.ink",     match: ["work.ink","boost.ink","mboost.me"],            auto: "high",   note: "Auto-bypass via API." },
   { name: "Rekonise",     match: ["rekonise"],                                    auto: "high",   note: "Auto-bypass via API." },
@@ -390,7 +390,7 @@ async function handle(req, res) {
       }
     }
 
-    // ═══ BROWSERLESS — chain follower untuk platorelay + lootlabs ═══
+    // ═══ BROWSERLESS — API INTERCEPT ═══
     if (BROWSERLESS_TOKEN && (isLootLink || isPlatorelay)) {
       const runScript = `
         export default async function ({ page, context }) {
@@ -411,36 +411,65 @@ async function handle(req, res) {
           function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
           const leaked = new Set();
           const popups = [];
+          const apiCalls = [];
+          let destinationFromApi = null;
           function harvest(t) {
             if (!t) return;
             const re = /https?:\\/\\/[^"'\\s<>)]+/gi;
             let m;
             while ((m = re.exec(t)) !== null) if (!reject(m[0])) leaked.add(m[0]);
           }
+          await page.addInitScript(() => {
+            window.__nangApi = [];
+            const origFetch = window.fetch;
+            window.fetch = async function(...args) {
+              const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url);
+              const opts = args[1] || {};
+              try {
+                const r = await origFetch.apply(this, args);
+                const clone = r.clone();
+                const text = await clone.text().catch(()=>"");
+                window.__nangApi.push({ method: opts.method || "GET", url, body: opts.body, resp: text.slice(0, 2000), ts: Date.now() });
+                return r;
+              } catch (e) {
+                window.__nangApi.push({ method: opts.method || "GET", url, body: opts.body, err: String(e), ts: Date.now() });
+                throw e;
+              }
+            };
+            const origOpen = XMLHttpRequest.prototype.open;
+            const origSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+              this.__nangMethod = method; this.__nangUrl = url;
+              return origOpen.apply(this, [method, url, ...rest]);
+            };
+            XMLHttpRequest.prototype.send = function(body) {
+              const self = this;
+              this.addEventListener("load", function() {
+                try {
+                  window.__nangApi.push({ method: self.__nangMethod, url: self.__nangUrl, body, resp: String(self.responseText || "").slice(0, 2000), ts: Date.now() });
+                } catch {}
+              });
+              return origSend.apply(this, [body]);
+            };
+          });
           try {
             await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
             await page.setViewport({ width: 1366, height: 900 });
             await page.setRequestInterception(true);
             page.on("request", r => {
               const u = r.url().toLowerCase();
-              if (["google-analytics","googletagmanager","doubleclick","googlesyndication","adsbygoogle","hotjar","facebook","twitter","tiktok"].some(p => u.includes(p))) { r.abort(); return; }
+              if (["google-analytics","googletagmanager","doubleclick","googlesyndication","adsbygoogle","hotjar","facebook.com","twitter.com","tiktok.com"].some(p => u.includes(p))) { r.abort(); return; }
               r.continue();
             });
             const ctx = page.browserContext ? page.browserContext() : page.context();
             if (ctx && ctx.on) {
               ctx.on("page", async (p) => {
-                try {
-                  await p.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36").catch(()=>{});
-                  popups.push(p);
-                } catch {}
+                try { await p.addInitScript(() => { window.__nangApi = window.__nangApi || []; }).catch(()=>{}); popups.push(p); } catch {}
               });
             }
             page.on("dialog", async (d) => { try { await d.dismiss(); } catch {} });
-
             await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 6000 });
-            await sleep(1000);
-
-            // kill anti-bypass banner + timer + overlay
+            await sleep(1200);
             await page.evaluate(() => {
               try {
                 const o = window.setTimeout;
@@ -454,9 +483,7 @@ async function handle(req, res) {
                 });
               } catch {}
             });
-
-            // Klik "Continue" di main page, biar popup kebuka
-            for (let r = 0; r < 6; r++) {
+            for (let r = 0; r < 8; r++) {
               const c = await page.evaluate(() => {
                 const all = [...document.querySelectorAll("button, a, [role='button'], input[type='submit']")];
                 const prio = ["continue", "lanjut", "next", "proceed", "click here", "klik", "claim", "get link", "unlock", "verify", "start", "open"];
@@ -471,18 +498,14 @@ async function handle(req, res) {
               });
               if (!c) break;
               await sleep(900);
-
-              // kalo ada popup, tangani
-              for (let pi = popups.length - 1; pi >= 0; pi--) {
+              for (let pi = 0; pi < popups.length; pi++) {
                 const p = popups[pi];
                 try {
-                  await p.waitForLoadState("domcontentloaded", { timeout: 3000 }).catch(()=>{});
-                  await sleep(900);
-                  // klik di popup
+                  await sleep(600);
                   for (let pr = 0; pr < 6; pr++) {
                     const clicked = await p.evaluate(() => {
-                      const skip = /\\b(survey|install|casino|register|play store|app store|watch a video|discord|telegram|instagram|youtube|tiktok)\\b/i;
                       const prio = ["continue", "lanjut", "next", "proceed", "click here", "klik", "claim", "get link", "unlock", "verify", "watch", "start", "open", "free access", "visit now", "get now"];
+                      const skip = /\\b(survey|install|casino|register|play store|app store|watch a video|discord|telegram|instagram|youtube|tiktok)\\b/i;
                       const all = [...document.querySelectorAll("button, a, [role='button'], [onclick]")];
                       for (const el of all) {
                         const t = (el.textContent || "").toLowerCase().trim();
@@ -496,25 +519,40 @@ async function handle(req, res) {
                     }).catch(()=>0);
                     if (!clicked) break;
                     await sleep(700);
+                    const popupApis = await p.evaluate(() => window.__nangApi || []).catch(()=>[]);
+                    popupApis.forEach(a => { if (a && a.url) apiCalls.push({ ...a, from: "popup" }); });
                     const pu = p.url();
                     if (pu && !reject(pu)) return { url: pu, status: "popup-final" };
-                    try { const h = await p.content(); harvest(h); } catch {}
-                    if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
                   }
-                  const pu = p.url();
-                  if (pu && !reject(pu)) return { url: pu, status: "popup-url" };
+                  try { await p.close(); } catch {}
                 } catch {}
               }
-
-              // cek main page url
+              try { const html = await page.content(); harvest(html); } catch {}
+              const mainApis = await page.evaluate(() => window.__nangApi || []).catch(()=>[]);
+              for (const a of mainApis) {
+                if (!a || !a.url) continue;
+                const u = a.url.toLowerCase();
+                if (/verify|complete|callback|claim|destination|resolve|unlock|task/i.test(u)) {
+                  apiCalls.push({ ...a, from: "main" });
+                  if (a.resp) {
+                    try {
+                      const j = JSON.parse(a.resp);
+                      const dest = j.destination || j.url || j.target || j.result || j.link || j.redirect;
+                      if (dest && /^https?:\\/\\//.test(dest) && !reject(dest)) destinationFromApi = dest;
+                    } catch {
+                      const m = a.resp.match(/https?:\\/\\/[^"'\\s<>)]+/);
+                      if (m && !reject(m[0])) destinationFromApi = m[0];
+                    }
+                  }
+                }
+              }
+              if (destinationFromApi) return { url: destinationFromApi, status: "api-intercept" };
+              if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
               const cur = page.url();
               if (!reject(cur)) return { url: cur, status: "resolved" };
-              if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
-
-              // cek apakah "Completed 1 of 1" (task selesai) — cari link final
               const done = await page.evaluate(() => {
                 const body = document.body.innerText || "";
-                if (/completed\\s+1\\s+of\\s+1/i.test(body)) {
+                if (/completed\\s+1\\s+of\\s+1/i.test(body) || /task.*complete/i.test(body)) {
                   const a = [...document.querySelectorAll("a[href^='http']")].find(x => !/platorelay|lootlabs|lootlinks/i.test(x.href));
                   return a ? a.href : null;
                 }
@@ -522,40 +560,86 @@ async function handle(req, res) {
               });
               if (done && !reject(done)) return { url: done, status: "task-done" };
             }
-
-            // harvest HTML terakhir
+            const dMatch = startUrl.match(/[?&]d=([^&]+)/);
+            if (dMatch && dMatch[1]) {
+              const ticket = dMatch[1];
+              const directApis = [
+                "https://auth.platorelay.com/api/complete?d=" + ticket,
+                "https://auth.platorelay.com/api/destination?d=" + ticket,
+                "https://auth.platorelay.com/api/verify?d=" + ticket,
+                "https://auth.platorelay.com/api/claim?d=" + ticket,
+                "https://platorelay.com/api/complete?d=" + ticket,
+                "https://platorelay.com/api/destination?d=" + ticket,
+              ];
+              for (const api of directApis) {
+                try {
+                  const r = await page.evaluate(async (u) => {
+                    try {
+                      const resp = await fetch(u, { method: "GET", credentials: "include" });
+                      return { ok: resp.ok, status: resp.status, body: await resp.text() };
+                    } catch (e) { return { err: String(e) }; }
+                  }, api);
+                  if (r && r.body) {
+                    const m = r.body.match(/https?:\\/\\/[^"'\\s<>)]+/);
+                    if (m && !reject(m[0])) return { url: m[0], status: "direct-api" };
+                  }
+                } catch {}
+              }
+            }
             try {
-              const html = await page.content();
-              harvest(html);
-              const urls = await page.evaluate(() => {
-                const out = [];
-                document.querySelectorAll("a[href^='http']").forEach(a => out.push(a.href));
-                ["data-url","data-href","data-link","data-target","data-destination","data-redirect","data-final"].forEach(a => {
-                  document.querySelectorAll("[" + a + "]").forEach(el => { const v = el.getAttribute(a); if (v) out.push(v); });
-                });
-                return out;
+              await page.evaluate(() => {
+                try {
+                  Object.keys(localStorage).forEach(k => {
+                    if (/task|complete|verified|unlock|claim/i.test(k)) localStorage[k] = "true";
+                  });
+                  Object.keys(sessionStorage).forEach(k => {
+                    if (/task|complete|verified|unlock|claim/i.test(k)) sessionStorage[k] = "true";
+                  });
+                } catch {}
               });
-              urls.forEach(harvest);
+              await page.reload({ waitUntil: "domcontentloaded", timeout: 4000 }).catch(()=>{});
+              await sleep(1200);
+              const newUrl = page.url();
+              if (!reject(newUrl)) return { url: newUrl, status: "flag-set" };
+              const btn = await page.evaluate(() => {
+                const all = [...document.querySelectorAll("button, a, [role='button']")];
+                for (const el of all) {
+                  const t = (el.textContent || "").toLowerCase();
+                  if (/continue|get link|claim|unlock/i.test(t) && !el.disabled) {
+                    try { el.click(); return 1; } catch {}
+                  }
+                }
+                return 0;
+              });
+              if (btn) {
+                await sleep(1500);
+                const u2 = page.url();
+                if (!reject(u2)) return { url: u2, status: "flag-then-click" };
+              }
             } catch {}
+            try { const html = await page.content(); harvest(html); } catch {}
             if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
-            return { url: startUrl, status: "wrapped" };
+            return { url: startUrl, status: "wrapped", apis: apiCalls.slice(-10) };
           } catch (e) {
-            return { url: startUrl, status: "err", error: String(e.message || e) };
+            return { url: startUrl, status: "err", error: String(e.message || e), apis: apiCalls.slice(-10) };
           }
         }
       `;
 
       try {
-        const r = await tryFetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=8000&stealth=true", {
+        const r = await tryFetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=9000&stealth=true", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ code: runScript, context: { url: link } }),
-        }, 8500);
+        }, 9500);
         if (r && r.ok) {
           const d = await readJson(r);
           if (d && isCleanUrl(d.url)) {
-            res.status(200).json({ result: d.url, source: "browserless", detection });
+            res.status(200).json({ result: d.url, source: "browserless-" + (d.status || "?"), detection });
             return;
+          }
+          if (d && d.apis && d.apis.length > 0) {
+            console.log("[browserless api traces]", JSON.stringify(d.apis).slice(0, 1500));
           }
         }
       } catch (e) { console.error("Browserless:", e.message); }
@@ -761,7 +845,7 @@ async function doLogin(){const pw=document.getElementById('genPw').value;if(!pw)
 async function doGenerate(){const uid=document.getElementById('genUid').value.trim();const box=document.getElementById('genResult');if(!uid||!ownerPw)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Generating...';try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:ownerPw,uid:uid})});const d=await r.json();if(d.ok){box.className='result ok';box.innerHTML='<b>Username:</b> '+(d.username||'Unknown')+'<div class="key-line">'+d.key+'</div><b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b><a href="'+d.authLink+'" target="_blank" class="link-line">'+d.authLink+'</a><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';}else{box.className='result err';box.innerHTML=d.error||'Gagal';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 async function detectLinkNow(url){const box=document.getElementById('detectBox');const badge=document.getElementById('detectBadge');const text=document.getElementById('detectText');if(!url||url.length<8){box.classList.remove('show');lastDetect=null;return;}try{const r=await fetch('/?detect='+encodeURIComponent(url));const d=await r.json();const det=d.detection;if(!det){box.classList.remove('show');return;}lastDetect=det;box.className='detect show '+det.auto;const labels={high:'AUTO',medium:'COBA',low:'MANUAL',none:'INVALID'};badge.textContent=det.type+' · '+labels[det.auto];text.textContent=det.note;}catch(e){box.classList.remove('show');}}
 document.getElementById('bypassUrl').addEventListener('input',()=>{clearTimeout(detectTimer);detectTimer=setTimeout(()=>detectLinkNow(document.getElementById('bypassUrl').value.trim()),500);});
-async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';const detLabel=lastDetect?'('+lastDetect.type+')':'';box.innerHTML='<span class="spinner"></span>Memproses '+detLabel+' — max 9 detik...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='browserless'?'ok':(d.source==='original'?'warn':'ok');box.className='result '+cls;let label='Bypass berhasil!';if(d.source==='original')label='Belum selesai — klik bypass lagi:';const detInfo=d.detection?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">Jenis: '+d.detection.type+' · via '+(d.source||'?')+'</div>':(d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'');box.innerHTML=label+detInfo+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
+async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';const detLabel=lastDetect?'('+lastDetect.type+')':'';box.innerHTML='<span class="spinner"></span>Memproses '+detLabel+' — max 10 detik...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='browserless'?'ok':(d.source==='original'?'warn':'ok');box.className='result '+cls;let label='Bypass berhasil!';if(d.source==='original')label='Belum selesai — klik bypass lagi:';const detInfo=d.detection?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">Jenis: '+d.detection.type+' · via '+(d.source||'?')+'</div>':(d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'');box.innerHTML=label+detInfo+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 async function doConvert(){const input=document.getElementById('convFile');const box=document.getElementById('convResult');if(!input.files||!input.files[0])return;const file=input.files[0];if(file.size>50*1024*1024){box.style.display='block';box.className='result err';box.innerHTML='File > 50 MB.';return;}box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Mengkonversi '+file.name+'...';try{const buf=await file.arrayBuffer();const r=await fetch('/api/convert',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:buf});const text=await r.text();if(!r.ok){let msg=text;try{msg=JSON.parse(text).error||text;}catch{}box.className='result err';box.innerHTML='Gagal ('+r.status+'): '+msg;return;}const blob=new Blob([text],{type:'application/xml'});const url=URL.createObjectURL(blob);const outName=file.name.replace(/\.(rbxl|rbxm)$/i,'.rbxlx');box.className='result ok';box.innerHTML='Berhasil!<div class="key-line"><a href="'+url+'" download="'+outName+'" style="color:#00d4ff;text-decoration:none">Download '+outName+'</a></div>';}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 </script></body></html>`;
 }
