@@ -1,3 +1,5 @@
+const BUILD = "65.5";
+
 const LINK_PATTERNS = [
   { name: "LootLabs",     match: ["lootlabs","lootlinks","lootdest"],           auto: "low",    note: "Follow-wall / task-wall (survey, install, subscribe) sering muncul. Auto-bypass coba sekuat mungkin, butuh follow/task manual kalo gagal." },
   { name: "Platorelay",   match: ["platorelay"],                                  auto: "medium", note: "Bisa auto-bypass dengan browser otomatis. Kadang butuh 20-40 detik." },
@@ -17,9 +19,7 @@ function detectLink(url) {
   if (!url || typeof url !== "string") return null;
   const low = url.toLowerCase();
   for (const p of LINK_PATTERNS) {
-    if (p.match.some(m => low.includes(m))) {
-      return { type: p.name, auto: p.auto, note: p.note };
-    }
+    if (p.match.some(m => low.includes(m))) return { type: p.name, auto: p.auto, note: p.note };
   }
   if (/^https?:\/\//.test(url)) {
     try {
@@ -28,6 +28,49 @@ function detectLink(url) {
     } catch {}
   }
   return { type: "Invalid", auto: "none", note: "URL tidak valid. Harus mulai dengan http:// atau https://" };
+}
+
+// ═══════════════════════════════════════════
+// HARD REJECT — apapun yang nunjuk ke file statis / CDN / asset
+// ═══════════════════════════════════════════
+const CDN_HOSTS = [
+  "jsdelivr.net","unpkg.com","cdnjs.cloudflare.com","cdn.jsdelivr.net",
+  "gstatic.com","googleapis.com","googletagmanager.com","google-analytics.com",
+  "doubleclick.net","cloudflare.com","cloudflareinsights.com","bootstrapcdn.com",
+  "fontawesome.com","jquery.com","reactjs.org","schema.org","w3.org",
+  "momentjs.com","tailwindcss.com","sentry.io","hotjar.com","segment.io",
+  "mixpanel.com","stripe.com","paypal.com","use.fontawesome.com",
+  "fonts.gstatic.com","code.jquery.com","stackpath.bootstrapcdn.com",
+  "raw.githack.com","gitcdn.link","statically.io","esm.sh","skypack.dev",
+  "cdn.skypack.dev","esm.run","bundle.run","cdn.esm.sh","ka-f.fontawesome.com",
+];
+
+const CDN_PATH_HINTS = [
+  "/npm/","/node_modules/","/dist/","/vendor/","/build/","/assets/",
+  "/static/","/chunks/","/chunk-","/runtime.","/polyfill","/polyfills/",
+  "/bundle.","/bundle/","/lib/","/umd/","/esm/","/cjs/"
+];
+
+const BAD_EXT = /\.(js|mjs|cjs|css|map|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|wav|ogg|pdf|zip|rar|7z|tar|gz|wasm|json|xml|txt|md|yml|yaml|toml|lock|min\.js|min\.css)(\?|#|$)/i;
+
+const VERSION_MARKER = /@[0-9]+\.[0-9]+/;
+
+function hardReject(u) {
+  if (!u || typeof u !== "string") return "empty";
+  const low = u.toLowerCase();
+  if (!/^https?:\/\//.test(u)) return "no-scheme";
+  for (const h of CDN_HOSTS) if (low.includes(h)) return "cdn-host:" + h;
+  for (const p of CDN_PATH_HINTS) if (low.includes(p)) return "cdn-path:" + p;
+  if (BAD_EXT.test(low)) return "bad-ext";
+  if (VERSION_MARKER.test(low)) return "version-marker";
+  // URL harus punya minimal 3 segmen path
+  try {
+    const parsed = new URL(u);
+    const segs = parsed.pathname.split("/").filter(Boolean);
+    if (segs.length === 0) return "no-path";
+    if (parsed.pathname === "/") return "root-only";
+  } catch { return "parse-error"; }
+  return null;
 }
 
 export default async function handler(req, res) {
@@ -98,6 +141,12 @@ async function handle(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (method === "OPTIONS") { res.status(200).end(); return; }
+
+  // build marker
+  if (params.has("version")) {
+    res.status(200).json({ version: BUILD, ts: Date.now() });
+    return;
+  }
 
   if (method === "POST") {
     let body = "";
@@ -223,6 +272,14 @@ async function handle(req, res) {
     return;
   }
 
+  // debug endpoint
+  if (params.has("testurl")) {
+    const u = params.get("testurl");
+    const reason = hardReject(u);
+    res.status(200).json({ url: u, rejected: !!reason, reason: reason || "ok" });
+    return;
+  }
+
   if (params.has("bypass")) {
     const link = params.get("bypass");
     if (!link) { res.status(200).json({ error: "no link" }); return; }
@@ -234,13 +291,9 @@ async function handle(req, res) {
 
     const wrappedTokens = ["lootlabs","lootlinks","lootdest","platorelay","linkvertise","work.ink","sub2unlock","sub2get","playrole","boost.ink","socialwolvez","cutsy","mboost.me","rekonise","adfoc","adf.ly","shrinkme","shrinkearn","ouo.io","exe.io","fc.lc","ez4short","shorte.st","bc.vc","cutt.ly","tii.ai","linkpoi","gplinks","gplink","tnlink","tnshort","mdiskshortner","indianshortner","urlshort","shortlink","clk.sh","clicksfly","mightytr.ee","droplink","yoshort","spaste","za.gl","za.gd","shrinkforearn","try2link","kyshort","zshort","gtlink","omg10","weboasi","link1s","linkshortify","arolinks","ez4mod","atglinks","indlink","pndk","ldo.tn"];
     const socialTokens = ["instagram.com","youtube.com","youtu.be","tiktok.com","twitter.com","x.com","facebook.com","fb.com","fb.watch","discord.gg","discord.com","snapchat.com","whatsapp.com","wa.me","telegram","t.me","twitch.tv","reddit.com","pinterest.com","linkedin.com","threads.net"];
-    const cdnTokens = ["jsdelivr.net","unpkg.com","cdnjs.cloudflare.com","gstatic.com","googleapis.com","googletagmanager.com","google-analytics.com","doubleclick.net","cloudflare.com","cloudflareinsights.com","bootstrapcdn.com","fontawesome.com","jquery.com","reactjs.org","schema.org","w3.org","momentjs.com","tailwindcss.com","sentry.io","hotjar.com","segment.io","mixpanel.com","stripe.com","paypal.com","use.fontawesome.com","fonts.gstatic.com"];
-    const resourceExt = /\.(js|mjs|css|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|wav|ogg|pdf|zip|rar|xml|txt|json)(\?|#|$)/i;
     const isWrapped = (u) => typeof u === "string" && wrappedTokens.some(s => u.toLowerCase().includes(s));
     const isSocial  = (u) => typeof u === "string" && socialTokens.some(s => u.toLowerCase().includes(s));
-    const isCDN     = (u) => typeof u === "string" && cdnTokens.some(s => u.toLowerCase().includes(s));
-    const isResource = (u) => typeof u === "string" && resourceExt.test(u);
-    const isCleanUrl = (u) => u && typeof u === "string" && /^https?:\/\//.test(u) && !isWrapped(u) && !isSocial(u) && !isCDN(u) && !isResource(u);
+    const isCleanUrl = (u) => u && typeof u === "string" && /^https?:\/\//.test(u) && !isWrapped(u) && !isSocial(u) && !hardReject(u);
 
     const tryFetch = async (u, opts = {}, ms = 15000) => {
       const ctrl = new AbortController();
@@ -287,7 +340,7 @@ async function handle(req, res) {
 
     const ok = (result, source) => {
       if (isCleanUrl(result)) {
-        res.status(200).json({ result, source, detection });
+        res.status(200).json({ result, source, detection, build: BUILD });
         return true;
       }
       return false;
@@ -366,26 +419,41 @@ async function handle(req, res) {
               const low = startUrl.toLowerCase();
               const wrapped = ${JSON.stringify(wrappedTokens)};
               const social  = ${JSON.stringify(socialTokens)};
-              const cdn     = ${JSON.stringify(cdnTokens)};
-              const resourceExt = /\\.(js|mjs|css|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|wav|ogg|pdf|zip|rar|xml|txt|json)(\\?|#|$)/i;
+              const cdnHosts = ${JSON.stringify(CDN_HOSTS)};
+              const cdnPathHints = ${JSON.stringify(CDN_PATH_HINTS)};
+              const badExt = /\\.(js|mjs|cjs|css|map|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|wav|ogg|pdf|zip|rar|7z|tar|gz|wasm|json|xml|txt|md|yml|yaml|toml|lock)(\\?|#|$)/i;
+              const verMark = /@[0-9]+\\.[0-9]+/;
+              function hardReject(u) {
+                if (!u || typeof u !== "string") return "empty";
+                const L = u.toLowerCase();
+                if (!/^https?:\\/\\//.test(u)) return "no-scheme";
+                for (const h of cdnHosts) if (L.includes(h)) return "cdn:" + h;
+                for (const p of cdnPathHints) if (L.includes(p)) return "path:" + p;
+                if (badExt.test(L)) return "ext";
+                if (verMark.test(L)) return "ver";
+                try {
+                  const p = new URL(u);
+                  const segs = p.pathname.split("/").filter(Boolean);
+                  if (segs.length === 0) return "nopath";
+                  if (p.pathname === "/") return "root";
+                } catch { return "parse"; }
+                return null;
+              }
               const isWrapped = (u) => wrapped.some(s => u.toLowerCase().includes(s));
               const isSocial  = (u) => social.some(s => u.toLowerCase().includes(s));
-              const isCDN     = (u) => cdn.some(s => u.toLowerCase().includes(s));
-              const isResource = (u) => resourceExt.test(u);
-              const isClean   = (u) => u && /^https?:\\/\\//.test(u) && !isWrapped(u) && !isSocial(u) && !isCDN(u) && !isResource(u);
+              const isClean   = (u) => u && /^https?:\\/\\//.test(u) && !isWrapped(u) && !isSocial(u) && !hardReject(u);
               const isLoot = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest");
               const isPlatorelay = low.includes("platorelay");
               const isLinkvertise = low.includes("linkvertise") || low.includes("work.ink") || low.includes("boost.ink");
               function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
               const leaked = new Set();
-              function harvestUrls(text) {
+              function harvest(text) {
                 if (!text || typeof text !== "string") return;
                 const re = /https?:\\/\\/[^"'\\s<>)]+/gi;
                 let m;
                 while ((m = re.exec(text)) !== null) {
                   const u = m[0];
                   if (!isClean(u)) continue;
-                  if (u.includes("lootlabs") || u.includes("lootlinks") || u.includes("platorelay") || u.includes("linkvertise")) continue;
                   const parts = u.split("/");
                   if (parts.length < 4) continue;
                   leaked.add(u);
@@ -393,7 +461,6 @@ async function handle(req, res) {
               }
               async function clickTask(pg) {
                 return pg.evaluate(() => {
-                  let clicked = 0;
                   const skipWords = /\\b(survey|install|subscribe|casino|register|play store|app store|playing|watch a video|discord|telegram|instagram|youtube|tiktok|twitter|snapchat|facebook|repost|tag us)\\b/i;
                   const preferWords = /\\b(human|verify|verification|captcha|confirm you|check the box|robot|quick verification|start verification|complete verification|click to verify|not a robot|confirm)\\b/i;
                   const all = [...document.querySelectorAll("button, a, [role='button'], [class*='task'], [class*='card'], [class*='option'], [class*='offer'], [onclick], div[role='button']")];
@@ -401,17 +468,17 @@ async function handle(req, res) {
                     const t = (el.textContent || "").toLowerCase().trim();
                     if (!t || t.length > 200) continue;
                     if (skipWords.test(t)) continue;
-                    if (preferWords.test(t)) { try { el.scrollIntoView({block:'center'}); el.click(); clicked++; return clicked; } catch {} }
+                    if (preferWords.test(t)) { try { el.scrollIntoView({block:'center'}); el.click(); return 1; } catch {} }
                   }
                   for (const el of all) {
                     const t = (el.textContent || "").toLowerCase().trim();
                     if (!t || t.length > 200) continue;
                     if (skipWords.test(t)) continue;
                     if (/^(start|begin|open|complete|view|discover|confirm|check|select|continue|proceed|next|claim|unlock)/i.test(t)) {
-                      try { el.scrollIntoView({block:'center'}); el.click(); clicked++; return clicked; } catch {}
+                      try { el.scrollIntoView({block:'center'}); el.click(); return 1; } catch {}
                     }
                   }
-                  return clicked;
+                  return 0;
                 });
               }
               async function clickClaim(pg) {
@@ -422,15 +489,10 @@ async function handle(req, res) {
                     const t = (el.textContent || el.value || "").toLowerCase().trim();
                     if (/(claim reward|claim|get link|unlock|continue to|proceed|go to link|visit|access|download|reveal|show link|generate|finish|complete)/i.test(t)) {
                       try {
-                        el.disabled = false;
-                        el.removeAttribute("disabled");
-                        el.removeAttribute("aria-disabled");
-                        el.classList.remove("disabled", "opacity-50", "pointer-events-none", "cursor-not-allowed");
-                        el.style.pointerEvents = "auto";
-                        el.style.opacity = "1";
-                        el.scrollIntoView({block:'center'});
-                        el.click();
-                        n++;
+                        el.disabled = false; el.removeAttribute("disabled"); el.removeAttribute("aria-disabled");
+                        el.classList.remove("disabled","opacity-50","pointer-events-none","cursor-not-allowed");
+                        el.style.pointerEvents = "auto"; el.style.opacity = "1";
+                        el.scrollIntoView({block:'center'}); el.click(); n++;
                       } catch {}
                     }
                   }
@@ -439,29 +501,13 @@ async function handle(req, res) {
               }
               async function tryCaptcha(pg) {
                 try {
-                  const frames = pg.frames();
-                  for (const f of frames) {
-                    const u = f.url();
-                    if (!u) continue;
+                  for (const f of pg.frames()) {
+                    const u = f.url(); if (!u) continue;
                     if (u.includes("challenges.cloudflare.com") || u.includes("turnstile")) {
-                      try {
-                        await f.evaluate(() => {
-                          const w = document.querySelector('input[type="checkbox"]');
-                          if (w) w.click();
-                          const lb = document.querySelector('.cb-lb, [role="checkbox"], .ctp-checkbox-label');
-                          if (lb) lb.click();
-                        });
-                        await sleep(2500);
-                      } catch {}
+                      try { await f.evaluate(() => { const w = document.querySelector('input[type="checkbox"]'); if (w) w.click(); const lb = document.querySelector('.cb-lb, [role="checkbox"], .ctp-checkbox-label'); if (lb) lb.click(); }); await sleep(2500); } catch {}
                     }
                     if (u.includes("recaptcha") || u.includes("hcaptcha")) {
-                      try {
-                        await f.evaluate(() => {
-                          const cb = document.querySelector('.recaptcha-checkbox, #checkbox, .h-captcha, [role="checkbox"]');
-                          if (cb) cb.click();
-                        });
-                        await sleep(2500);
-                      } catch {}
+                      try { await f.evaluate(() => { const cb = document.querySelector('.recaptcha-checkbox, #checkbox, .h-captcha, [role="checkbox"]'); if (cb) cb.click(); }); await sleep(2500); } catch {}
                     }
                   }
                 } catch {}
@@ -479,7 +525,7 @@ async function handle(req, res) {
                     });
                     return out;
                   });
-                  urls.forEach(harvestUrls);
+                  urls.forEach(harvest);
                 } catch {}
               }
               try {
@@ -502,12 +548,8 @@ async function handle(req, res) {
                     const t = await resp.text();
                     try {
                       const obj = JSON.parse(t);
-                      const re = /https?:\\/\\/[^"'\\s<>)]+/gi;
                       const s = JSON.stringify(obj);
-                      let m;
-                      while ((m = re.exec(s)) !== null) {
-                        if (isClean(m[0])) leaked.add(m[0]);
-                      }
+                      harvest(s);
                     } catch {}
                   } catch {}
                 });
@@ -533,10 +575,10 @@ async function handle(req, res) {
                       await sleep(2000);
                       continue;
                     }
-                    if (leaked.size > 0) for (const u of leaked) return { url: u, status: "resolved-leak" };
+                    if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
                     const claimActive = await page.evaluate(() => {
-                      const btns = [...document.querySelectorAll("button, a, [role='button']")];
-                      for (const b of btns) {
+                      const bs = [...document.querySelectorAll("button, a, [role='button']")];
+                      for (const b of bs) {
                         const t = (b.textContent || "").toLowerCase();
                         if (t.includes("claim reward") || t.includes("continue") || t.includes("get link") || t.includes("unlock")) {
                           if (!b.disabled && !b.classList.contains("disabled") && !b.classList.contains("opacity-50")) return true;
@@ -547,11 +589,11 @@ async function handle(req, res) {
                     if (claimActive) {
                       await clickClaim(page);
                       await sleep(3500);
-                      const cur2 = page.url();
-                      if (isClean(cur2)) return { url: cur2, status: "resolved" };
+                      const c2 = page.url();
+                      if (isClean(c2)) return { url: c2, status: "resolved" };
                     }
                   }
-                  if (leaked.size > 0) for (const u of leaked) return { url: u, status: "resolved-leak" };
+                  if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
                   const fu = page.url();
                   if (isClean(fu)) return { url: fu, status: "resolved" };
                   return { url: startUrl, status: "still_wrapped" };
@@ -564,9 +606,9 @@ async function handle(req, res) {
                   if (isPlatorelay) {
                     await page.evaluate(() => {
                       try {
-                        const origST = window.setTimeout;
-                        window.setTimeout = (fn, d, ...a) => origST(fn, Math.min(d || 0, 60), ...a);
-                        window.setInterval = (fn, d, ...a) => origST(fn, Math.min(d || 0, 60), ...a);
+                        const o = window.setTimeout;
+                        window.setTimeout = (fn, d, ...a) => o(fn, Math.min(d || 0, 60), ...a);
+                        window.setInterval = (fn, d, ...a) => o(fn, Math.min(d || 0, 60), ...a);
                         document.querySelectorAll("[class*='countdown'],[class*='timer'],[id*='countdown'],[id*='timer'],[class*='wait']").forEach(el => { try { el.style.display='none'; el.remove(); } catch {} });
                         document.querySelectorAll("button[disabled], a.disabled, .disabled").forEach(el => { try { el.disabled=false; el.removeAttribute('disabled'); el.classList.remove('disabled'); } catch {} });
                       } catch {}
@@ -582,12 +624,12 @@ async function handle(req, res) {
                     continue;
                   }
                   if (isClean(cur)) return { url: cur, status: "resolved" };
-                  if (leaked.size > 0) for (const u of leaked) return { url: u, status: "resolved-leak" };
+                  if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
                 }
                 await sleep(isLinkvertise ? 4000 : 2500);
                 const fu = page.url();
                 if (isClean(fu)) return { url: fu, status: "resolved" };
-                if (leaked.size > 0) for (const u of leaked) return { url: u, status: "resolved-leak" };
+                if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
                 return { url: startUrl, status: "still_wrapped" };
               } catch (e) {
                 return { url: startUrl, status: "error", error: String(e.message || e) };
@@ -604,7 +646,7 @@ async function handle(req, res) {
           if (r && r.ok) {
             const d = await readJson(r);
             if (d && isCleanUrl(d.url)) {
-              res.status(200).json({ result: d.url, source: "browserless", detection });
+              res.status(200).json({ result: d.url, source: "browserless", detection, build: BUILD });
               return;
             }
           }
@@ -617,7 +659,7 @@ async function handle(req, res) {
       const r = await tryFetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } }, 7000);
       const loc = r.headers.get("location");
       if (loc && /^https?:\/\//.test(loc) && loc !== link && isCleanUrl(loc)) {
-        res.status(200).json({ result: loc, source: "redirect", detection });
+        res.status(200).json({ result: loc, source: "redirect", detection, build: BUILD });
         return;
       }
     } catch {}
@@ -629,7 +671,7 @@ async function handle(req, res) {
       warning = "Provider publik kadang down. Coba lagi dalam 1-2 menit, atau ganti link.";
     }
 
-    res.status(200).json({ result: link, source: "original", detection, warning });
+    res.status(200).json({ result: link, source: "original", detection, warning, build: BUILD });
     return;
   }
 
@@ -794,7 +836,7 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 </div>
 </div>
 
-<footer>NANG RBXM Tool &copy; 2025</footer>
+<footer>NANG RBXM Tool &copy; 2025 &middot; v${BUILD}</footer>
 
 <div id="ownerFab" onclick="openGen()" title="Owner Only">&#128274;</div>
 <div id="genPanel"><div class="box"><span class="close" onclick="closeGen()">&times;</span><h3>Owner Panel</h3><input type="password" class="inp" id="genPw" placeholder="Password owner..."><button class="btn-main" onclick="doLogin()">Login</button><div id="genForm" style="display:none;margin-top:14px"><input type="text" class="inp" id="genUid" placeholder="Roblox User ID..."><button class="btn-main" onclick="doGenerate()">Generate Key</button><div class="result" id="genResult"></div></div></div></div>
@@ -855,7 +897,7 @@ async function doBypass(){
       box.className='result '+cls;
       let label='Bypass berhasil!';
       if(d.source==='original')label='Belum selesai — klik bypass lagi:';
-      const detInfo=d.detection?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">Jenis: '+d.detection.type+' · via '+(d.source||'?')+'</div>':(d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'');
+      const detInfo=d.detection?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">Jenis: '+d.detection.type+' · via '+(d.source||'?')+(d.build?' · v'+d.build:'')+'</div>':(d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+(d.build?' · v'+d.build:'')+'</div>':'');
       box.innerHTML=label+detInfo+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');
     }else{
       box.className='result err';box.innerHTML=d.error||'Bypass gagal.';
