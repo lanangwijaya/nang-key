@@ -1,5 +1,5 @@
 const BUILD = "66.5";
-const NANG_WEBHOOK = "https://discord.com/api/webhooks/GANTI_INI/GANTI_INI"; // <-- GANTI
+const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS"; // <-- GANTI
 
 const LINK_PATTERNS = [
   { name: "LootLabs",     match: ["lootlabs","lootlinks","lootdest"],           auto: "low",    note: "Task-wall. Auto-bypass sering gagal." },
