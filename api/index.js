@@ -192,12 +192,23 @@ async function handle(req, res) {
     const low = link.toLowerCase();
     const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
     const ACCEPT = "application/json, text/plain, */*";
-    const wrappedTokens = ["lootlabs","lootlinks","lootdest","platorelay","linkvertise","work.ink","sub2unlock","sub2get","playrole","boost.ink","socialwolvez","cutsy"];
+
+    const wrappedTokens = [
+      "lootlabs","lootlinks","lootdest","platorelay","linkvertise",
+      "work.ink","sub2unlock","sub2get","playrole","boost.ink",
+      "socialwolvez","cutsy","mboost.me","rekonise","adfoc","adf.ly",
+      "shrinkme","shrinkearn","ouo.io","exe.io","fc.lc","ez4short",
+      "shorte.st","bc.vc","cutt.ly","tii.ai","linkpoi",
+      "gplinks","gplink","tnlink","tnshort","mdiskshortner","indianshortner",
+      "urlshort","shortlink","clk.sh","clicksfly","mightytr.ee","droplink",
+      "yoshort","spaste","za.gl","za.gd","shrinkforearn","try2link",
+      "kyshort","zshort","gtlink","omg10","weboasi","link1s","linkshortify",
+      "arolinks","ez4mod","atglinks","indlink","pndk","ldo.tn"
+    ];
     const isWrapped = (u) => typeof u === "string" && wrappedTokens.some(s => u.toLowerCase().includes(s));
     const isCleanUrl = (u) => u && typeof u === "string" && /^https?:\/\//.test(u) && !isWrapped(u);
-    const needBrowser = wrappedTokens.some(s => low.includes(s));
 
-    const tryFetch = async (u, opts = {}, ms = 12000) => {
+    const tryFetch = async (u, opts = {}, ms = 15000) => {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), ms);
       try {
@@ -212,16 +223,21 @@ async function handle(req, res) {
 
     const readJson = async (r) => {
       const ct = r.headers.get("content-type") || "";
-      if (ct.includes("json")) {
-        try { return await r.json(); } catch { return null; }
-      }
-      const txt = await r.text();
-      try { return JSON.parse(txt); } catch { return null; }
+      try {
+        if (ct.includes("json")) return await r.json();
+        const txt = await r.text();
+        try { return JSON.parse(txt); } catch { return null; }
+      } catch { return null; }
     };
 
     const extract = (d) => {
-      if (!d || typeof d !== "object") return null;
-      const keys = ["result","destination","url","bypassed","bypassed_url","final","target","data","link","out"];
+      if (!d) return null;
+      if (typeof d === "string") {
+        const m = d.match(/https?:\/\/[^\s"'<>)]+/);
+        return m ? m[0] : null;
+      }
+      if (typeof d !== "object") return null;
+      const keys = ["result","destination","url","bypassed","bypassed_url","final","target","data","link","out","redirect","location"];
       for (const k of keys) {
         const v = d[k];
         if (typeof v === "string" && /^https?:\/\//.test(v)) return v;
@@ -235,40 +251,78 @@ async function handle(req, res) {
       return null;
     };
 
+    const ok = (result, source) => {
+      if (isCleanUrl(result)) {
+        res.status(200).json({ result, source });
+        return true;
+      }
+      return false;
+    };
+
     // LAYER 1 — bypass.vip
     try {
-      const r = await tryFetch("https://api.bypass.vip/bypass?url=" + encodeURIComponent(link), {
-        method: "GET",
-        headers: { "User-Agent": UA, "Accept": ACCEPT, "Origin": "https://bypass.vip", "Referer": "https://bypass.vip/" },
+      const r = await tryFetch("https://api.bypass.vip/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "User-Agent": UA, "Accept": ACCEPT,
+          "Origin": "https://bypass.vip",
+          "Referer": "https://bypass.vip/",
+        },
+        body: "url=" + encodeURIComponent(link),
       });
       if (r.ok) {
         const d = await readJson(r);
         const result = extract(d);
-        if (isCleanUrl(result)) { res.status(200).json({ result, source: "bypass.vip" }); return; }
+        if (ok(result, "bypass.vip")) return;
       }
     } catch {}
 
     // LAYER 2 — bypass.city
     try {
-      const r = await tryFetch("https://api.bypass.city/api/bypass?url=" + encodeURIComponent(link), {
-        method: "GET",
-        headers: { "User-Agent": UA, "Accept": ACCEPT, "Origin": "https://bypass.city", "Referer": "https://bypass.city/" },
+      const r = await tryFetch("https://api.bypass.city/api/bypass", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "User-Agent": UA, "Accept": ACCEPT,
+          "Origin": "https://bypass.city",
+          "Referer": "https://bypass.city/",
+        },
+        body: JSON.stringify({ url: link }),
       });
       if (r.ok) {
         const d = await readJson(r);
         const result = extract(d);
-        if (isCleanUrl(result)) { res.status(200).json({ result, source: "bypass.city" }); return; }
+        if (ok(result, "bypass.city")) return;
       }
     } catch {}
 
-    // LAYER 3 — linkvertise-dedicated providers
-    if (low.includes("linkvertise") || low.includes("work.ink")) {
+    // LAYER 3 — generic workers
+    const genericApis = [
+      "https://bypass.tools/api/bypass?url=" + encodeURIComponent(link),
+      "https://api.bypassall.lol/bypass?url=" + encodeURIComponent(link),
+      "https://bypassall.lol/api/bypass?url=" + encodeURIComponent(link),
+      "https://api.bypass-unlocked.workers.dev/?url=" + encodeURIComponent(link),
+      "https://bypass.pm/api/bypass?url=" + encodeURIComponent(link),
+      "https://api.bypasser.workers.dev/bypass?url=" + encodeURIComponent(link),
+      "https://bypasser.workers.dev/bypass?url=" + encodeURIComponent(link),
+      "https://api.bypass.pro/bypass?url=" + encodeURIComponent(link),
+    ];
+    for (const u of genericApis) {
+      try {
+        const r = await tryFetch(u, { method: "GET", headers: { "User-Agent": UA, "Accept": ACCEPT } });
+        if (!r.ok) continue;
+        const d = await readJson(r);
+        const result = extract(d);
+        if (ok(result, "generic-api")) return;
+      } catch {}
+    }
+
+    // LAYER 4 — linkvertise dedicated
+    if (low.includes("linkvertise") || low.includes("work.ink") || low.includes("boost.ink") || low.includes("mboost.me")) {
       const lvApis = [
-        "https://bypassall.lol/api/bypass?url=" + encodeURIComponent(link),
-        "https://api.bypassall.lol/bypass?url=" + encodeURIComponent(link),
         "https://bypass.bot.nu/bypass?url=" + encodeURIComponent(link),
         "https://linklm.com/api/bypass?url=" + encodeURIComponent(link),
-        "https://api.bypass-unlocked.workers.dev/?url=" + encodeURIComponent(link),
       ];
       for (const u of lvApis) {
         try {
@@ -276,13 +330,30 @@ async function handle(req, res) {
           if (!r.ok) continue;
           const d = await readJson(r);
           const result = extract(d);
-          if (isCleanUrl(result)) { res.status(200).json({ result, source: "linkvertise-api" }); return; }
+          if (ok(result, "linkvertise-api")) return;
         } catch {}
       }
     }
 
-    // LAYER 4 — browserless headless
-    if (needBrowser && BROWSERLESS_TOKEN) {
+    // LAYER 5 — rekonise
+    if (low.includes("rekonise") || low.includes("socialwolvez") || low.includes("cutsy")) {
+      try {
+        const slug = link.match(/rekonise\.com\/([a-z0-9]+)/i)?.[1] || "";
+        if (slug) {
+          const r = await tryFetch("https://api.rekonise.com/socialunlocks/" + slug, {
+            headers: { "User-Agent": UA, "Accept": ACCEPT },
+          });
+          if (r.ok) {
+            const d = await readJson(r);
+            const result = extract(d);
+            if (ok(result, "rekonise-api")) return;
+          }
+        }
+      } catch {}
+    }
+
+    // LAYER 6 — browserless
+    if (BROWSERLESS_TOKEN) {
       try {
         const r = await tryFetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=90000", {
           method: "POST",
@@ -291,63 +362,75 @@ async function handle(req, res) {
             code: `export default async function ({ page, context }) {
               const startUrl = context.url;
               const low = startUrl.toLowerCase();
+              const wrapped = ${JSON.stringify(wrappedTokens)};
+              const isWrapped = (u) => wrapped.some(s => u.toLowerCase().includes(s));
               const isPlatorelay = low.includes("platorelay");
               const isLoot = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest");
-              const isLinkvertise = low.includes("linkvertise") || low.includes("work.ink");
-              const wrapped = ["platorelay","lootlabs","lootlinks","lootdest","linkvertise","work.ink","sub2unlock","sub2get","playrole","boost.ink","socialwolvez","cutsy"];
-              const isWrapped = (u) => wrapped.some(s => u.toLowerCase().includes(s));
+              const isLinkvertise = low.includes("linkvertise") || low.includes("work.ink") || low.includes("boost.ink");
               function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-              async function clickButtons(pg) {
+              async function clickAll(pg) {
                 return pg.evaluate(() => {
                   let n = 0;
-                  const els = document.querySelectorAll("button, a, [role='button'], [onclick], input[type='submit']");
+                  const els = document.querySelectorAll("button, a, [role='button'], [onclick], input[type='submit'], input[type='button'], [class*='btn'], [id*='btn']");
                   els.forEach(el => {
                     if (el.disabled) return;
                     const st = getComputedStyle(el);
-                    if (st.display === 'none' || st.visibility === 'hidden') return;
+                    if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return;
                     const t = (el.textContent || el.value || "").toLowerCase().trim();
-                    const pat = ["continue","get link","unlock","proceed","go to link","visit","lanjut","claim","next","done","finish","complete","open","dapatkan","klik","click here","access","enter","download"];
+                    const pat = ["continue","get link","unlock","proceed","go to link","visit","lanjut","claim","next","done","finish","complete","open","dapatkan","klik","click here","access","enter","download","get now","continue to","reveal","show link","generate link","free access","visit now","verify","submit"];
                     if (pat.some(p => t.includes(p))) { try { el.click(); n++; } catch {} }
                   });
                   return n;
                 });
               }
+              async function skipTimers(pg) {
+                await pg.evaluate(() => {
+                  try {
+                    const origST = window.setTimeout;
+                    const origSI = window.setInterval;
+                    window.setTimeout = (fn, d, ...a) => origST(fn, Math.min(d || 0, 60), ...a);
+                    window.setInterval = (fn, d, ...a) => origSI(fn, Math.min(d || 0, 60), ...a);
+                    document.querySelectorAll("[class*='countdown'],[class*='timer'],[id*='countdown'],[id*='timer'],[class*='wait'],[id*='wait']").forEach(el => {
+                      try { el.style.display = 'none'; el.remove(); } catch {}
+                    });
+                    document.querySelectorAll("button[disabled], a.disabled, .disabled").forEach(el => {
+                      try { el.disabled = false; el.removeAttribute('disabled'); el.classList.remove('disabled'); } catch {}
+                    });
+                  } catch {}
+                });
+              }
               try {
                 await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
-                await page.setViewport({ width: 1366, height: 768 });
+                await page.setViewport({ width: 1366, height: 900 });
                 await page.setRequestInterception(true);
                 page.on("request", req => {
                   const u = req.url().toLowerCase();
-                  const block = ["google-analytics","googletagmanager","doubleclick","googlesyndication","adsbygoogle","amazon-adsystem","pagead","moatads","adsrvr","advertising","analytics","tracker","hotjar","fbevents","ga.js","gtag","clarity.ms","facebook","twitter","tiktok"];
+                  const block = ["google-analytics","googletagmanager","doubleclick","googlesyndication","adsbygoogle","amazon-adsystem","pagead","moatads","adsrvr","advertising","analytics","tracker","hotjar","fbevents","ga.js","gtag","clarity.ms","facebook.com","twitter.com","tiktok.com","criteo","taboola","outbrain","yandex","vungle","applovin"];
                   if (block.some(p => u.includes(p))) { req.abort(); return; }
                   req.continue();
                 });
-                await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-                await sleep(4000);
-                for (let i = 0; i < 12; i++) {
-                  await clickButtons(page);
-                  if (isPlatorelay) {
-                    await page.evaluate(() => {
-                      try {
-                        const orig = window.setTimeout;
-                        window.setTimeout = (fn, d, ...a) => orig(fn, Math.min(d || 0, 80), ...a);
-                        document.querySelectorAll("[class*='countdown'],[class*='timer'],[id*='countdown'],[id*='timer'],[class*='wait'],button[disabled]").forEach(el => {
-                          try { el.disabled = false; el.removeAttribute('disabled'); el.classList.remove('disabled'); el.remove(); } catch {}
-                        });
-                      } catch {}
-                    });
-                  }
-                  await sleep(2500);
+                await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 35000 });
+                await sleep(4500);
+                for (let i = 0; i < 15; i++) {
+                  await clickAll(page);
+                  if (isPlatorelay || isLoot) await skipTimers(page);
+                  await sleep(2200);
                   const cur = page.url();
-                  if (!isWrapped(cur)) break;
+                  if (!isWrapped(cur)) return { url: cur, status: "resolved" };
                 }
-                await sleep(isLoot ? 5000 : isLinkvertise ? 3000 : 2000);
+                await sleep(isLoot ? 6000 : isLinkvertise ? 4000 : 2500);
                 const finalUrl = page.url();
                 if (!isWrapped(finalUrl)) return { url: finalUrl, status: "resolved" };
                 const found = await page.evaluate(() => {
-                  const sel = "a[href^='http']:not([href*='platorelay']):not([href*='lootlabs']):not([href*='lootlinks']):not([href*='linkvertise']):not([href*='work.ink']):not([href*='google']):not([href*='cloudflare']):not([href*='discord']):not([href*='facebook']):not([href*='twitter'])";
-                  const a = document.querySelector(sel);
-                  return a ? a.href : null;
+                  const all = [...document.querySelectorAll("a[href^='http']")];
+                  const bad = ${JSON.stringify(wrappedTokens)};
+                  for (const a of all) {
+                    const h = a.href;
+                    if (bad.some(s => h.toLowerCase().includes(s))) continue;
+                    if (h.includes("google") || h.includes("cloudflare") || h.includes("discord") || h.includes("facebook") || h.includes("twitter") || h.includes("tiktok")) continue;
+                    return h;
+                  }
+                  return null;
                 });
                 if (found && !isWrapped(found)) return { url: found, status: "resolved" };
                 return { url: finalUrl, status: "still_wrapped" };
@@ -368,9 +451,9 @@ async function handle(req, res) {
       } catch (e) { console.error("Browserless:", e.message); }
     }
 
-    // LAYER 5 — HEAD redirect
+    // LAYER 7 — HEAD redirect
     try {
-      const r = await tryFetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } }, 6000);
+      const r = await tryFetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } }, 7000);
       const loc = r.headers.get("location");
       if (loc && /^https?:\/\//.test(loc) && loc !== link && !isWrapped(loc)) {
         res.status(200).json({ result: loc, source: "redirect" });
@@ -381,7 +464,7 @@ async function handle(req, res) {
     res.status(200).json({
       result: link,
       source: "original",
-      warning: "Bypass gagal semua layer. Coba buka manual.",
+      warning: "Semua provider bypass gagal. Coba lagi dalam 1-2 menit, atau ganti link.",
     });
     return;
   }
@@ -514,7 +597,7 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 <div class="panel" id="tab1">
 <div class="card">
 <div class="card-title">Bypass Shortlink</div>
-<div class="tags"><span class="tag">Linkvertise</span><span class="tag">Work.ink</span><span class="tag">Sub2Unlock</span><span class="tag">Playrole</span><span class="tag">LootLabs</span><span class="tag">Platorelay</span></div>
+<div class="tags"><span class="tag">Linkvertise</span><span class="tag">Work.ink</span><span class="tag">Sub2Unlock</span><span class="tag">Playrole</span><span class="tag">LootLabs</span><span class="tag">Platorelay</span><span class="tag">Rekonise</span><span class="tag">Adf.ly</span><span class="tag">GPLinks</span></div>
 <input type="text" class="inp" id="bypassUrl" placeholder="Paste link shortlink di sini...">
 <button class="btn-cyan" onclick="doBypass()">Bypass Sekarang</button>
 <div class="result" id="bypassResult"></div>
