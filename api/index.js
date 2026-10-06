@@ -390,7 +390,6 @@ async function handle(req, res) {
       }
     }
 
-    // ═══ BROWSERLESS — API INTERCEPT ═══
     if (BROWSERLESS_TOKEN && (isLootLink || isPlatorelay)) {
       const runScript = `
         export default async function ({ page, context }) {
@@ -846,6 +845,26 @@ async function doGenerate(){const uid=document.getElementById('genUid').value.tr
 async function detectLinkNow(url){const box=document.getElementById('detectBox');const badge=document.getElementById('detectBadge');const text=document.getElementById('detectText');if(!url||url.length<8){box.classList.remove('show');lastDetect=null;return;}try{const r=await fetch('/?detect='+encodeURIComponent(url));const d=await r.json();const det=d.detection;if(!det){box.classList.remove('show');return;}lastDetect=det;box.className='detect show '+det.auto;const labels={high:'AUTO',medium:'COBA',low:'MANUAL',none:'INVALID'};badge.textContent=det.type+' · '+labels[det.auto];text.textContent=det.note;}catch(e){box.classList.remove('show');}}
 document.getElementById('bypassUrl').addEventListener('input',()=>{clearTimeout(detectTimer);detectTimer=setTimeout(()=>detectLinkNow(document.getElementById('bypassUrl').value.trim()),500);});
 async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';const detLabel=lastDetect?'('+lastDetect.type+')':'';box.innerHTML='<span class="spinner"></span>Memproses '+detLabel+' — max 10 detik...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='browserless'?'ok':(d.source==='original'?'warn':'ok');box.className='result '+cls;let label='Bypass berhasil!';if(d.source==='original')label='Belum selesai — klik bypass lagi:';const detInfo=d.detection?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">Jenis: '+d.detection.type+' · via '+(d.source||'?')+'</div>':(d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'');box.innerHTML=label+detInfo+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
-async function doConvert(){const input=document.getElementById('convFile');const box=document.getElementById('convResult');if(!input.files||!input.files[0])return;const file=input.files[0];if(file.size>50*1024*1024){box.style.display='block';box.className='result err';box.innerHTML='File > 50 MB.';return;}box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Mengkonversi '+file.name+'...';try{const buf=await file.arrayBuffer();const r=await fetch('/api/convert',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:buf});const text=await r.text();if(!r.ok){let msg=text;try{msg=JSON.parse(text).error||text;}catch{}box.className='result err';box.innerHTML='Gagal ('+r.status+'): '+msg;return;}const blob=new Blob([text],{type:'application/xml'});const url=URL.createObjectURL(blob);const outName=file.name.replace(/\.(rbxl|rbxm)$/i,'.rbxlx');box.className='result ok';box.innerHTML='Berhasil!<div class="key-line"><a href="'+url+'" download="'+outName+'" style="color:#00d4ff;text-decoration:none">Download '+outName+'</a></div>';}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
+async function doConvert(){
+  const input=document.getElementById('convFile');
+  const box=document.getElementById('convResult');
+  if(!input.files||!input.files[0])return;
+  const file=input.files[0];
+  if(file.size>50*1024*1024){box.style.display='block';box.className='result err';box.innerHTML='File > 50 MB.';return;}
+  box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Mengkonversi '+file.name+'...';
+  try{
+    const buf=await file.arrayBuffer();
+    const r=await fetch('/api/convert',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:buf});
+    const text=await r.text();
+    if(!r.ok){let msg=text;try{msg=JSON.parse(text).error||text;}catch{}box.className='result err';box.innerHTML='Gagal ('+r.status+'): '+msg;return;}
+    const blob=new Blob([text],{type:'application/octet-stream'});
+    const url=URL.createObjectURL(blob);
+    const outName=file.name.replace(/\.(rbxl|rbxm)$/i,'.rbxlx')||('converted-'+Date.now()+'.rbxlx');
+    box.className='result ok';
+    box.innerHTML='Berhasil!<div class="key-line"><a href="'+url+'" download="'+outName+'" type="application/octet-stream" style="color:#00d4ff;text-decoration:none">Download '+outName+'</a></div>';
+  }catch(e){
+    box.className='result err';box.innerHTML='Error: '+e.message;
+  }
+}
 </script></body></html>`;
 }
