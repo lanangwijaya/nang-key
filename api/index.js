@@ -1,6 +1,3 @@
-// ═══════════════════════════════════════════
-// LINK DETECTION TABLE
-// ═══════════════════════════════════════════
 const LINK_PATTERNS = [
   { name: "LootLabs",     match: ["lootlabs","lootlinks","lootdest"],           auto: "low",    note: "Follow-wall / task-wall (survey, install, subscribe) sering muncul. Auto-bypass coba sekuat mungkin, butuh follow/task manual kalo gagal." },
   { name: "Platorelay",   match: ["platorelay"],                                  auto: "medium", note: "Bisa auto-bypass dengan browser otomatis. Kadang butuh 20-40 detik." },
@@ -237,9 +234,13 @@ async function handle(req, res) {
 
     const wrappedTokens = ["lootlabs","lootlinks","lootdest","platorelay","linkvertise","work.ink","sub2unlock","sub2get","playrole","boost.ink","socialwolvez","cutsy","mboost.me","rekonise","adfoc","adf.ly","shrinkme","shrinkearn","ouo.io","exe.io","fc.lc","ez4short","shorte.st","bc.vc","cutt.ly","tii.ai","linkpoi","gplinks","gplink","tnlink","tnshort","mdiskshortner","indianshortner","urlshort","shortlink","clk.sh","clicksfly","mightytr.ee","droplink","yoshort","spaste","za.gl","za.gd","shrinkforearn","try2link","kyshort","zshort","gtlink","omg10","weboasi","link1s","linkshortify","arolinks","ez4mod","atglinks","indlink","pndk","ldo.tn"];
     const socialTokens = ["instagram.com","youtube.com","youtu.be","tiktok.com","twitter.com","x.com","facebook.com","fb.com","fb.watch","discord.gg","discord.com","snapchat.com","whatsapp.com","wa.me","telegram","t.me","twitch.tv","reddit.com","pinterest.com","linkedin.com","threads.net"];
+    const cdnTokens = ["jsdelivr.net","unpkg.com","cdnjs.cloudflare.com","gstatic.com","googleapis.com","googletagmanager.com","google-analytics.com","doubleclick.net","cloudflare.com","cloudflareinsights.com","bootstrapcdn.com","fontawesome.com","jquery.com","reactjs.org","schema.org","w3.org","momentjs.com","tailwindcss.com","sentry.io","hotjar.com","segment.io","mixpanel.com","stripe.com","paypal.com","use.fontawesome.com","fonts.gstatic.com"];
+    const resourceExt = /\.(js|mjs|css|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|wav|ogg|pdf|zip|rar|xml|txt|json)(\?|#|$)/i;
     const isWrapped = (u) => typeof u === "string" && wrappedTokens.some(s => u.toLowerCase().includes(s));
     const isSocial  = (u) => typeof u === "string" && socialTokens.some(s => u.toLowerCase().includes(s));
-    const isCleanUrl = (u) => u && typeof u === "string" && /^https?:\/\//.test(u) && !isWrapped(u) && !isSocial(u);
+    const isCDN     = (u) => typeof u === "string" && cdnTokens.some(s => u.toLowerCase().includes(s));
+    const isResource = (u) => typeof u === "string" && resourceExt.test(u);
+    const isCleanUrl = (u) => u && typeof u === "string" && /^https?:\/\//.test(u) && !isWrapped(u) && !isSocial(u) && !isCDN(u) && !isResource(u);
 
     const tryFetch = async (u, opts = {}, ms = 15000) => {
       const ctrl = new AbortController();
@@ -292,7 +293,6 @@ async function handle(req, res) {
       return false;
     };
 
-    // LAYER 1 — bypass.vip
     try {
       const r = await tryFetch("https://api.bypass.vip/", {
         method: "POST",
@@ -302,7 +302,6 @@ async function handle(req, res) {
       if (r.ok) { const d = await readJson(r); if (ok(extract(d), "bypass.vip")) return; }
     } catch {}
 
-    // LAYER 2 — bypass.city
     try {
       const r = await tryFetch("https://api.bypass.city/api/bypass", {
         method: "POST",
@@ -312,7 +311,6 @@ async function handle(req, res) {
       if (r.ok) { const d = await readJson(r); if (ok(extract(d), "bypass.city")) return; }
     } catch {}
 
-    // LAYER 3 — generic workers
     const genericApis = [
       "https://bypass.tools/api/bypass?url=" + encodeURIComponent(link),
       "https://api.bypassall.lol/bypass?url=" + encodeURIComponent(link),
@@ -332,7 +330,6 @@ async function handle(req, res) {
       } catch {}
     }
 
-    // LAYER 4 — linkvertise dedicated
     if (low.includes("linkvertise") || low.includes("work.ink") || low.includes("boost.ink") || low.includes("mboost.me")) {
       const lvApis = [
         "https://bypass.bot.nu/bypass?url=" + encodeURIComponent(link),
@@ -348,7 +345,6 @@ async function handle(req, res) {
       }
     }
 
-    // LAYER 5 — rekonise
     if (low.includes("rekonise") || low.includes("socialwolvez") || low.includes("cutsy")) {
       try {
         const slug = link.match(/rekonise\.com\/([a-z0-9]+)/i)?.[1] || "";
@@ -359,7 +355,6 @@ async function handle(req, res) {
       } catch {}
     }
 
-    // LAYER 6 — browserless (aggressive)
     if (BROWSERLESS_TOKEN) {
       const runBrowserless = async () => {
         return await tryFetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=120000&stealth=true&blockAds=true&headless=false", {
@@ -371,9 +366,13 @@ async function handle(req, res) {
               const low = startUrl.toLowerCase();
               const wrapped = ${JSON.stringify(wrappedTokens)};
               const social  = ${JSON.stringify(socialTokens)};
+              const cdn     = ${JSON.stringify(cdnTokens)};
+              const resourceExt = /\\.(js|mjs|css|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|wav|ogg|pdf|zip|rar|xml|txt|json)(\\?|#|$)/i;
               const isWrapped = (u) => wrapped.some(s => u.toLowerCase().includes(s));
               const isSocial  = (u) => social.some(s => u.toLowerCase().includes(s));
-              const isClean   = (u) => u && /^https?:\\/\\//.test(u) && !isWrapped(u) && !isSocial(u);
+              const isCDN     = (u) => cdn.some(s => u.toLowerCase().includes(s));
+              const isResource = (u) => resourceExt.test(u);
+              const isClean   = (u) => u && /^https?:\\/\\//.test(u) && !isWrapped(u) && !isSocial(u) && !isCDN(u) && !isResource(u);
               const isLoot = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest");
               const isPlatorelay = low.includes("platorelay");
               const isLinkvertise = low.includes("linkvertise") || low.includes("work.ink") || low.includes("boost.ink");
@@ -385,7 +384,11 @@ async function handle(req, res) {
                 let m;
                 while ((m = re.exec(text)) !== null) {
                   const u = m[0];
-                  if (isClean(u) && !u.includes("lootlabs") && !u.includes("lootlinks") && !u.includes("platorelay")) leaked.add(u);
+                  if (!isClean(u)) continue;
+                  if (u.includes("lootlabs") || u.includes("lootlinks") || u.includes("platorelay") || u.includes("linkvertise")) continue;
+                  const parts = u.split("/");
+                  if (parts.length < 4) continue;
+                  leaked.add(u);
                 }
               }
               async function clickTask(pg) {
@@ -465,19 +468,18 @@ async function handle(req, res) {
               }
               async function harvestDom(pg) {
                 try {
-                  const html = await pg.content();
-                  harvestUrls(html);
-                  const attrs = await pg.evaluate(() => {
+                  const urls = await pg.evaluate(() => {
                     const out = [];
-                    document.querySelectorAll("[data-url],[data-href],[data-link],[data-target],[data-destination]").forEach(el => {
-                      ["data-url","data-href","data-link","data-target","data-destination"].forEach(a => {
-                        const v = el.getAttribute(a);
-                        if (v) out.push(v);
+                    document.querySelectorAll("a[href^='http']").forEach(a => { if (a.href) out.push(a.href); });
+                    ["data-url","data-href","data-link","data-target","data-destination","data-redirect","data-final"].forEach(attr => {
+                      document.querySelectorAll("[" + attr + "]").forEach(el => {
+                        const v = el.getAttribute(attr);
+                        if (v && /^https?:\\/\\//.test(v)) out.push(v);
                       });
                     });
                     return out;
                   });
-                  attrs.forEach(harvestUrls);
+                  urls.forEach(harvestUrls);
                 } catch {}
               }
               try {
@@ -493,13 +495,20 @@ async function handle(req, res) {
                 page.on("response", async (resp) => {
                   try {
                     const u = resp.url();
-                    if (u.includes("lootlabs") || u.includes("lootlinks") || u.includes("platorelay") || u.includes("linkvertise")) {
-                      const ct = resp.headers()["content-type"] || "";
-                      if (ct.includes("json") || ct.includes("text")) {
-                        const t = await resp.text();
-                        harvestUrls(t);
+                    if (!(u.includes("lootlabs") || u.includes("lootlinks") || u.includes("platorelay") || u.includes("linkvertise"))) return;
+                    const ct = resp.headers()["content-type"] || "";
+                    if (!(ct.includes("json") || ct.includes("text"))) return;
+                    if (u.endsWith(".js") || u.endsWith(".css")) return;
+                    const t = await resp.text();
+                    try {
+                      const obj = JSON.parse(t);
+                      const re = /https?:\\/\\/[^"'\\s<>)]+/gi;
+                      const s = JSON.stringify(obj);
+                      let m;
+                      while ((m = re.exec(s)) !== null) {
+                        if (isClean(m[0])) leaked.add(m[0]);
                       }
-                    }
+                    } catch {}
                   } catch {}
                 });
                 await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 40000 });
@@ -604,7 +613,6 @@ async function handle(req, res) {
       } catch (e) { console.error("Browserless:", e.message); }
     }
 
-    // LAYER 7 — HEAD redirect
     try {
       const r = await tryFetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } }, 7000);
       const loc = r.headers.get("location");
