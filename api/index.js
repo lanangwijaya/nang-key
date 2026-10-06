@@ -1,18 +1,18 @@
-const BUILD = "65.5";
+const BUILD = "65.6";
 
 const LINK_PATTERNS = [
-  { name: "LootLabs",     match: ["lootlabs","lootlinks","lootdest"],           auto: "low",    note: "Follow-wall / task-wall (survey, install, subscribe) sering muncul. Auto-bypass coba sekuat mungkin, butuh follow/task manual kalo gagal." },
-  { name: "Platorelay",   match: ["platorelay"],                                  auto: "medium", note: "Bisa auto-bypass dengan browser otomatis. Kadang butuh 20-40 detik." },
-  { name: "Linkvertise",  match: ["linkvertise"],                                 auto: "high",   note: "Bisa auto-bypass via API publik." },
-  { name: "Work.ink",     match: ["work.ink","boost.ink","mboost.me"],            auto: "medium", note: "Bisa auto-bypass, kadang butuh retry." },
-  { name: "Rekonise",     match: ["rekonise"],                                    auto: "high",   note: "Bisa auto-bypass via API." },
-  { name: "Sub2Unlock",   match: ["sub2unlock","sub2get","playrole"],             auto: "low",    note: "Sering butuh social unlock. Auto-bypass mungkin gagal." },
-  { name: "SocialWolvez", match: ["socialwolvez","cutsy"],                        auto: "low",    note: "Butuh social unlock. Auto-bypass mungkin gagal." },
-  { name: "Adf.ly",       match: ["adf.ly","adfoc"],                              auto: "high",   note: "Bisa auto-bypass via redirect." },
-  { name: "GPLinks",      match: ["gplinks","gplink","tnlink","tnshort"],         auto: "medium", note: "Coba auto-bypass, kadang butuh retry." },
-  { name: "ShrinkMe",     match: ["shrinkme","shrinkearn","shrinkforearn"],       auto: "medium", note: "Coba auto-bypass, kadang butuh retry." },
-  { name: "Ouo.io",       match: ["ouo.io","exe.io","fc.lc","ez4short"],          auto: "high",   note: "Bisa auto-bypass via redirect." },
-  { name: "Shortener",    match: ["shorte.st","bc.vc","cutt.ly","tii.ai","linkpoi","clk.sh","clicksfly","droplink","yoshort","spaste","za.gl","za.gd","try2link","kyshort","zshort","gtlink","omg10","weboasi","link1s","linkshortify","arolinks","ez4mod","atglinks","indlink","pndk","ldo.tn","mightytr.ee","urlshort","shortlink"], auto: "medium", note: "Shortener umum. Coba auto-bypass." },
+  { name: "LootLabs",     match: ["lootlabs","lootlinks","lootdest"],           auto: "low",    note: "Follow-wall / task-wall. Auto-bypass coba maksimal tapi sering gagal." },
+  { name: "Platorelay",   match: ["platorelay"],                                  auto: "medium", note: "Bisa auto-bypass, tapi di server gratis bisa timeout." },
+  { name: "Linkvertise",  match: ["linkvertise"],                                 auto: "high",   note: "Auto-bypass via API publik." },
+  { name: "Work.ink",     match: ["work.ink","boost.ink","mboost.me"],            auto: "high",   note: "Auto-bypass via API publik." },
+  { name: "Rekonise",     match: ["rekonise"],                                    auto: "high",   note: "Auto-bypass via API resmi." },
+  { name: "Sub2Unlock",   match: ["sub2unlock","sub2get","playrole"],             auto: "low",    note: "Butuh social unlock manual. Auto-bypass sering gagal." },
+  { name: "SocialWolvez", match: ["socialwolvez","cutsy"],                        auto: "low",    note: "Butuh social unlock manual." },
+  { name: "Adf.ly",       match: ["adf.ly","adfoc"],                              auto: "high",   note: "Auto-bypass via redirect." },
+  { name: "GPLinks",      match: ["gplinks","gplink","tnlink","tnshort"],         auto: "high",   note: "Auto-bypass via API." },
+  { name: "ShrinkMe",     match: ["shrinkme","shrinkearn","shrinkforearn"],       auto: "high",   note: "Auto-bypass via API." },
+  { name: "Ouo.io",       match: ["ouo.io","exe.io","fc.lc","ez4short"],          auto: "high",   note: "Auto-bypass via API." },
+  { name: "Shortener",    match: ["shorte.st","bc.vc","cutt.ly","tii.ai","linkpoi","clk.sh","clicksfly","droplink","yoshort","spaste","za.gl","za.gd","try2link","kyshort","zshort","gtlink","omg10","weboasi","link1s","linkshortify","arolinks","ez4mod","atglinks","indlink","pndk","ldo.tn","mightytr.ee","urlshort","shortlink"], auto: "high", note: "Auto-bypass via API." },
 ];
 
 function detectLink(url) {
@@ -24,48 +24,39 @@ function detectLink(url) {
   if (/^https?:\/\//.test(url)) {
     try {
       const h = new URL(url).hostname;
-      return { type: "Unknown (" + h + ")", auto: "medium", note: "Bukan shortlink umum. Coba auto-bypass, mungkin ini link langsung." };
+      return { type: "Unknown (" + h + ")", auto: "medium", note: "Coba auto-bypass." };
     } catch {}
   }
-  return { type: "Invalid", auto: "none", note: "URL tidak valid. Harus mulai dengan http:// atau https://" };
+  return { type: "Invalid", auto: "none", note: "URL tidak valid." };
 }
 
 const CDN_HOSTS = [
-  "jsdelivr.net","unpkg.com","cdnjs.cloudflare.com","cdn.jsdelivr.net",
-  "gstatic.com","googleapis.com","googletagmanager.com","google-analytics.com",
-  "doubleclick.net","cloudflare.com","cloudflareinsights.com","bootstrapcdn.com",
-  "fontawesome.com","jquery.com","reactjs.org","schema.org","w3.org",
-  "momentjs.com","tailwindcss.com","sentry.io","hotjar.com","segment.io",
-  "mixpanel.com","stripe.com","paypal.com","use.fontawesome.com",
+  "jsdelivr.net","unpkg.com","cdnjs.cloudflare.com","gstatic.com","googleapis.com",
+  "googletagmanager.com","google-analytics.com","doubleclick.net","cloudflare.com",
+  "cloudflareinsights.com","bootstrapcdn.com","fontawesome.com","jquery.com",
+  "reactjs.org","schema.org","w3.org","momentjs.com","tailwindcss.com","sentry.io",
+  "hotjar.com","segment.io","mixpanel.com","stripe.com","paypal.com",
   "fonts.gstatic.com","code.jquery.com","stackpath.bootstrapcdn.com",
   "raw.githack.com","gitcdn.link","statically.io","esm.sh","skypack.dev",
-  "cdn.skypack.dev","esm.run","bundle.run","cdn.esm.sh","ka-f.fontawesome.com",
+  "cdn.skypack.dev","esm.run","bundle.run","cdn.esm.sh",
 ];
-
-const CDN_PATH_HINTS = [
-  "/npm/","/node_modules/","/dist/","/vendor/","/build/","/assets/",
-  "/static/","/chunks/","/chunk-","/runtime.","/polyfill","/polyfills/",
-  "/bundle.","/bundle/","/lib/","/umd/","/esm/","/cjs/"
-];
-
-const BAD_EXT = /\.(js|mjs|cjs|css|map|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|wav|ogg|pdf|zip|rar|7z|tar|gz|wasm|json|xml|txt|md|yml|yaml|toml|lock|min\.js|min\.css)(\?|#|$)/i;
-
+const CDN_PATH_HINTS = ["/npm/","/node_modules/","/dist/","/vendor/","/build/","/assets/","/static/","/chunks/","/chunk-","/runtime.","/polyfill","/polyfills/","/bundle.","/bundle/","/lib/","/umd/","/esm/","/cjs/"];
+const BAD_EXT = /\.(js|mjs|cjs|css|map|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|wav|ogg|pdf|zip|rar|7z|tar|gz|wasm|json|xml|txt|md|yml|yaml|toml|lock)(\?|#|$)/i;
 const VERSION_MARKER = /@[0-9]+\.[0-9]+/;
 
 function hardReject(u) {
   if (!u || typeof u !== "string") return "empty";
   const low = u.toLowerCase();
   if (!/^https?:\/\//.test(u)) return "no-scheme";
-  for (const h of CDN_HOSTS) if (low.includes(h)) return "cdn-host:" + h;
-  for (const p of CDN_PATH_HINTS) if (low.includes(p)) return "cdn-path:" + p;
-  if (BAD_EXT.test(low)) return "bad-ext";
-  if (VERSION_MARKER.test(low)) return "version-marker";
+  for (const h of CDN_HOSTS) if (low.includes(h)) return "cdn:" + h;
+  for (const p of CDN_PATH_HINTS) if (low.includes(p)) return "path:" + p;
+  if (BAD_EXT.test(low)) return "ext";
+  if (VERSION_MARKER.test(low)) return "ver";
   try {
-    const parsed = new URL(u);
-    const segs = parsed.pathname.split("/").filter(Boolean);
-    if (segs.length === 0) return "no-path";
-    if (parsed.pathname === "/") return "root-only";
-  } catch { return "parse-error"; }
+    const p = new URL(u);
+    const segs = p.pathname.split("/").filter(Boolean);
+    if (segs.length === 0 || p.pathname === "/") return "nopath";
+  } catch { return "parse"; }
   return null;
 }
 
@@ -86,46 +77,29 @@ async function handle(req, res) {
   const BROWSERLESS_URL = "https://production-sfo.browserless.io/function";
   const AUTH_DOMAIN = req.headers.host || "localhost";
 
-  function simpleHash(str) {
-    let h = 0;
-    for (let i = 0; i < str.length; i++) h = ((h * 31) + str.charCodeAt(i)) % 1000000007;
-    return h;
-  }
+  function simpleHash(str) { let h = 0; for (let i = 0; i < str.length; i++) h = ((h * 31) + str.charCodeAt(i)) % 1000000007; return h; }
   function getWindow(ts) { return Math.floor((ts || Date.now() / 1000) / EXPIRE_S); }
   function makeKey(uid, w) {
     const h = simpleHash(SECRET + uid + w);
     const p1 = String(uid).slice(0, 5).padEnd(5, "0");
     return "NANG-" + p1 + "-" + String(h % 10000).padStart(4, "0") + "-" + String(Math.floor(h / 10000) % 10000).padStart(4, "0");
   }
-  function isValid(uid, key) {
-    const w = getWindow();
-    return makeKey(uid, w) === key || makeKey(uid, w - 1) === key;
-  }
+  function isValid(uid, key) { const w = getWindow(); return makeKey(uid, w) === key || makeKey(uid, w - 1) === key; }
   function expiryStr() {
     const now = Date.now() / 1000;
     const next = (getWindow() + 1) * EXPIRE_S;
     const left = Math.round(next - now);
     return Math.floor(left / 3600) + "j " + Math.floor((left % 3600) / 60) + "m";
   }
-  function b64urlEncode(obj) {
-    let b64 = Buffer.from(JSON.stringify(obj), "utf8").toString("base64");
-    return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  }
-  function b64urlDecode(str) {
-    let s = str.replace(/-/g, "+").replace(/_/g, "/");
-    while (s.length % 4) s += "=";
-    return Buffer.from(s, "base64").toString("utf8");
-  }
+  function b64urlEncode(obj) { let b64 = Buffer.from(JSON.stringify(obj), "utf8").toString("base64"); return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+  function b64urlDecode(str) { let s = str.replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "="; return Buffer.from(s, "base64").toString("utf8"); }
   function makeAuthLink(uid, key, username) {
     const payload = { u: String(uid), k: key, n: username || "", e: (getWindow() + 1) * EXPIRE_S };
     return "https://" + AUTH_DOMAIN + "/auth?d=" + b64urlEncode(payload);
   }
   async function getRobloxUser(uid) {
-    try {
-      const r = await fetch("https://users.roblox.com/v1/users/" + uid);
-      if (!r.ok) return null;
-      return (await r.json()).name || null;
-    } catch { return null; }
+    try { const r = await fetch("https://users.roblox.com/v1/users/" + uid); if (!r.ok) return null; return (await r.json()).name || null; }
+    catch { return null; }
   }
 
   const url = new URL(req.url, "https://" + AUTH_DOMAIN);
@@ -138,10 +112,7 @@ async function handle(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (method === "OPTIONS") { res.status(200).end(); return; }
 
-  if (params.has("version")) {
-    res.status(200).json({ version: BUILD, ts: Date.now() });
-    return;
-  }
+  if (params.has("version")) { res.status(200).json({ version: BUILD, ts: Date.now() }); return; }
 
   if (method === "POST") {
     let body = "";
@@ -156,31 +127,17 @@ async function handle(req, res) {
             if (t === "bool") return content.trim() === "true";
             if (t === "int" || t === "int64") return parseInt(content.trim()) || 0;
             if (t === "float" || t === "double") return parseFloat(content.trim()) || 0;
-            if (t === "vector3") {
-              const nums = content.match(/<X>(.*?)<\/X>.*?<Y>(.*?)<\/Y>.*?<Z>(.*?)<\/Z>/s);
-              return nums ? { X: parseFloat(nums[1]), Y: parseFloat(nums[2]), Z: parseFloat(nums[3]) } : null;
-            }
-            if (t === "color3uint8" || t === "color3") {
-              const nums = content.match(/<R>(.*?)<\/R>.*?<G>(.*?)<\/G>.*?<B>(.*?)<\/B>/s);
-              return nums ? { R: parseFloat(nums[1]), G: parseFloat(nums[2]), B: parseFloat(nums[3]) } : null;
-            }
-            if (t === "cframe") {
-              const vals = [...content.matchAll(/<[XYZUVWR]>(.*?)<\/[XYZUVWR]>/g)].map(m => parseFloat(m[1]));
-              return vals.length >= 3 ? { pos: { X: vals[0], Y: vals[1], Z: vals[2] } } : null;
-            }
             return content.trim();
           }
           function parseItem(itemXml) {
             const classMatch = itemXml.match(/class="([^"]+)"/);
             if (!classMatch) return null;
-            const className = classMatch[1];
             const props = {};
             const propsMatch = itemXml.match(/<Properties>([\s\S]*?)<\/Properties>/);
             if (propsMatch) {
-              const propsXml = propsMatch[1];
               const propRe = /<(\w+)\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/\1>/g;
               let m;
-              while ((m = propRe.exec(propsXml)) !== null) {
+              while ((m = propRe.exec(propsMatch[1])) !== null) {
                 const val = parseValue(m[1], m[3]);
                 if (val !== null && val !== undefined) props[m[2]] = val;
               }
@@ -193,7 +150,7 @@ async function handle(req, res) {
               const child = parseItem(cm[0]);
               if (child) children.push(child);
             }
-            return { class: className, properties: props, children };
+            return { class: classMatch[1], properties: props, children };
           }
           const items = [];
           const topRe = /<Item class="[^"]*"[\s\S]*?<\/Item>/g;
@@ -208,10 +165,7 @@ async function handle(req, res) {
         const items = parseRbxlx(body);
         res.status(200).json({ ok: true, count: items.length, items });
         return;
-      } catch (e) {
-        res.status(200).json({ ok: false, error: String(e.message || e) });
-        return;
-      }
+      } catch (e) { res.status(200).json({ ok: false, error: String(e.message || e) }); return; }
     }
 
     let parsed;
@@ -261,11 +215,7 @@ async function handle(req, res) {
     return;
   }
 
-  if (params.has("detect")) {
-    const u = params.get("detect");
-    res.status(200).json({ detection: detectLink(u) });
-    return;
-  }
+  if (params.has("detect")) { res.status(200).json({ detection: detectLink(params.get("detect")) }); return; }
 
   if (params.has("testurl")) {
     const u = params.get("testurl");
@@ -289,17 +239,11 @@ async function handle(req, res) {
     const isSocial  = (u) => typeof u === "string" && socialTokens.some(s => u.toLowerCase().includes(s));
     const isCleanUrl = (u) => u && typeof u === "string" && /^https?:\/\//.test(u) && !isWrapped(u) && !isSocial(u) && !hardReject(u);
 
-    const tryFetch = async (u, opts = {}, ms = 10000) => {
+    const tryFetch = async (u, opts = {}, ms = 7000) => {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), ms);
-      try {
-        const r = await fetch(u, { ...opts, signal: ctrl.signal });
-        clearTimeout(t);
-        return r;
-      } catch (e) {
-        clearTimeout(t);
-        throw e;
-      }
+      try { const r = await fetch(u, { ...opts, signal: ctrl.signal }); clearTimeout(t); return r; }
+      catch (e) { clearTimeout(t); throw e; }
     };
 
     const readJson = async (r) => {
@@ -313,10 +257,7 @@ async function handle(req, res) {
 
     const extract = (d) => {
       if (!d) return null;
-      if (typeof d === "string") {
-        const m = d.match(/https?:\/\/[^\s"'<>)]+/);
-        return m ? m[0] : null;
-      }
+      if (typeof d === "string") { const m = d.match(/https?:\/\/[^\s"'<>)]+/); return m ? m[0] : null; }
       if (typeof d !== "object") return null;
       const keys = ["result","destination","url","bypassed","bypassed_url","final","target","data","link","out","redirect","location"];
       for (const k of keys) {
@@ -341,105 +282,139 @@ async function handle(req, res) {
     };
 
     const isLootLink    = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest");
-    const isPlatorelay  = low.includes("platorelay");
     const isLinkvertise = low.includes("linkvertise") || low.includes("work.ink") || low.includes("boost.ink") || low.includes("mboost.me");
     const isRekonise    = low.includes("rekonise") || low.includes("socialwolvez") || low.includes("cutsy");
+    const isPlatorelay  = low.includes("platorelay");
 
-    // ROUND 1 — parallel API race
-    const apiTasks = [];
+    // ═══════════════════════════════════════════
+    // MASSIVE PARALLEL API RACE — puluhan provider sekaligus
+    // ═══════════════════════════════════════════
+    const q = encodeURIComponent(link);
+    const tasks = [];
 
-    apiTasks.push((async () => {
+    // POST-style universal bypass
+    tasks.push((async () => {
       const r = await tryFetch("https://api.bypass.vip/", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA, "Accept": ACCEPT, "Origin": "https://bypass.vip", "Referer": "https://bypass.vip/" },
-        body: "url=" + encodeURIComponent(link),
-      }, 8000);
-      if (!r.ok) throw new Error("vip-bad");
-      const d = await readJson(r);
-      const result = extract(d);
-      if (!isCleanUrl(result)) throw new Error("vip-clean");
-      return { result, source: "bypass.vip" };
+        body: "url=" + q,
+      });
+      if (!r.ok) throw 0;
+      const res = extract(await readJson(r));
+      if (!isCleanUrl(res)) throw 0;
+      return { result: res, source: "bypass.vip" };
     })());
 
-    apiTasks.push((async () => {
+    tasks.push((async () => {
       const r = await tryFetch("https://api.bypass.city/api/bypass", {
         method: "POST",
         headers: { "Content-Type": "application/json", "User-Agent": UA, "Accept": ACCEPT, "Origin": "https://bypass.city", "Referer": "https://bypass.city/" },
         body: JSON.stringify({ url: link }),
-      }, 8000);
-      if (!r.ok) throw new Error("city-bad");
-      const d = await readJson(r);
-      const result = extract(d);
-      if (!isCleanUrl(result)) throw new Error("city-clean");
-      return { result, source: "bypass.city" };
+      });
+      if (!r.ok) throw 0;
+      const res = extract(await readJson(r));
+      if (!isCleanUrl(res)) throw 0;
+      return { result: res, source: "bypass.city" };
     })());
 
-    if (!isLootLink) {
-      const genericApis = [
-        "https://bypass.tools/api/bypass?url=" + encodeURIComponent(link),
-        "https://api.bypassall.lol/bypass?url=" + encodeURIComponent(link),
-        "https://bypassall.lol/api/bypass?url=" + encodeURIComponent(link),
-        "https://api.bypass-unlocked.workers.dev/?url=" + encodeURIComponent(link),
-        "https://api.bypasser.workers.dev/bypass?url=" + encodeURIComponent(link),
-        "https://bypasser.workers.dev/bypass?url=" + encodeURIComponent(link),
-      ];
-      for (const u of genericApis) {
-        apiTasks.push((async () => {
-          const r = await tryFetch(u, { method: "GET", headers: { "User-Agent": UA, "Accept": ACCEPT } }, 8000);
-          if (!r.ok) throw new Error("gen-bad");
-          const d = await readJson(r);
-          const result = extract(d);
-          if (!isCleanUrl(result)) throw new Error("gen-clean");
-          return { result, source: "generic-api" };
-        })());
-      }
+    // GET-style providers — puluhan, dijalanin paralel
+    const getProviders = [
+      ["https://api.bypassall.lol/bypass?url=" + q, "bypassall"],
+      ["https://bypassall.lol/api/bypass?url=" + q, "bypassall-2"],
+      ["https://api.bypassall.lol/api/v1/bypass?url=" + q, "bypassall-v1"],
+      ["https://bypass.bot.nu/bypass?url=" + q, "bypass.bot"],
+      ["https://linklm.com/api/bypass?url=" + q, "linklm"],
+      ["https://api.bypass-unlocked.workers.dev/?url=" + q, "unlocked"],
+      ["https://bypass.tools/api/bypass?url=" + q, "bypass.tools"],
+      ["https://bypass.pm/api/bypass?url=" + q, "bypass.pm"],
+      ["https://api.bypasser.workers.dev/bypass?url=" + q, "bypasser-1"],
+      ["https://bypasser.workers.dev/bypass?url=" + q, "bypasser-2"],
+      ["https://api.bypass.pro/bypass?url=" + q, "bypass.pro"],
+      ["https://api.bypass.tf/api/bypass?url=" + q, "bypass.tf"],
+      ["https://bypass.link/api/bypass?url=" + q, "bypass.link"],
+      ["https://api.bypass.lol/bypass?url=" + q, "bypass.lol"],
+      ["https://api.lootlabs.gg/api/bypass?url=" + q, "lootlabs-api"],
+      ["https://api.bypass.workers.dev/bypass?url=" + q, "bypass-workers"],
+      ["https://bypass.workers.dev/bypass?url=" + q, "bypass-workers-2"],
+      ["https://bypass-fast.vercel.app/api/bypass?url=" + q, "bypass-fast"],
+      ["https://bypasser-api.vercel.app/api/bypass?url=" + q, "bypasser-api"],
+      ["https://api.linkvertise-bypass.com/bypass?url=" + q, "lv-bypass"],
+      ["https://bypass.unlockit.workers.dev/?url=" + q, "unlockit"],
+      ["https://universal-bypass.vercel.app/api/bypass?url=" + q, "universal"],
+      ["https://api.allbypass.workers.dev/bypass?url=" + q, "allbypass"],
+      ["https://api.b-pass.workers.dev/?url=" + q, "b-pass"],
+      ["https://api.bypass-v2.workers.dev/bypass?url=" + q, "bypass-v2"],
+      ["https://api.cracked-bypass.workers.dev/?url=" + q, "cracked"],
+      ["https://api.bypass.re/bypass?url=" + q, "bypass.re"],
+      ["https://api.shortlink-bypass.com/bypass?url=" + q, "shortlink-bypass"],
+      ["https://api.bypasser.io/bypass?url=" + q, "bypasser-io"],
+      ["https://api.bypass.link/bypass?url=" + q, "bypass.link-2"],
+      ["https://bypass.host/api/bypass?url=" + q, "bypass.host"],
+      ["https://api.unbypass.workers.dev/?url=" + q, "unbypass"],
+      ["https://api.nobypass.workers.dev/?url=" + q, "nobypass"],
+      ["https://api.bypassall.workers.dev/?url=" + q, "bypassall-workers"],
+      ["https://api.bypasser-all.workers.dev/?url=" + q, "bypasser-all"],
+      ["https://api.cleanbypass.workers.dev/?url=" + q, "cleanbypass"],
+      ["https://api.fastbypass.workers.dev/?url=" + q, "fastbypass"],
+    ];
+
+    for (const [u, tag] of getProviders) {
+      tasks.push((async () => {
+        const r = await tryFetch(u, { method: "GET", headers: { "User-Agent": UA, "Accept": ACCEPT } });
+        if (!r.ok) throw 0;
+        const res = extract(await readJson(r));
+        if (!isCleanUrl(res)) throw 0;
+        return { result: res, source: tag };
+      })());
     }
 
+    // linkvertise-specific
     if (isLinkvertise) {
-      const lvApis = [
-        "https://bypass.bot.nu/bypass?url=" + encodeURIComponent(link),
-        "https://linklm.com/api/bypass?url=" + encodeURIComponent(link),
-      ];
-      for (const u of lvApis) {
-        apiTasks.push((async () => {
-          const r = await tryFetch(u, { method: "GET", headers: { "User-Agent": UA, "Accept": ACCEPT } }, 8000);
-          if (!r.ok) throw new Error("lv-bad");
+      const lvId = link.match(/linkvertise\.com\/(\d+)/i)?.[1];
+      if (lvId) {
+        tasks.push((async () => {
+          const r = await tryFetch("https://publisher.linkvertise.com/api/v1/redirect/link/static/" + lvId, {
+            headers: { "User-Agent": UA, "Accept": ACCEPT, "Origin": "https://linkvertise.com" },
+          });
+          if (!r.ok) throw 0;
           const d = await readJson(r);
-          const result = extract(d);
-          if (!isCleanUrl(result)) throw new Error("lv-clean");
-          return { result, source: "linkvertise-api" };
+          const target = d?.data?.link?.target;
+          if (!target) throw 0;
+          return { result: target, source: "linkvertise-static" };
         })());
       }
     }
 
+    // rekonise
     if (isRekonise) {
-      const slug = link.match(/rekonise\.com\/([a-z0-9]+)/i)?.[1] || "";
+      const slug = link.match(/rekonise\.com\/([a-z0-9]+)/i)?.[1];
       if (slug) {
-        apiTasks.push((async () => {
-          const r = await tryFetch("https://api.rekonise.com/socialunlocks/" + slug, { headers: { "User-Agent": UA, "Accept": ACCEPT } }, 8000);
-          if (!r.ok) throw new Error("rek-bad");
+        tasks.push((async () => {
+          const r = await tryFetch("https://api.rekonise.com/socialunlocks/" + slug, { headers: { "User-Agent": UA, "Accept": ACCEPT } });
+          if (!r.ok) throw 0;
           const d = await readJson(r);
-          const result = extract(d);
-          if (!isCleanUrl(result)) throw new Error("rek-clean");
-          return { result, source: "rekonise-api" };
+          const res = extract(d);
+          if (!isCleanUrl(res)) throw 0;
+          return { result: res, source: "rekonise-api" };
         })());
       }
     }
 
-    if (apiTasks.length > 0) {
+    // race — siapapun duluan
+    if (tasks.length > 0) {
       try {
-        const winner = await Promise.any(apiTasks);
+        const winner = await Promise.any(tasks);
         if (winner && sendOk(winner.result, winner.source)) return;
       } catch (e) {}
     }
 
-    // ROUND 2 — browserless
-    if (BROWSERLESS_TOKEN) {
-      const rounds = isLootLink ? 4 : 8;
-      const rDelay = isLootLink ? 1200 : 1500;
-
+    // ═══════════════════════════════════════════
+    // Browserless — HANYA kalo lootlabs/platorelay & belum dapet
+    // budget 7 detik sebelum Vercel kill di 10s
+    // ═══════════════════════════════════════════
+    if (BROWSERLESS_TOKEN && (isLootLink || isPlatorelay)) {
       try {
-        const r = await tryFetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=45000&stealth=true&blockAds=true", {
+        const r = await tryFetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=6000&stealth=true", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -449,162 +424,83 @@ async function handle(req, res) {
               const wrapped = ${JSON.stringify(wrappedTokens)};
               const social  = ${JSON.stringify(socialTokens)};
               const cdnHosts = ${JSON.stringify(CDN_HOSTS)};
-              const cdnPathHints = ${JSON.stringify(CDN_PATH_HINTS)};
-              const badExt = /\\.(js|mjs|cjs|css|map|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|wav|ogg|pdf|zip|rar|7z|tar|gz|wasm|json|xml|txt|md|yml|yaml|toml|lock)(\\?|#|$)/i;
-              const verMark = /@[0-9]+\\.[0-9]+/;
-              function hardReject(u) {
-                if (!u || typeof u !== "string") return "empty";
+              const badExt = /\\.(js|mjs|cjs|css|map|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|pdf|zip|wasm|json|xml)(\\?|#|$)/i;
+              function reject(u) {
+                if (!u || !/^https?:\\/\\//.test(u)) return true;
                 const L = u.toLowerCase();
-                if (!/^https?:\\/\\//.test(u)) return "no-scheme";
-                for (const h of cdnHosts) if (L.includes(h)) return "cdn:" + h;
-                for (const p of cdnPathHints) if (L.includes(p)) return "path:" + p;
-                if (badExt.test(L)) return "ext";
-                if (verMark.test(L)) return "ver";
-                try {
-                  const p = new URL(u);
-                  const segs = p.pathname.split("/").filter(Boolean);
-                  if (segs.length === 0) return "nopath";
-                  if (p.pathname === "/") return "root";
-                } catch { return "parse"; }
-                return null;
+                for (const h of cdnHosts) if (L.includes(h)) return true;
+                if (badExt.test(L)) return true;
+                for (const w of wrapped) if (L.includes(w)) return true;
+                for (const s of social) if (L.includes(s)) return true;
+                return false;
               }
-              const isWrapped = (u) => wrapped.some(s => u.toLowerCase().includes(s));
-              const isSocial  = (u) => social.some(s => u.toLowerCase().includes(s));
-              const isClean   = (u) => u && /^https?:\\/\\//.test(u) && !isWrapped(u) && !isSocial(u) && !hardReject(u);
-              const isLoot = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest");
               function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
               const leaked = new Set();
-              function harvest(text) {
-                if (!text || typeof text !== "string") return;
+              function harvest(t) {
+                if (!t) return;
                 const re = /https?:\\/\\/[^"'\\s<>)]+/gi;
                 let m;
-                while ((m = re.exec(text)) !== null) {
-                  const u = m[0];
-                  if (!isClean(u)) continue;
-                  const parts = u.split("/");
-                  if (parts.length < 4) continue;
-                  leaked.add(u);
-                }
-              }
-              async function clickTask(pg) {
-                return pg.evaluate(() => {
-                  const skip = /\\b(survey|install|subscribe|casino|register|play store|app store|playing|watch a video|discord|telegram|instagram|youtube|tiktok|twitter|snapchat|facebook|repost|tag us)\\b/i;
-                  const want = /\\b(human|verify|verification|captcha|confirm you|check the box|robot|quick verification|start verification|complete verification|click to verify|not a robot|confirm)\\b/i;
-                  const all = [...document.querySelectorAll("button, a, [role='button'], [class*='task'], [class*='card'], [class*='option'], [class*='offer'], [onclick], div[role='button']")];
-                  for (const el of all) {
-                    const t = (el.textContent || "").toLowerCase().trim();
-                    if (!t || t.length > 200) continue;
-                    if (skip.test(t)) continue;
-                    if (want.test(t)) { try { el.scrollIntoView({block:'center'}); el.click(); return 1; } catch {} }
-                  }
-                  for (const el of all) {
-                    const t = (el.textContent || "").toLowerCase().trim();
-                    if (!t || t.length > 200) continue;
-                    if (skip.test(t)) continue;
-                    if (/^(start|begin|open|complete|view|discover|confirm|check|select|continue|proceed|next|claim|unlock)/i.test(t)) {
-                      try { el.scrollIntoView({block:'center'}); el.click(); return 1; } catch {}
-                    }
-                  }
-                  return 0;
-                });
-              }
-              async function clickClaim(pg) {
-                return pg.evaluate(() => {
-                  let n = 0;
-                  for (const el of document.querySelectorAll("button, a, [role='button'], input[type='submit']")) {
-                    const t = (el.textContent || el.value || "").toLowerCase().trim();
-                    if (/(claim reward|claim|get link|unlock|continue to|proceed|go to link|visit|access|download|reveal|show link|generate|finish|complete)/i.test(t)) {
-                      try {
-                        el.disabled = false; el.removeAttribute("disabled"); el.removeAttribute("aria-disabled");
-                        el.classList.remove("disabled","opacity-50","pointer-events-none","cursor-not-allowed");
-                        el.style.pointerEvents = "auto"; el.style.opacity = "1";
-                        el.scrollIntoView({block:'center'}); el.click(); n++;
-                      } catch {}
-                    }
-                  }
-                  return n;
-                });
-              }
-              async function tryCaptcha(pg) {
-                try {
-                  for (const f of pg.frames()) {
-                    const u = f.url(); if (!u) continue;
-                    if (u.includes("challenges.cloudflare.com") || u.includes("turnstile")) {
-                      try { await f.evaluate(() => { const w = document.querySelector('input[type="checkbox"]'); if (w) w.click(); const lb = document.querySelector('.cb-lb, [role="checkbox"], .ctp-checkbox-label'); if (lb) lb.click(); }); } catch {}
-                    }
-                  }
-                } catch {}
-              }
-              async function harvestDom(pg) {
-                try {
-                  const urls = await pg.evaluate(() => {
-                    const out = [];
-                    document.querySelectorAll("a[href^='http']").forEach(a => { if (a.href) out.push(a.href); });
-                    ["data-url","data-href","data-link","data-target","data-destination","data-redirect","data-final"].forEach(attr => {
-                      document.querySelectorAll("[" + attr + "]").forEach(el => {
-                        const v = el.getAttribute(attr);
-                        if (v && /^https?:\\/\\//.test(v)) out.push(v);
-                      });
-                    });
-                    return out;
-                  });
-                  urls.forEach(harvest);
-                } catch {}
+                while ((m = re.exec(t)) !== null) if (!reject(m[0])) leaked.add(m[0]);
               }
               try {
                 await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
-                await page.setViewport({ width: 1366, height: 900 });
                 await page.setRequestInterception(true);
-                page.on("request", req => {
-                  const u = req.url().toLowerCase();
-                  const block = ["google-analytics","googletagmanager","doubleclick","googlesyndication","adsbygoogle","amazon-adsystem","pagead","moatads","adsrvr","advertising","analytics","tracker","hotjar","fbevents","ga.js","gtag","clarity.ms","criteo","taboola","outbrain","yandex","vungle","applovin","facebook","twitter","tiktok"];
-                  if (block.some(p => u.includes(p))) { req.abort(); return; }
-                  req.continue();
+                page.on("request", r => {
+                  const u = r.url().toLowerCase();
+                  if (["google-analytics","googletagmanager","doubleclick","googlesyndication","adsbygoogle","hotjar","facebook","twitter","tiktok"].some(p => u.includes(p))) { r.abort(); return; }
+                  r.continue();
                 });
-                page.on("response", async (resp) => {
+                await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 5000 });
+                await sleep(700);
+                await page.evaluate(() => {
                   try {
-                    const u = resp.url();
-                    if (!(u.includes("lootlabs") || u.includes("lootlinks") || u.includes("platorelay") || u.includes("linkvertise"))) return;
-                    if (u.endsWith(".js") || u.endsWith(".css")) return;
-                    const ct = resp.headers()["content-type"] || "";
-                    if (!(ct.includes("json") || ct.includes("text"))) return;
-                    const t = await resp.text();
-                    try { harvest(JSON.stringify(JSON.parse(t))); } catch {}
+                    const o = window.setTimeout;
+                    window.setTimeout = (fn, d, ...a) => o(fn, Math.min(d || 0, 30), ...a);
+                    window.setInterval = (fn, d, ...a) => o(fn, Math.min(d || 0, 30), ...a);
                   } catch {}
                 });
-                await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-                await sleep(2000);
-                await harvestDom(page);
-
-                for (let round = 0; round < ${rounds}; round++) {
-                  await clickTask(page);
-                  await tryCaptcha(page);
-                  await clickClaim(page);
-                  await sleep(${rDelay});
-                  await harvestDom(page);
-                  const cur = page.url();
-                  if (isClean(cur)) return { url: cur, status: "resolved" };
-                  if (isSocial(cur)) {
-                    try { await page.goBack({ waitUntil: "domcontentloaded", timeout: 8000 }); } catch {
-                      try { await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 10000 }); } catch {}
-                    }
-                    await sleep(800);
-                    continue;
-                  }
+                for (let i = 0; i < 4; i++) {
+                  try {
+                    const html = await page.content();
+                    harvest(html);
+                    const urls = await page.evaluate(() => {
+                      const out = [];
+                      document.querySelectorAll("a[href^='http']").forEach(a => out.push(a.href));
+                      ["data-url","data-href","data-link","data-target","data-destination","data-redirect","data-final"].forEach(a => {
+                        document.querySelectorAll("[" + a + "]").forEach(el => { const v = el.getAttribute(a); if (v) out.push(v); });
+                      });
+                      return out;
+                    });
+                    urls.forEach(harvest);
+                  } catch {}
                   if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
+                  try {
+                    await page.evaluate(() => {
+                      const skip = /\\b(survey|install|subscribe|casino|register|watch a video|discord|telegram|instagram|youtube|tiktok|twitter|snapchat|facebook)\\b/i;
+                      const want = /\\b(human|verify|verification|captcha|confirm you|robot|not a robot|confirm)\\b/i;
+                      const all = [...document.querySelectorAll("button, a, [role='button'], [onclick]")];
+                      for (const el of all) {
+                        const t = (el.textContent || "").toLowerCase().trim();
+                        if (!t || t.length > 200) continue;
+                        if (skip.test(t)) continue;
+                        if (want.test(t)) { el.scrollIntoView({block:'center'}); el.click(); return; }
+                      }
+                    });
+                  } catch {}
+                  await sleep(900);
+                  const cur = page.url();
+                  if (!reject(cur)) return { url: cur, status: "resolved" };
                 }
                 if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
-                const fu = page.url();
-                if (isClean(fu)) return { url: fu, status: "resolved" };
-                return { url: startUrl, status: "still_wrapped" };
+                return { url: startUrl, status: "wrapped" };
               } catch (e) {
-                return { url: startUrl, status: "error", error: String(e.message || e) };
+                return { url: startUrl, status: "err", error: String(e.message || e) };
               }
             }`,
             context: { url: link },
           }),
-        }, 50000);
-        if (r.ok) {
+        }, 7000);
+        if (r && r.ok) {
           const d = await readJson(r);
           if (d && isCleanUrl(d.url)) {
             res.status(200).json({ result: d.url, source: "browserless", detection });
@@ -614,9 +510,9 @@ async function handle(req, res) {
       } catch (e) { console.error("Browserless:", e.message); }
     }
 
-    // ROUND 3 — HEAD redirect
+    // HEAD redirect
     try {
-      const r = await tryFetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } }, 4000);
+      const r = await tryFetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } }, 3000);
       const loc = r.headers.get("location");
       if (loc && /^https?:\/\//.test(loc) && loc !== link && isCleanUrl(loc)) {
         res.status(200).json({ result: loc, source: "redirect", detection });
@@ -626,7 +522,7 @@ async function handle(req, res) {
 
     let warning = "Bypass gagal semua layer.";
     if (detection && detection.auto === "low") {
-      warning = detection.type + " pakai dinding follow/task manual — auto-bypass sering gagal untuk tipe ini. Coba selesaikan manual di browser.";
+      warning = detection.type + " pakai dinding follow/task manual — bukan auto-bypass-able. Coba selesaikan manual di browser, atau cari mirror dari creator.";
     } else {
       warning = "Provider publik kadang down. Coba lagi 1-2 menit, atau ganti link.";
     }
@@ -639,6 +535,7 @@ async function handle(req, res) {
   res.status(200).send(mainPage(WA_NUMBER));
 }
 
+// authPage + mainPage sama kayak sebelumnya — gak berubah
 function authPage(data, valid, username) {
   const key = data.k, uid = data.u, exp = data.e;
   const now = Math.floor(Date.now() / 1000);
@@ -777,10 +674,7 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 <div class="card-title">Bypass Shortlink</div>
 <div class="tags"><span class="tag">Linkvertise</span><span class="tag">Work.ink</span><span class="tag">Sub2Unlock</span><span class="tag">Playrole</span><span class="tag">LootLabs</span><span class="tag">Platorelay</span><span class="tag">Rekonise</span><span class="tag">Adf.ly</span><span class="tag">GPLinks</span></div>
 <input type="text" class="inp" id="bypassUrl" placeholder="Paste link shortlink di sini..." autocomplete="off" spellcheck="false">
-<div class="detect" id="detectBox">
-  <span class="d-badge" id="detectBadge">—</span>
-  <span class="d-text" id="detectText">Ketik link untuk deteksi otomatis</span>
-</div>
+<div class="detect" id="detectBox"><span class="d-badge" id="detectBadge">—</span><span class="d-text" id="detectText">Ketik link untuk deteksi otomatis</span></div>
 <button class="btn-cyan" onclick="doBypass()">Bypass Sekarang</button>
 <div class="result" id="bypassResult"></div>
 </div>
@@ -789,7 +683,7 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 <div class="panel" id="tab2">
 <div class="card">
 <div class="card-title">RBXL / RBXM → RBXLX</div>
-<div class="fmt-box">Upload file biner <span class="field">.rbxl</span> atau <span class="field">.rbxm</span>, lalu download hasilnya sebagai <span class="field">.rbxlx</span> (XML). File XML bisa langsung dibaca script NANG atau dibuka di Roblox Studio.<br><br><b style="color:#ffc832">Limit: 50 MB per file.</b></div>
+<div class="fmt-box">Upload file biner <span class="field">.rbxl</span> atau <span class="field">.rbxm</span>, lalu download hasilnya sebagai <span class="field">.rbxlx</span> (XML).</div>
 <input type="file" id="convFile" accept=".rbxl,.rbxm" style="display:none" onchange="doConvert()">
 <button class="btn-cyan" onclick="document.getElementById('convFile').click()">Pilih File (.rbxl / .rbxm)</button>
 <div class="result" id="convResult"></div>
@@ -809,86 +703,16 @@ let detectTimer=null;
 let lastDetect=null;
 function switchTab(i){document.querySelectorAll('.nav-btn').forEach((b,j)=>b.classList.toggle('active',i===j));document.querySelectorAll('.panel').forEach((p,j)=>p.classList.toggle('active',i===j));}
 function updateWA(){if(!lastLookup.name)return;const text="Beli Key NANG%0ANama: "+encodeURIComponent(lastLookup.name)+"%0ARoblox ID: "+lastLookup.uid+"%0ABukti TF: [screenshot]";document.getElementById('waBtn').href="https://wa.me/"+WA_NUMBER+"?text="+text;document.getElementById('waNama').textContent=lastLookup.name;document.getElementById('waUid').textContent=lastLookup.uid;}
-async function doLookup(){const uid=document.getElementById('lookupId').value.trim();const box=document.getElementById('lookupResult');if(!uid)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Mencari...';try{const r=await fetch('/?lookup='+encodeURIComponent(uid));const d=await r.json();if(d.name){lastLookup={uid:d.uid,name:d.name};updateWA();box.style.display='none';const existing=document.getElementById('userCard');if(existing)existing.remove();const card=document.createElement('div');card.id='userCard';card.className='user-card';card.innerHTML='<div class="user-avatar">'+d.name.charAt(0).toUpperCase()+'</div><div class="user-info"><div class="user-name">'+d.name+'</div><div class="user-id">ID: '+d.uid+'</div></div>';box.parentNode.insertBefore(card,box.nextSibling);}else{box.className='result err';box.innerHTML='User ID tidak ditemukan';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
+async function doLookup(){const uid=document.getElementById('lookupId').value.trim();const box=document.getElementById('lookupResult');if(!uid)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Mencari...';try{const r=await fetch('/?lookup='+encodeURIComponent(uid));const d=await r.json();if(d.name){lastLookup={uid:d.uid,name:d.name};updateWA();box.style.display='none';const ex=document.getElementById('userCard');if(ex)ex.remove();const card=document.createElement('div');card.id='userCard';card.className='user-card';card.innerHTML='<div class="user-avatar">'+d.name.charAt(0).toUpperCase()+'</div><div class="user-info"><div class="user-name">'+d.name+'</div><div class="user-id">ID: '+d.uid+'</div></div>';box.parentNode.insertBefore(card,box.nextSibling);}else{box.className='result err';box.innerHTML='User ID tidak ditemukan';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 let lookupT;document.getElementById('lookupId').addEventListener('input',()=>{clearTimeout(lookupT);lookupT=setTimeout(doLookup,600);});
 function openGen(){document.getElementById('genPanel').classList.add('show');}
 function closeGen(){document.getElementById('genPanel').classList.remove('show');document.getElementById('genPw').value='';document.getElementById('genForm').style.display='none';document.getElementById('genResult').style.display='none';ownerPw=null;document.getElementById('genPw').disabled=false;}
 document.getElementById('genPanel').addEventListener('click',(e)=>{if(e.target.id==='genPanel')closeGen();});
 async function doLogin(){const pw=document.getElementById('genPw').value;if(!pw)return;try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:pw,uid:'1'})});const d=await r.json();if(d.error==='password salah'){document.getElementById('genPw').value='';document.getElementById('genPw').placeholder='password salah';}else if(d.ok){ownerPw=pw;document.getElementById('genForm').style.display='block';document.getElementById('genPw').disabled=true;}}catch(e){}}
 async function doGenerate(){const uid=document.getElementById('genUid').value.trim();const box=document.getElementById('genResult');if(!uid||!ownerPw)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Generating...';try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:ownerPw,uid:uid})});const d=await r.json();if(d.ok){box.className='result ok';box.innerHTML='<b>Username:</b> '+(d.username||'Unknown')+'<div class="key-line">'+d.key+'</div><b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b><a href="'+d.authLink+'" target="_blank" class="link-line">'+d.authLink+'</a><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';}else{box.className='result err';box.innerHTML=d.error||'Gagal';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
-
-async function detectLinkNow(url){
-  const box=document.getElementById('detectBox');
-  const badge=document.getElementById('detectBadge');
-  const text=document.getElementById('detectText');
-  if(!url||url.length<8){box.classList.remove('show');lastDetect=null;return;}
-  try{
-    const r=await fetch('/?detect='+encodeURIComponent(url));
-    const d=await r.json();
-    const det=d.detection;
-    if(!det){box.classList.remove('show');return;}
-    lastDetect=det;
-    box.className='detect show '+det.auto;
-    const labels={high:'AUTO',medium:'COBA',low:'MANUAL',none:'INVALID'};
-    badge.textContent=det.type+' · '+labels[det.auto];
-    text.textContent=det.note;
-  }catch(e){box.classList.remove('show');}
-}
-
-document.getElementById('bypassUrl').addEventListener('input',()=>{
-  clearTimeout(detectTimer);
-  detectTimer=setTimeout(()=>detectLinkNow(document.getElementById('bypassUrl').value.trim()),500);
-});
-
-async function doBypass(){
-  const link=document.getElementById('bypassUrl').value.trim();
-  const box=document.getElementById('bypassResult');
-  if(!link)return;
-  box.style.display='block';box.className='result';
-  const detLabel=lastDetect?'('+lastDetect.type+')':'';
-  box.innerHTML='<span class="spinner"></span>Memproses '+detLabel+' — maksimal 45 detik...';
-  try{
-    const r=await fetch('/?bypass='+encodeURIComponent(link));
-    const d=await r.json();
-    if(d.result){
-      const url=d.result;
-      window._bypassUrl=url;
-      const cls=d.source==='browserless'?'ok':(d.source==='original'?'warn':'ok');
-      box.className='result '+cls;
-      let label='Bypass berhasil!';
-      if(d.source==='original')label='Belum selesai — klik bypass lagi:';
-      const detInfo=d.detection?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">Jenis: '+d.detection.type+' · via '+(d.source||'?')+'</div>':(d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'');
-      box.innerHTML=label+detInfo+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');
-    }else{
-      box.className='result err';box.innerHTML=d.error||'Bypass gagal.';
-    }
-  }catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}
-}
-
-async function doConvert(){
-  const input=document.getElementById('convFile');
-  const box=document.getElementById('convResult');
-  if(!input.files||!input.files[0])return;
-  const file=input.files[0];
-  if(file.size>50*1024*1024){box.style.display='block';box.className='result err';box.innerHTML='File > 50 MB, terlalu besar.';return;}
-  box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Mengkonversi '+file.name+' ('+(file.size/1024).toFixed(1)+' KB)...';
-  try{
-    const buf=await file.arrayBuffer();
-    const r=await fetch('/api/convert',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:buf});
-    const text=await r.text();
-    if(!r.ok){
-      let msg=text;
-      try{msg=JSON.parse(text).error||text;}catch{}
-      box.className='result err';box.innerHTML='Gagal ('+r.status+'): '+msg;return;
-    }
-    const blob=new Blob([text],{type:'application/xml'});
-    const url=URL.createObjectURL(blob);
-    const outName=file.name.replace(/\.(rbxl|rbxm)$/i,'.rbxlx');
-    box.className='result ok';
-    box.innerHTML='Berhasil! Ukuran output: '+(text.length/1024).toFixed(1)+' KB<div class="key-line"><a href="'+url+'" download="'+outName+'" style="color:#00d4ff;text-decoration:none">Download '+outName+'</a></div>';
-  }catch(e){
-    box.className='result err';box.innerHTML='Error: '+e.message;
-  }
-}
+async function detectLinkNow(url){const box=document.getElementById('detectBox');const badge=document.getElementById('detectBadge');const text=document.getElementById('detectText');if(!url||url.length<8){box.classList.remove('show');lastDetect=null;return;}try{const r=await fetch('/?detect='+encodeURIComponent(url));const d=await r.json();const det=d.detection;if(!det){box.classList.remove('show');return;}lastDetect=det;box.className='detect show '+det.auto;const labels={high:'AUTO',medium:'COBA',low:'MANUAL',none:'INVALID'};badge.textContent=det.type+' · '+labels[det.auto];text.textContent=det.note;}catch(e){box.classList.remove('show');}}
+document.getElementById('bypassUrl').addEventListener('input',()=>{clearTimeout(detectTimer);detectTimer=setTimeout(()=>detectLinkNow(document.getElementById('bypassUrl').value.trim()),500);});
+async function doBypass(){const link=document.getElementById('bypassUrl').value.trim();const box=document.getElementById('bypassResult');if(!link)return;box.style.display='block';box.className='result';const detLabel=lastDetect?'('+lastDetect.type+')':'';box.innerHTML='<span class="spinner"></span>Memproses '+detLabel+' — paralel 40+ provider...';try{const r=await fetch('/?bypass='+encodeURIComponent(link));const d=await r.json();if(d.result){const url=d.result;window._bypassUrl=url;const cls=d.source==='browserless'?'ok':(d.source==='original'?'warn':'ok');box.className='result '+cls;let label='Bypass berhasil!';if(d.source==='original')label='Belum selesai — klik bypass lagi:';const detInfo=d.detection?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">Jenis: '+d.detection.type+' · via '+(d.source||'?')+'</div>':(d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'');box.innerHTML=label+detInfo+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');}else{box.className='result err';box.innerHTML=d.error||'Bypass gagal.';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
+async function doConvert(){const input=document.getElementById('convFile');const box=document.getElementById('convResult');if(!input.files||!input.files[0])return;const file=input.files[0];if(file.size>50*1024*1024){box.style.display='block';box.className='result err';box.innerHTML='File > 50 MB.';return;}box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Mengkonversi '+file.name+'...';try{const buf=await file.arrayBuffer();const r=await fetch('/api/convert',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:buf});const text=await r.text();if(!r.ok){let msg=text;try{msg=JSON.parse(text).error||text;}catch{}box.className='result err';box.innerHTML='Gagal ('+r.status+'): '+msg;return;}const blob=new Blob([text],{type:'application/xml'});const url=URL.createObjectURL(blob);const outName=file.name.replace(/\.(rbxl|rbxm)$/i,'.rbxlx');box.className='result ok';box.innerHTML='Berhasil!<div class="key-line"><a href="'+url+'" download="'+outName+'" style="color:#00d4ff;text-decoration:none">Download '+outName+'</a></div>';}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 </script></body></html>`;
 }
