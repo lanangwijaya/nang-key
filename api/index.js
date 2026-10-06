@@ -2,7 +2,7 @@
 // LINK DETECTION TABLE
 // ═══════════════════════════════════════════
 const LINK_PATTERNS = [
-  { name: "LootLabs",     match: ["lootlabs","lootlinks","lootdest"],           auto: "low",    note: "Follow-wall (Instagram/YouTube) sering muncul. Auto-bypass mungkin gagal, butuh follow manual." },
+  { name: "LootLabs",     match: ["lootlabs","lootlinks","lootdest"],           auto: "low",    note: "Follow-wall / task-wall (survey, install, subscribe) sering muncul. Auto-bypass coba sekuat mungkin, butuh follow/task manual kalo gagal." },
   { name: "Platorelay",   match: ["platorelay"],                                  auto: "medium", note: "Bisa auto-bypass dengan browser otomatis. Kadang butuh 20-40 detik." },
   { name: "Linkvertise",  match: ["linkvertise"],                                 auto: "high",   note: "Bisa auto-bypass via API publik." },
   { name: "Work.ink",     match: ["work.ink","boost.ink","mboost.me"],            auto: "medium", note: "Bisa auto-bypass, kadang butuh retry." },
@@ -220,7 +220,6 @@ async function handle(req, res) {
     return;
   }
 
-  // DETECT ENDPOINT — user ketik link, langsung tahu jenisnya
   if (params.has("detect")) {
     const u = params.get("detect");
     res.status(200).json({ detection: detectLink(u) });
@@ -232,29 +231,12 @@ async function handle(req, res) {
     if (!link) { res.status(200).json({ error: "no link" }); return; }
 
     const detection = detectLink(link);
-
     const low = link.toLowerCase();
     const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
     const ACCEPT = "application/json, text/plain, */*";
 
-    const wrappedTokens = [
-      "lootlabs","lootlinks","lootdest","platorelay","linkvertise",
-      "work.ink","sub2unlock","sub2get","playrole","boost.ink",
-      "socialwolvez","cutsy","mboost.me","rekonise","adfoc","adf.ly",
-      "shrinkme","shrinkearn","ouo.io","exe.io","fc.lc","ez4short",
-      "shorte.st","bc.vc","cutt.ly","tii.ai","linkpoi",
-      "gplinks","gplink","tnlink","tnshort","mdiskshortner","indianshortner",
-      "urlshort","shortlink","clk.sh","clicksfly","mightytr.ee","droplink",
-      "yoshort","spaste","za.gl","za.gd","shrinkforearn","try2link",
-      "kyshort","zshort","gtlink","omg10","weboasi","link1s","linkshortify",
-      "arolinks","ez4mod","atglinks","indlink","pndk","ldo.tn"
-    ];
-    const socialTokens = [
-      "instagram.com","youtube.com","youtu.be","tiktok.com","twitter.com",
-      "x.com","facebook.com","fb.com","fb.watch","discord.gg","discord.com",
-      "snapchat.com","whatsapp.com","wa.me","telegram","t.me","twitch.tv",
-      "reddit.com","pinterest.com","linkedin.com","threads.net"
-    ];
+    const wrappedTokens = ["lootlabs","lootlinks","lootdest","platorelay","linkvertise","work.ink","sub2unlock","sub2get","playrole","boost.ink","socialwolvez","cutsy","mboost.me","rekonise","adfoc","adf.ly","shrinkme","shrinkearn","ouo.io","exe.io","fc.lc","ez4short","shorte.st","bc.vc","cutt.ly","tii.ai","linkpoi","gplinks","gplink","tnlink","tnshort","mdiskshortner","indianshortner","urlshort","shortlink","clk.sh","clicksfly","mightytr.ee","droplink","yoshort","spaste","za.gl","za.gd","shrinkforearn","try2link","kyshort","zshort","gtlink","omg10","weboasi","link1s","linkshortify","arolinks","ez4mod","atglinks","indlink","pndk","ldo.tn"];
+    const socialTokens = ["instagram.com","youtube.com","youtu.be","tiktok.com","twitter.com","x.com","facebook.com","fb.com","fb.watch","discord.gg","discord.com","snapchat.com","whatsapp.com","wa.me","telegram","t.me","twitch.tv","reddit.com","pinterest.com","linkedin.com","threads.net"];
     const isWrapped = (u) => typeof u === "string" && wrappedTokens.some(s => u.toLowerCase().includes(s));
     const isSocial  = (u) => typeof u === "string" && socialTokens.some(s => u.toLowerCase().includes(s));
     const isCleanUrl = (u) => u && typeof u === "string" && /^https?:\/\//.test(u) && !isWrapped(u) && !isSocial(u);
@@ -314,38 +296,20 @@ async function handle(req, res) {
     try {
       const r = await tryFetch("https://api.bypass.vip/", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "User-Agent": UA, "Accept": ACCEPT,
-          "Origin": "https://bypass.vip",
-          "Referer": "https://bypass.vip/",
-        },
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA, "Accept": ACCEPT, "Origin": "https://bypass.vip", "Referer": "https://bypass.vip/" },
         body: "url=" + encodeURIComponent(link),
       });
-      if (r.ok) {
-        const d = await readJson(r);
-        const result = extract(d);
-        if (ok(result, "bypass.vip")) return;
-      }
+      if (r.ok) { const d = await readJson(r); if (ok(extract(d), "bypass.vip")) return; }
     } catch {}
 
     // LAYER 2 — bypass.city
     try {
       const r = await tryFetch("https://api.bypass.city/api/bypass", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "User-Agent": UA, "Accept": ACCEPT,
-          "Origin": "https://bypass.city",
-          "Referer": "https://bypass.city/",
-        },
+        headers: { "Content-Type": "application/json", "User-Agent": UA, "Accept": ACCEPT, "Origin": "https://bypass.city", "Referer": "https://bypass.city/" },
         body: JSON.stringify({ url: link }),
       });
-      if (r.ok) {
-        const d = await readJson(r);
-        const result = extract(d);
-        if (ok(result, "bypass.city")) return;
-      }
+      if (r.ok) { const d = await readJson(r); if (ok(extract(d), "bypass.city")) return; }
     } catch {}
 
     // LAYER 3 — generic workers
@@ -364,8 +328,7 @@ async function handle(req, res) {
         const r = await tryFetch(u, { method: "GET", headers: { "User-Agent": UA, "Accept": ACCEPT } });
         if (!r.ok) continue;
         const d = await readJson(r);
-        const result = extract(d);
-        if (ok(result, "generic-api")) return;
+        if (ok(extract(d), "generic-api")) return;
       } catch {}
     }
 
@@ -380,8 +343,7 @@ async function handle(req, res) {
           const r = await tryFetch(u, { method: "GET", headers: { "User-Agent": UA, "Accept": ACCEPT } });
           if (!r.ok) continue;
           const d = await readJson(r);
-          const result = extract(d);
-          if (ok(result, "linkvertise-api")) return;
+          if (ok(extract(d), "linkvertise-api")) return;
         } catch {}
       }
     }
@@ -391,22 +353,16 @@ async function handle(req, res) {
       try {
         const slug = link.match(/rekonise\.com\/([a-z0-9]+)/i)?.[1] || "";
         if (slug) {
-          const r = await tryFetch("https://api.rekonise.com/socialunlocks/" + slug, {
-            headers: { "User-Agent": UA, "Accept": ACCEPT },
-          });
-          if (r.ok) {
-            const d = await readJson(r);
-            const result = extract(d);
-            if (ok(result, "rekonise-api")) return;
-          }
+          const r = await tryFetch("https://api.rekonise.com/socialunlocks/" + slug, { headers: { "User-Agent": UA, "Accept": ACCEPT } });
+          if (r.ok) { const d = await readJson(r); if (ok(extract(d), "rekonise-api")) return; }
         }
       } catch {}
     }
 
-    // LAYER 6 — browserless
+    // LAYER 6 — browserless (aggressive)
     if (BROWSERLESS_TOKEN) {
-      try {
-        const r = await tryFetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=90000", {
+      const runBrowserless = async () => {
+        return await tryFetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=120000&stealth=true&blockAds=true&headless=false", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -418,49 +374,112 @@ async function handle(req, res) {
               const isWrapped = (u) => wrapped.some(s => u.toLowerCase().includes(s));
               const isSocial  = (u) => social.some(s => u.toLowerCase().includes(s));
               const isClean   = (u) => u && /^https?:\\/\\//.test(u) && !isWrapped(u) && !isSocial(u);
-              const isPlatorelay = low.includes("platorelay");
               const isLoot = low.includes("lootlabs") || low.includes("lootlinks") || low.includes("lootdest");
+              const isPlatorelay = low.includes("platorelay");
               const isLinkvertise = low.includes("linkvertise") || low.includes("work.ink") || low.includes("boost.ink");
               function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-              async function clickAll(pg) {
-                return pg.evaluate((wrappedList, socialList) => {
-                  let n = 0;
-                  const badText = /follow|subscribe|instagram|youtube|tiktok|twitter|snapchat|share|like us|follow us|share us|repost|tag us/i;
-                  const els = document.querySelectorAll("button, a, [role='button'], [onclick], input[type='submit'], input[type='button'], [class*='btn'], [id*='btn']");
-                  els.forEach(el => {
-                    if (el.disabled) return;
-                    const st = getComputedStyle(el);
-                    if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return;
-                    const t = (el.textContent || el.value || "").toLowerCase().trim();
-                    if (badText.test(t)) return;
-                    const href = (el.href || el.getAttribute('href') || "").toLowerCase();
-                    if (href && socialList.some(s => href.includes(s))) return;
-                    if (href && wrappedList.some(s => href.includes(s))) return;
-                    const pat = ["continue","get link","unlock","proceed","go to link","visit","lanjut","claim","next","done","finish","complete","open","dapatkan","klik","click here","access","enter","download","get now","continue to","reveal","show link","generate link","free access","visit now","verify","submit"];
-                    if (pat.some(p => t.includes(p))) { try { el.click(); n++; } catch {} }
-                  });
-                  return n;
-                }, wrapped, social);
+              const leaked = new Set();
+              function harvestUrls(text) {
+                if (!text || typeof text !== "string") return;
+                const re = /https?:\\/\\/[^"'\\s<>)]+/gi;
+                let m;
+                while ((m = re.exec(text)) !== null) {
+                  const u = m[0];
+                  if (isClean(u) && !u.includes("lootlabs") && !u.includes("lootlinks") && !u.includes("platorelay")) leaked.add(u);
+                }
               }
-
-              async function skipTimers(pg) {
-                await pg.evaluate(() => {
-                  try {
-                    const origST = window.setTimeout;
-                    const origSI = window.setInterval;
-                    window.setTimeout = (fn, d, ...a) => origST(fn, Math.min(d || 0, 60), ...a);
-                    window.setInterval = (fn, d, ...a) => origSI(fn, Math.min(d || 0, 60), ...a);
-                    document.querySelectorAll("[class*='countdown'],[class*='timer'],[id*='countdown'],[id*='timer'],[class*='wait'],[id*='wait']").forEach(el => {
-                      try { el.style.display = 'none'; el.remove(); } catch {}
-                    });
-                    document.querySelectorAll("button[disabled], a.disabled, .disabled").forEach(el => {
-                      try { el.disabled = false; el.removeAttribute('disabled'); el.classList.remove('disabled'); } catch {}
-                    });
-                  } catch {}
+              async function clickTask(pg) {
+                return pg.evaluate(() => {
+                  let clicked = 0;
+                  const skipWords = /\\b(survey|install|subscribe|casino|register|play store|app store|playing|watch a video|discord|telegram|instagram|youtube|tiktok|twitter|snapchat|facebook|repost|tag us)\\b/i;
+                  const preferWords = /\\b(human|verify|verification|captcha|confirm you|check the box|robot|quick verification|start verification|complete verification|click to verify|not a robot|confirm)\\b/i;
+                  const all = [...document.querySelectorAll("button, a, [role='button'], [class*='task'], [class*='card'], [class*='option'], [class*='offer'], [onclick], div[role='button']")];
+                  for (const el of all) {
+                    const t = (el.textContent || "").toLowerCase().trim();
+                    if (!t || t.length > 200) continue;
+                    if (skipWords.test(t)) continue;
+                    if (preferWords.test(t)) { try { el.scrollIntoView({block:'center'}); el.click(); clicked++; return clicked; } catch {} }
+                  }
+                  for (const el of all) {
+                    const t = (el.textContent || "").toLowerCase().trim();
+                    if (!t || t.length > 200) continue;
+                    if (skipWords.test(t)) continue;
+                    if (/^(start|begin|open|complete|view|discover|confirm|check|select|continue|proceed|next|claim|unlock)/i.test(t)) {
+                      try { el.scrollIntoView({block:'center'}); el.click(); clicked++; return clicked; } catch {}
+                    }
+                  }
+                  return clicked;
                 });
               }
-
+              async function clickClaim(pg) {
+                return pg.evaluate(() => {
+                  let n = 0;
+                  const btns = document.querySelectorAll("button, a, [role='button'], input[type='submit']");
+                  for (const el of btns) {
+                    const t = (el.textContent || el.value || "").toLowerCase().trim();
+                    if (/(claim reward|claim|get link|unlock|continue to|proceed|go to link|visit|access|download|reveal|show link|generate|finish|complete)/i.test(t)) {
+                      try {
+                        el.disabled = false;
+                        el.removeAttribute("disabled");
+                        el.removeAttribute("aria-disabled");
+                        el.classList.remove("disabled", "opacity-50", "pointer-events-none", "cursor-not-allowed");
+                        el.style.pointerEvents = "auto";
+                        el.style.opacity = "1";
+                        el.scrollIntoView({block:'center'});
+                        el.click();
+                        n++;
+                      } catch {}
+                    }
+                  }
+                  return n;
+                });
+              }
+              async function tryCaptcha(pg) {
+                try {
+                  const frames = pg.frames();
+                  for (const f of frames) {
+                    const u = f.url();
+                    if (!u) continue;
+                    if (u.includes("challenges.cloudflare.com") || u.includes("turnstile")) {
+                      try {
+                        await f.evaluate(() => {
+                          const w = document.querySelector('input[type="checkbox"]');
+                          if (w) w.click();
+                          const lb = document.querySelector('.cb-lb, [role="checkbox"], .ctp-checkbox-label');
+                          if (lb) lb.click();
+                        });
+                        await sleep(2500);
+                      } catch {}
+                    }
+                    if (u.includes("recaptcha") || u.includes("hcaptcha")) {
+                      try {
+                        await f.evaluate(() => {
+                          const cb = document.querySelector('.recaptcha-checkbox, #checkbox, .h-captcha, [role="checkbox"]');
+                          if (cb) cb.click();
+                        });
+                        await sleep(2500);
+                      } catch {}
+                    }
+                  }
+                } catch {}
+              }
+              async function harvestDom(pg) {
+                try {
+                  const html = await pg.content();
+                  harvestUrls(html);
+                  const attrs = await pg.evaluate(() => {
+                    const out = [];
+                    document.querySelectorAll("[data-url],[data-href],[data-link],[data-target],[data-destination]").forEach(el => {
+                      ["data-url","data-href","data-link","data-target","data-destination"].forEach(a => {
+                        const v = el.getAttribute(a);
+                        if (v) out.push(v);
+                      });
+                    });
+                    return out;
+                  });
+                  attrs.forEach(harvestUrls);
+                } catch {}
+              }
               try {
                 await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
                 await page.setViewport({ width: 1366, height: 900 });
@@ -471,55 +490,95 @@ async function handle(req, res) {
                   if (block.some(p => u.includes(p))) { req.abort(); return; }
                   req.continue();
                 });
-                await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 35000 });
-                await sleep(4500);
+                page.on("response", async (resp) => {
+                  try {
+                    const u = resp.url();
+                    if (u.includes("lootlabs") || u.includes("lootlinks") || u.includes("platorelay") || u.includes("linkvertise")) {
+                      const ct = resp.headers()["content-type"] || "";
+                      if (ct.includes("json") || ct.includes("text")) {
+                        const t = await resp.text();
+                        harvestUrls(t);
+                      }
+                    }
+                  } catch {}
+                });
+                await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 40000 });
+                await sleep(5000);
+                await harvestDom(page);
 
-                for (let i = 0; i < 15; i++) {
+                if (isLoot) {
+                  for (let round = 0; round < 12; round++) {
+                    await clickTask(page);
+                    await sleep(2500);
+                    await tryCaptcha(page);
+                    await sleep(2000);
+                    await clickClaim(page);
+                    await sleep(2500);
+                    await harvestDom(page);
+                    const cur = page.url();
+                    if (isClean(cur)) return { url: cur, status: "resolved" };
+                    if (isSocial(cur)) {
+                      try { await page.goBack({ waitUntil: "domcontentloaded", timeout: 15000 }); } catch {
+                        try { await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 20000 }); } catch {}
+                      }
+                      await sleep(2000);
+                      continue;
+                    }
+                    if (leaked.size > 0) for (const u of leaked) return { url: u, status: "resolved-leak" };
+                    const claimActive = await page.evaluate(() => {
+                      const btns = [...document.querySelectorAll("button, a, [role='button']")];
+                      for (const b of btns) {
+                        const t = (b.textContent || "").toLowerCase();
+                        if (t.includes("claim reward") || t.includes("continue") || t.includes("get link") || t.includes("unlock")) {
+                          if (!b.disabled && !b.classList.contains("disabled") && !b.classList.contains("opacity-50")) return true;
+                        }
+                      }
+                      return false;
+                    });
+                    if (claimActive) {
+                      await clickClaim(page);
+                      await sleep(3500);
+                      const cur2 = page.url();
+                      if (isClean(cur2)) return { url: cur2, status: "resolved" };
+                    }
+                  }
+                  if (leaked.size > 0) for (const u of leaked) return { url: u, status: "resolved-leak" };
+                  const fu = page.url();
+                  if (isClean(fu)) return { url: fu, status: "resolved" };
+                  return { url: startUrl, status: "still_wrapped" };
+                }
+
+                for (let i = 0; i < 20; i++) {
                   const beforeUrl = page.url();
-                  await clickAll(page);
-                  if (isPlatorelay || isLoot) await skipTimers(page);
+                  await clickTask(page);
+                  await clickClaim(page);
+                  if (isPlatorelay) {
+                    await page.evaluate(() => {
+                      try {
+                        const origST = window.setTimeout;
+                        window.setTimeout = (fn, d, ...a) => origST(fn, Math.min(d || 0, 60), ...a);
+                        window.setInterval = (fn, d, ...a) => origST(fn, Math.min(d || 0, 60), ...a);
+                        document.querySelectorAll("[class*='countdown'],[class*='timer'],[id*='countdown'],[id*='timer'],[class*='wait']").forEach(el => { try { el.style.display='none'; el.remove(); } catch {} });
+                        document.querySelectorAll("button[disabled], a.disabled, .disabled").forEach(el => { try { el.disabled=false; el.removeAttribute('disabled'); el.classList.remove('disabled'); } catch {} });
+                      } catch {}
+                    });
+                  }
                   await sleep(2200);
                   const cur = page.url();
                   if (isSocial(cur)) {
-                    try { await page.goto(beforeUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch {}
+                    try { await page.goBack({ waitUntil: "domcontentloaded", timeout: 15000 }); } catch {
+                      try { await page.goto(beforeUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch {}
+                    }
                     await sleep(1500);
                     continue;
                   }
                   if (isClean(cur)) return { url: cur, status: "resolved" };
+                  if (leaked.size > 0) for (const u of leaked) return { url: u, status: "resolved-leak" };
                 }
-
-                await sleep(isLoot ? 6000 : isLinkvertise ? 4000 : 2500);
-
-                let finalUrl = page.url();
-                if (isSocial(finalUrl)) {
-                  try { await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 20000 }); } catch {}
-                  await sleep(2500);
-                  for (let i = 0; i < 8; i++) {
-                    await clickAll(page);
-                    await sleep(2000);
-                    const cur = page.url();
-                    if (isSocial(cur)) {
-                      try { await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch {}
-                      await sleep(1500);
-                      continue;
-                    }
-                    if (isClean(cur)) return { url: cur, status: "resolved" };
-                  }
-                  finalUrl = page.url();
-                }
-                if (isClean(finalUrl)) return { url: finalUrl, status: "resolved" };
-
-                const found = await page.evaluate((socialList) => {
-                  const all = [...document.querySelectorAll("a[href^='http']")];
-                  for (const a of all) {
-                    const h = a.href;
-                    if (socialList.some(s => h.toLowerCase().includes(s))) continue;
-                    if (h.includes("google") || h.includes("cloudflare") || h.includes("discord") || h.includes("facebook") || h.includes("twitter") || h.includes("tiktok")) continue;
-                    return h;
-                  }
-                  return null;
-                }, social);
-                if (found && isClean(found)) return { url: found, status: "resolved" };
+                await sleep(isLinkvertise ? 4000 : 2500);
+                const fu = page.url();
+                if (isClean(fu)) return { url: fu, status: "resolved" };
+                if (leaked.size > 0) for (const u of leaked) return { url: u, status: "resolved-leak" };
                 return { url: startUrl, status: "still_wrapped" };
               } catch (e) {
                 return { url: startUrl, status: "error", error: String(e.message || e) };
@@ -527,13 +586,20 @@ async function handle(req, res) {
             }`,
             context: { url: link },
           }),
-        }, 95000);
-        if (r.ok) {
-          const d = await readJson(r);
-          if (d && isCleanUrl(d.url)) {
-            res.status(200).json({ result: d.url, source: "browserless", detection });
-            return;
+        }, 125000);
+      };
+
+      try {
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          const r = await runBrowserless();
+          if (r && r.ok) {
+            const d = await readJson(r);
+            if (d && isCleanUrl(d.url)) {
+              res.status(200).json({ result: d.url, source: "browserless", detection });
+              return;
+            }
           }
+          if (attempt < 3) await new Promise(rs => setTimeout(rs, 1500));
         }
       } catch (e) { console.error("Browserless:", e.message); }
     }
@@ -555,12 +621,7 @@ async function handle(req, res) {
       warning = "Provider publik kadang down. Coba lagi dalam 1-2 menit, atau ganti link.";
     }
 
-    res.status(200).json({
-      result: link,
-      source: "original",
-      detection,
-      warning,
-    });
+    res.status(200).json({ result: link, source: "original", detection, warning });
     return;
   }
 
@@ -758,7 +819,6 @@ async function detectLinkNow(url){
     if(!det){box.classList.remove('show');return;}
     lastDetect=det;
     box.className='detect show '+det.auto;
-    badge.textContent=det.type;
     const labels={high:'AUTO',medium:'COBA',low:'MANUAL',none:'INVALID'};
     badge.textContent=det.type+' · '+labels[det.auto];
     text.textContent=det.note;
