@@ -1,4 +1,4 @@
-const BUILD = "67.5";
+const BUILD = "68.0";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -219,7 +219,6 @@ async function handle(req, res) {
 
   if (params.has("version")) { res.status(200).json({ version: BUILD, ts: Date.now() }); return; }
 
-  // reseller API + upload API
   if (path.startsWith("/api/")) {
     return await handleApi(req, res, path, method, params, { ADMIN_PW, AUTH_DOMAIN });
   }
@@ -979,22 +978,36 @@ async function handleApi(req, res, path, method, params, ctx) {
   // ═══ RESELLER API ═══
   if (route === "reseller/register" && method === "POST") {
     const username = String((body && body.username) || "").trim();
+    const email = String((body && body.email) || "").trim().toLowerCase();
     const password = String((body && body.password) || "");
+
     if (username.length < 3) return res.status(200).json({ error: "Username minimal 3 karakter" });
     if (!/^[a-zA-Z0-9_]+$/.test(username)) return res.status(200).json({ error: "Username hanya huruf/angka/underscore" });
+    if (!email) return res.status(200).json({ error: "Email wajib diisi" });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(200).json({ error: "Format email tidak valid" });
     if (password.length < 5) return res.status(200).json({ error: "Password minimal 5 karakter" });
+
     const exist = await getUser(username);
     if (exist) return res.status(200).json({ error: "Username sudah dipakai" });
+
+    const emailKey = "nang:email:" + email;
+    const emailExist = await storeGet(emailKey);
+    if (emailExist) return res.status(200).json({ error: "Email sudah terdaftar" });
+
     const salt = randomHex(8);
     const user = {
-      username, passwordHash: hashPw(password, salt), salt,
+      username, email,
+      passwordHash: hashPw(password, salt), salt,
       role: "pending", quota: 20, keysToday: 0, lastReset: Date.now(),
       createdAt: Date.now(), keys: [],
     };
     await saveUser(user);
+    await storeSet(emailKey, username);
+
     sendWebhook([
       { name: "Event", value: "Reseller Registered", inline: false },
       { name: "Username", value: username, inline: true },
+      { name: "Email", value: email, inline: true },
       { name: "Status", value: "pending", inline: true },
       { name: "IP", value: _getClientIP(req), inline: true },
     ]);
@@ -1002,12 +1015,20 @@ async function handleApi(req, res, path, method, params, ctx) {
   }
 
   if (route === "reseller/login" && method === "POST") {
-    const username = String((body && body.username) || "").trim();
+    const identifier = String((body && (body.identifier || body.username)) || "").trim();
     const password = String((body && body.password) || "");
-    const user = await getUser(username);
-    if (!user) return res.status(200).json({ error: "Username tidak ditemukan" });
+    if (!identifier) return res.status(200).json({ error: "Username / email kosong" });
+
+    let user = await getUser(identifier);
+    if (!user) {
+      const emailKey = "nang:email:" + identifier.toLowerCase();
+      const usernameFromEmail = await storeGet(emailKey);
+      if (usernameFromEmail) user = await getUser(usernameFromEmail);
+    }
+    if (!user) return res.status(200).json({ error: "Akun tidak ditemukan" });
     if (user.role === "banned") return res.status(200).json({ error: "Akun di-ban" });
     if (user.passwordHash !== hashPw(password, user.salt)) return res.status(200).json({ error: "Password salah" });
+
     const token = randomHex(32);
     await storeSet("nang:sess:" + token, { username: user.username, expiresAt: Date.now() + 7 * 24 * 3600 * 1000 });
     sendWebhook([
@@ -1032,7 +1053,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     return res.status(200).json({
       ok: true,
       user: {
-        username: u.username, role: u.role, quota: u.quota,
+        username: u.username, email: u.email || null, role: u.role, quota: u.quota,
         keysToday: u.keysToday, keys: u.keys || [], createdAt: u.createdAt,
       },
     });
@@ -1089,7 +1110,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     return res.status(200).json({
       ok: true,
       users: users.map(u => ({
-        username: u.username, role: u.role, quota: u.quota,
+        username: u.username, email: u.email || null, role: u.role, quota: u.quota,
         keysToday: u.keysToday, totalKeys: (u.keys || []).length,
         createdAt: u.createdAt,
       })),
@@ -1133,6 +1154,8 @@ async function handleApi(req, res, path, method, params, ctx) {
     const o = await requireOwner();
     if (!o) return res.status(200).json({ error: "forbidden" });
     const target = String((body && body.username) || "").trim();
+    const u = await getUser(target);
+    if (u && u.email) await storeDel("nang:email:" + u.email.toLowerCase());
     await storeDel("nang:user:" + target.toLowerCase());
     if (_HAS_KV) await _kvCmd("SREM", "nang:userlist", target);
     return res.status(200).json({ ok: true });
@@ -1187,7 +1210,7 @@ function copyKey(){const t=document.getElementById('keyText').textContent;naviga
 function mainPage(wa) {
   return `<!DOCTYPE html>
 <html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NANG Key System</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--pink:#e03c8a;--purple:#9b4de0;--cyan:#00d4ff;--green:#00e87a;--yellow:#ffc832;--red:#ff6b6b;--bg:#08080f;--bg2:#0f0f1a;--bg3:#16162a;--border:#ffffff12;--text:#e8e8f0;--muted:#6b6b8a}
@@ -1196,8 +1219,8 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
 .logo{font-size:2.6rem;font-weight:900;background:linear-gradient(135deg,var(--pink),var(--purple),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;line-height:1}
 .logo-badge{display:inline-block;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;font-size:0.6rem;font-weight:700;padding:2px 7px;border-radius:20px;vertical-align:super;margin-left:4px;letter-spacing:1px}
 .sub{color:var(--muted);font-size:0.8rem;margin-top:6px}
-.nav{display:flex;gap:6px;background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:5px;margin-bottom:22px;width:100%;max-width:480px}
-.nav-btn{flex:1;padding:9px 6px;border:none;border-radius:10px;cursor:pointer;font-size:0.8rem;font-weight:600;background:transparent;color:var(--muted);font-family:inherit}
+.nav{display:flex;gap:6px;background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:5px;margin-bottom:22px;width:100%;max-width:480px;flex-wrap:wrap}
+.nav-btn{flex:1;min-width:70px;padding:9px 6px;border:none;border-radius:10px;cursor:pointer;font-size:0.8rem;font-weight:600;background:transparent;color:var(--muted);font-family:inherit}
 .nav-btn.active{background:linear-gradient(135deg,rgba(224,60,138,0.2),rgba(155,77,224,0.2));color:#fff;border:1px solid rgba(224,60,138,0.3)}
 .panel{width:100%;max-width:480px;display:none}
 .panel.active{display:block}
@@ -1257,19 +1280,76 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
 .drop-text{font-size:0.85rem;color:var(--text);margin-bottom:4px}
 .drop-hint{font-size:0.7rem;color:var(--muted)}
 footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opacity:0.5}
-#ownerFab{position:fixed;bottom:20px;right:20px;width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,var(--pink),var(--purple));display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 12px rgba(224,60,138,0.4);font-size:20px;user-select:none;opacity:0.35;transition:opacity .2s}
-#ownerFab:hover{opacity:1}
-#genPanel{position:fixed;inset:0;background:rgba(0,0,0,0.7);display:none;align-items:center;justify-content:center;z-index:100;padding:20px}
-#genPanel.show{display:flex}
-#genPanel .box{background:#0f0f1a;border:1px solid var(--pink);border-radius:16px;padding:24px;max-width:400px;width:100%;position:relative;max-height:90vh;overflow-y:auto}
-#genPanel h3{color:var(--pink);font-size:1rem;margin-bottom:14px}
-#genPanel .close{position:absolute;top:12px;right:16px;cursor:pointer;color:var(--muted);font-size:22px}
+.hidden{display:none!important}
+.auth-bar{position:fixed;top:16px;right:16px;z-index:50;display:flex;gap:8px;align-items:center;font-size:.8rem}
+.auth-pill{display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;font-size:.8rem}
+.auth-pill .uname{font-weight:700;color:var(--text)}
+.auth-btn{padding:8px 14px;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;border:none;border-radius:9px;font-weight:700;font-size:.8rem;cursor:pointer;font-family:inherit}
+.auth-btn.gray{background:var(--bg2);border:1px solid var(--border);color:var(--text)}
+.role-tag{font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;padding:2px 7px;border-radius:5px}
+.role-tag.owner{background:rgba(224,60,138,.2);color:var(--pink)}
+.role-tag.admin{background:rgba(155,77,224,.2);color:#c899ff}
+.role-tag.reseller{background:rgba(0,212,255,.15);color:var(--cyan)}
+.role-tag.pending{background:rgba(255,200,50,.15);color:var(--yellow)}
+.role-tag.banned{background:rgba(255,80,80,.15);color:var(--red)}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.75);display:none;align-items:center;justify-content:center;z-index:100;padding:20px}
+.modal-bg.show{display:flex}
+.modal-box{background:var(--bg2);border:1px solid var(--pink);border-radius:16px;padding:24px;max-width:400px;width:100%;position:relative;max-height:90vh;overflow-y:auto}
+.modal-box h3{color:var(--pink);font-size:1rem;margin-bottom:14px}
+.modal-box .x{position:absolute;top:12px;right:16px;cursor:pointer;color:var(--muted);font-size:22px;line-height:1}
+.modal-tabs{display:flex;gap:4px;background:var(--bg3);border-radius:9px;padding:3px;margin-bottom:14px}
+.modal-tabs button{flex:1;padding:8px;border:none;border-radius:7px;background:transparent;color:var(--muted);font-family:inherit;font-weight:600;font-size:.8rem;cursor:pointer}
+.modal-tabs button.on{background:linear-gradient(135deg,rgba(224,60,138,.2),rgba(155,77,224,.2));color:#fff}
+.user-row{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg3);border-radius:9px;margin-bottom:6px;gap:8px;flex-wrap:wrap}
+.user-row .name{font-weight:700;font-size:.9rem;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.user-row .meta{font-size:.7rem;color:var(--muted);margin-top:3px}
+.row-actions{display:flex;gap:4px;flex-wrap:wrap}
+.row-actions button{padding:5px 10px;border:none;border-radius:6px;font-size:.7rem;font-weight:700;cursor:pointer;font-family:inherit;background:var(--bg2);color:var(--text);border:1px solid var(--border)}
+.row-actions button:hover{background:var(--bg3)}
+.locked{padding:40px 20px;text-align:center;color:var(--muted);font-size:.85rem;line-height:1.7}
+.locked button{margin-top:12px;padding:10px 24px;width:auto}
 .warn-box{padding:10px 12px;background:rgba(255,200,50,0.06);border:1px solid rgba(255,200,50,0.2);border-radius:9px;font-size:0.75rem;color:var(--yellow);margin-bottom:12px;line-height:1.6}
 .warn-box b{color:#fff}
 .warn-box a{color:var(--yellow)}
 </style></head><body>
+
+<div class="auth-bar" id="authBar">
+  <button class="auth-btn" onclick="openAuthModal()">Login</button>
+</div>
+
+<div class="modal-bg" id="authModal">
+  <div class="modal-box">
+    <span class="x" onclick="closeAuthModal()">&times;</span>
+    <div class="modal-tabs">
+      <button id="mtLogin" class="on" onclick="switchAuthTab(0)">Masuk</button>
+      <button id="mtRegister" onclick="switchAuthTab(1)">Daftar</button>
+    </div>
+    <div id="authFormLogin">
+      <input class="inp" id="aLoginUser" placeholder="Username atau Email" autocomplete="username">
+      <input class="inp" id="aLoginPass" type="password" placeholder="Password" autocomplete="current-password">
+      <button class="btn-main" onclick="doAuthLogin()">Masuk</button>
+      <div class="result" id="aLoginResult"></div>
+    </div>
+    <div id="authFormRegister" class="hidden">
+      <input class="inp" id="aRegUser" placeholder="Username (huruf/angka/_)" autocomplete="username">
+      <input class="inp" id="aRegEmail" type="email" placeholder="Email aktif" autocomplete="email">
+      <input class="inp" id="aRegPass" type="password" placeholder="Password min 5 karakter" autocomplete="new-password">
+      <input class="inp" id="aRegPass2" type="password" placeholder="Konfirmasi password" autocomplete="new-password">
+      <button class="btn-main" onclick="doAuthRegister()">Daftar</button>
+      <div class="result" id="aRegResult"></div>
+      <div style="font-size:.7rem;color:var(--muted);margin-top:8px;text-align:center">Setelah daftar, tunggu owner approve jadi reseller.</div>
+    </div>
+  </div>
+</div>
+
 <div class="hero"><div class="logo">NANG<span class="logo-badge">KEY</span></div><div class="sub">Roblox Script Key System</div></div>
-<div class="nav"><button class="nav-btn active" onclick="switchTab(0)">Beli Key</button><button class="nav-btn" onclick="switchTab(1)">Bypass</button><button class="nav-btn" onclick="switchTab(2)">Convert</button><button class="nav-btn" onclick="switchTab(3)">Upload</button></div>
+<div class="nav">
+  <button class="nav-btn active" onclick="switchTab(0)">Beli Key</button>
+  <button class="nav-btn" onclick="switchTab(1)">Bypass</button>
+  <button class="nav-btn" onclick="switchTab(2)">Convert</button>
+  <button class="nav-btn hidden" id="navUpload" onclick="switchTab(3)">Upload</button>
+  <button class="nav-btn hidden" id="navUsers" onclick="switchTab(4)">Users</button>
+</div>
 
 <div class="panel active" id="tab0">
 <div class="card">
@@ -1282,7 +1362,6 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 <a href="https://wa.me/${wa}?text=Beli%20Key%20NANG" class="wa-btn" id="waBtn" target="_blank"><svg class="wa-icon" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347"/></svg>Chat WhatsApp Owner</a>
 </div>
 <div class="card"><div class="card-title">Cek Username Roblox</div><input type="text" class="inp" id="lookupId" placeholder="Masukkan Roblox User ID..."><button class="btn-main" onclick="doLookup()">Cek Username</button><div id="lookupResult"></div></div>
-<div class="card" style="text-align:center"><a href="/reseller" style="color:var(--muted);font-size:.8rem;text-decoration:none">Reseller Panel →</a></div>
 </div>
 
 <div class="panel" id="tab1">
@@ -1307,10 +1386,18 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 </div>
 
 <div class="panel" id="tab3">
+<div id="uploadLocked" class="card">
+<div class="locked">
+🔒 Login dulu untuk akses upload<br>
+<div style="font-size:.75rem;margin-top:6px">Role minimal: reseller</div>
+<button class="btn-main" onclick="openAuthModal()">Login</button>
+</div>
+</div>
+<div id="uploadContent" class="hidden">
 <div class="warn-box">
 <b>Butuh API Key Roblox.</b> Buat di
 <a href="https://create.roblox.com/dashboard/credentials" target="_blank">Creator Dashboard → Credentials</a>.
-Aktifkan permission <b>Assets API: Read & Write</b>. IP: Unrestricted.
+Aktifkan <b>Assets API: Read & Write</b>. IP: Unrestricted.
 </div>
 <div class="card">
 <div class="card-title">Akun Roblox</div>
@@ -1331,32 +1418,173 @@ Aktifkan permission <b>Assets API: Read & Write</b>. IP: Unrestricted.
 <div class="result" id="upResult"></div>
 </div>
 </div>
+</div>
+
+<div class="panel" id="tab4">
+<div class="card">
+<div class="card-title">Manage Users</div>
+<button class="btn-main" onclick="loadUsers()">Refresh</button>
+<div id="usersList" style="margin-top:12px"></div>
+</div>
+</div>
 
 <footer>NANG RBXM Tool &copy; 2025 &middot; v${BUILD}</footer>
 
-<div id="ownerFab" onclick="openGen()" title="Owner Only">&#128274;</div>
-<div id="genPanel"><div class="box"><span class="close" onclick="closeGen()">&times;</span><h3>Owner Panel</h3><input type="password" class="inp" id="genPw" placeholder="Password owner..."><button class="btn-main" onclick="doLogin()">Login</button><div id="genForm" style="display:none;margin-top:14px"><input type="text" class="inp" id="genUid" placeholder="Roblox User ID..."><button class="btn-main" onclick="doGenerate()">Generate Key</button><div class="result" id="genResult"></div></div></div></div>
-
 <script>
 const WA_NUMBER="${wa}";
+let TOKEN = localStorage.getItem('nang_session') || null;
+let ME = null;
 let lastLookup={uid:null,name:null};
-let ownerPw=null;
 let detectTimer=null;
 let lastDetect=null;
-function switchTab(i){document.querySelectorAll('.nav-btn').forEach((b,j)=>b.classList.toggle('active',i===j));document.querySelectorAll('.panel').forEach((p,j)=>p.classList.toggle('active',i===j));}
-function updateWA(){if(!lastLookup.name)return;const text="Beli Key NANG%0ANama: "+encodeURIComponent(lastLookup.name)+"%0ARoblox ID: "+lastLookup.uid+"%0ABukti TF: [screenshot]";document.getElementById('waBtn').href="https://wa.me/"+WA_NUMBER+"?text="+text;document.getElementById('waNama').textContent=lastLookup.name;document.getElementById('waUid').textContent=lastLookup.uid;}
-async function doLookup(){const uid=document.getElementById('lookupId').value.trim();const box=document.getElementById('lookupResult');if(!uid)return;box.style.display='block';box.className='result info';box.innerHTML='<span class="spinner"></span>Mencari...';try{const r=await fetch('/?lookup='+encodeURIComponent(uid));const d=await r.json();if(d.name){lastLookup={uid:d.uid,name:d.name};updateWA();box.style.display='none';const ex=document.getElementById('userCard');if(ex)ex.remove();const card=document.createElement('div');card.id='userCard';card.className='user-card';card.innerHTML='<div class="user-avatar">'+d.name.charAt(0).toUpperCase()+'</div><div class="user-info"><div class="user-name">'+d.name+'</div><div class="user-id">ID: '+d.uid+'</div></div>';box.parentNode.insertBefore(card,box.nextSibling);}else{box.className='result err';box.innerHTML='User ID tidak ditemukan';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
-let lookupT;document.getElementById('lookupId').addEventListener('input',()=>{clearTimeout(lookupT);lookupT=setTimeout(doLookup,600);});
-function openGen(){document.getElementById('genPanel').classList.add('show');}
-function closeGen(){document.getElementById('genPanel').classList.remove('show');document.getElementById('genPw').value='';document.getElementById('genForm').style.display='none';document.getElementById('genResult').style.display='none';ownerPw=null;document.getElementById('genPw').disabled=false;}
-document.getElementById('genPanel').addEventListener('click',(e)=>{if(e.target.id==='genPanel')closeGen();});
-async function doLogin(){const pw=document.getElementById('genPw').value;if(!pw)return;try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:pw,uid:'1'})});const d=await r.json();if(d.error==='password salah'){document.getElementById('genPw').value='';document.getElementById('genPw').placeholder='password salah';}else if(d.ok){ownerPw=pw;document.getElementById('genForm').style.display='block';document.getElementById('genPw').disabled=true;}}catch(e){}}
-async function doGenerate(){const uid=document.getElementById('genUid').value.trim();const box=document.getElementById('genResult');if(!uid||!ownerPw)return;box.style.display='block';box.className='result info';box.innerHTML='<span class="spinner"></span>Generating...';try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:ownerPw,uid:uid})});const d=await r.json();if(d.ok){box.className='result ok';box.innerHTML='<b>Username:</b> '+(d.username||'Unknown')+'<div class="key-line">'+d.key+'</div><b style="color:#6b6b8a;font-size:.72rem">Expires:</b> '+d.expires+'<br><b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b><a href="'+d.authLink+'" target="_blank" class="link-line">'+d.authLink+'</a><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';}else{box.className='result err';box.innerHTML=d.error||'Gagal';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
-async function detectLinkNow(url){const box=document.getElementById('detectBox');const badge=document.getElementById('detectBadge');const text=document.getElementById('detectText');if(!url||url.length<8){box.classList.remove('show');lastDetect=null;return;}try{const r=await fetch('/?detect='+encodeURIComponent(url));const d=await r.json();const det=d.detection;if(!det){box.classList.remove('show');return;}lastDetect=det;box.className='detect show '+det.auto;const labels={high:'AUTO',medium:'COBA',low:'MANUAL',none:'INVALID'};badge.textContent=det.type+' · '+labels[det.auto];text.textContent=det.note;}catch(e){box.classList.remove('show');}}
-document.getElementById('bypassUrl').addEventListener('input',()=>{clearTimeout(detectTimer);detectTimer=setTimeout(()=>detectLinkNow(document.getElementById('bypassUrl').value.trim()),500);});
+
+function $(id){return document.getElementById(id);}
+function apiCall(url, opts){ return fetch(url, opts).then(r=>r.json()); }
+
+function switchTab(i){
+  document.querySelectorAll('.nav-btn').forEach((b,j)=>b.classList.toggle('active',i===j));
+  document.querySelectorAll('.panel').forEach((p,j)=>p.classList.toggle('active',i===j));
+  if (i===4) loadUsers();
+}
+
+function openAuthModal(){ $('authModal').classList.add('show'); }
+function closeAuthModal(){ $('authModal').classList.remove('show'); }
+$('authModal').addEventListener('click',e=>{ if(e.target.id==='authModal') closeAuthModal(); });
+function switchAuthTab(i){
+  $('mtLogin').classList.toggle('on', i===0);
+  $('mtRegister').classList.toggle('on', i===1);
+  $('authFormLogin').classList.toggle('hidden', i!==0);
+  $('authFormRegister').classList.toggle('hidden', i!==1);
+}
+
+async function checkSession(){
+  if(!TOKEN){ updateAuthUI(); return; }
+  try{
+    const d = await apiCall('/api/reseller/me?token='+encodeURIComponent(TOKEN));
+    if(d.ok){ ME = d.user; }
+    else { TOKEN=null; localStorage.removeItem('nang_session'); }
+  }catch(e){ TOKEN=null; }
+  updateAuthUI();
+}
+
+function updateAuthUI(){
+  const bar = $('authBar');
+  if(ME && ME.role !== 'banned'){
+    bar.innerHTML = '<div class="auth-pill"><span class="uname">'+ME.username+'</span><span class="role-tag '+ME.role+'">'+ME.role+'</span></div><button class="auth-btn gray" onclick="doAuthLogout()">Logout</button>';
+  } else {
+    bar.innerHTML = '<button class="auth-btn" onclick="openAuthModal()">Login</button>';
+  }
+  const isLogged = !!ME && ME.role !== 'banned';
+  const canUpload = isLogged && (ME.role==='owner'||ME.role==='admin'||ME.role==='reseller');
+  const isOwner = ME && ME.role==='owner';
+  $('navUpload').classList.toggle('hidden', !canUpload);
+  $('navUsers').classList.toggle('hidden', !isOwner);
+  $('uploadLocked').classList.toggle('hidden', canUpload);
+  $('uploadContent').classList.toggle('hidden', !canUpload);
+  if(!canUpload && $('tab3').classList.contains('active')) switchTab(0);
+  if(!isOwner && $('tab4').classList.contains('active')) switchTab(0);
+}
+
+async function doAuthLogin(){
+  const identifier = $('aLoginUser').value.trim();
+  const password = $('aLoginPass').value;
+  const box = $('aLoginResult');
+  if(!identifier||!password){ box.className='result err'; box.innerHTML='Isi username/email & password'; return; }
+  box.className='result info'; box.innerHTML='<span class="spinner"></span>Masuk...';
+  const d = await apiCall('/api/reseller/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({identifier,password})});
+  if(d.error){ box.className='result err'; box.innerHTML=d.error; return; }
+  TOKEN = d.token;
+  localStorage.setItem('nang_session', TOKEN);
+  $('aLoginPass').value='';
+  box.className='result ok'; box.innerHTML='Berhasil masuk';
+  await checkSession();
+  setTimeout(()=>{ closeAuthModal(); box.className='result'; box.innerHTML=''; }, 600);
+}
+
+async function doAuthRegister(){
+  const username = $('aRegUser').value.trim();
+  const email = $('aRegEmail').value.trim();
+  const password = $('aRegPass').value;
+  const pass2 = $('aRegPass2').value;
+  const box = $('aRegResult');
+  if(!username){ box.className='result err'; box.innerHTML='Username kosong'; return; }
+  if(!email){ box.className='result err'; box.innerHTML='Email kosong'; return; }
+  if(!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)){ box.className='result err'; box.innerHTML='Format email tidak valid'; return; }
+  if(password!==pass2){ box.className='result err'; box.innerHTML='Password tidak sama'; return; }
+  box.className='result info'; box.innerHTML='<span class="spinner"></span>Mendaftar...';
+  const d = await apiCall('/api/reseller/register',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({username,email,password})
+  });
+  if(d.error){ box.className='result err'; box.innerHTML=d.error; return; }
+  box.className='result ok'; box.innerHTML = d.message || 'Terdaftar. Tunggu approve owner.';
+  $('aRegUser').value=''; $('aRegEmail').value=''; $('aRegPass').value=''; $('aRegPass2').value='';
+}
+
+async function doAuthLogout(){
+  if(TOKEN){
+    try{ await apiCall('/api/reseller/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN})}); }catch(e){}
+  }
+  TOKEN=null; ME=null;
+  localStorage.removeItem('nang_session');
+  updateAuthUI();
+}
+
+async function loadUsers(){
+  const box = $('usersList');
+  if(!TOKEN){ box.innerHTML='<div style="color:var(--red);font-size:.8rem">Belum login</div>'; return; }
+  box.innerHTML='<div style="color:var(--muted);font-size:.8rem"><span class="spinner"></span>Loading...</div>';
+  try{
+    const d = await apiCall('/api/owner/users?token='+encodeURIComponent(TOKEN));
+    if(d.error){ box.innerHTML='<div style="color:var(--red);font-size:.8rem">'+d.error+'</div>'; return; }
+    if(!d.users || !d.users.length){ box.innerHTML='<div style="color:var(--muted);font-size:.8rem">Belum ada user</div>'; return; }
+    box.innerHTML = d.users.map(u => (
+      '<div class="user-row">'+
+        '<div><div class="name">'+u.username+' <span class="role-tag '+u.role+'">'+u.role+'</span></div>'+
+        '<div class="meta">'+(u.email ? u.email + ' · ' : '')+'quota '+u.quota+' · hari ini '+u.keysToday+' · total '+u.totalKeys+'</div></div>'+
+        '<div class="row-actions">'+
+          (u.role!=='reseller'?'<button onclick="setUserRole(\\''+u.username+'\\',\\'reseller\\')">Approve</button>':'')+
+          (u.role!=='admin'?'<button onclick="setUserRole(\\''+u.username+'\\',\\'admin\\')">Admin</button>':'')+
+          (u.role!=='banned'?'<button onclick="setUserRole(\\''+u.username+'\\',\\'banned\\')">Ban</button>':'<button onclick="setUserRole(\\''+u.username+'\\',\\'pending\\')">Unban</button>')+
+          '<button onclick="editUserQuota(\\''+u.username+'\\','+u.quota+')">Quota</button>'+
+          '<button onclick="delUser(\\''+u.username+'\\')">Hapus</button>'+
+        '</div>'+
+      '</div>'
+    )).join('');
+  }catch(e){
+    box.innerHTML='<div style="color:var(--red);font-size:.8rem">Error: '+e.message+'</div>';
+  }
+}
+
+async function setUserRole(username, role){
+  const d = await apiCall('/api/owner/setrole',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN, username, role})});
+  if(d.error) return alert(d.error);
+  loadUsers();
+}
+async function editUserQuota(username, current){
+  const v = prompt('Kuota harian untuk '+username+':', current);
+  if(v===null) return;
+  const d = await apiCall('/api/owner/setquota',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN, username, quota:parseInt(v)||0})});
+  if(d.error) return alert(d.error);
+  loadUsers();
+}
+async function delUser(username){
+  if(!confirm('Hapus user '+username+'?')) return;
+  const d = await apiCall('/api/owner/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN, username})});
+  if(d.error) return alert(d.error);
+  loadUsers();
+}
+
+function updateWA(){if(!lastLookup.name)return;const text="Beli Key NANG%0ANama: "+encodeURIComponent(lastLookup.name)+"%0ARoblox ID: "+lastLookup.uid+"%0ABukti TF: [screenshot]";$('waBtn').href="https://wa.me/"+WA_NUMBER+"?text="+text;$('waNama').textContent=lastLookup.name;$('waUid').textContent=lastLookup.uid;}
+async function doLookup(){const uid=$('lookupId').value.trim();const box=$('lookupResult');if(!uid)return;box.style.display='block';box.className='result info';box.innerHTML='<span class="spinner"></span>Mencari...';try{const r=await fetch('/?lookup='+encodeURIComponent(uid));const d=await r.json();if(d.name){lastLookup={uid:d.uid,name:d.name};updateWA();box.style.display='none';const ex=$('userCard');if(ex)ex.remove();const card=document.createElement('div');card.id='userCard';card.className='user-card';card.innerHTML='<div class="user-avatar">'+d.name.charAt(0).toUpperCase()+'</div><div class="user-info"><div class="user-name">'+d.name+'</div><div class="user-id">ID: '+d.uid+'</div></div>';box.parentNode.insertBefore(card,box.nextSibling);}else{box.className='result err';box.innerHTML='User ID tidak ditemukan';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
+let lookupT;$('lookupId').addEventListener('input',()=>{clearTimeout(lookupT);lookupT=setTimeout(doLookup,600);});
+
+async function detectLinkNow(url){const box=$('detectBox');const badge=$('detectBadge');const text=$('detectText');if(!url||url.length<8){box.classList.remove('show');lastDetect=null;return;}try{const r=await fetch('/?detect='+encodeURIComponent(url));const d=await r.json();const det=d.detection;if(!det){box.classList.remove('show');return;}lastDetect=det;box.className='detect show '+det.auto;const labels={high:'AUTO',medium:'COBA',low:'MANUAL',none:'INVALID'};badge.textContent=det.type+' · '+labels[det.auto];text.textContent=det.note;}catch(e){box.classList.remove('show');}}
+$('bypassUrl').addEventListener('input',()=>{clearTimeout(detectTimer);detectTimer=setTimeout(()=>detectLinkNow($('bypassUrl').value.trim()),500);});
+
 async function doBypass(){
-  const link=document.getElementById('bypassUrl').value.trim();
-  const box=document.getElementById('bypassResult');
+  const link=$('bypassUrl').value.trim();
+  const box=$('bypassResult');
   if(!link)return;
   box.style.display='block';box.className='result info';
   const detLabel=lastDetect?'('+lastDetect.type+')':'';
@@ -1366,7 +1594,7 @@ async function doBypass(){
     const d=await r.json();
     if(d.key){
       box.className='result ok';
-      box.innerHTML='<b>KEY DITEMUKAN</b><div class="key-line">'+d.key+'</div><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button><div style="font-size:.7rem;color:#6b6b8a;margin-top:6px">via '+(d.source||'?')+'</div>';
+      box.innerHTML='<b>KEY DITEMUKAN</b><div class="key-line">'+d.key+'</div><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';
       return;
     }
     if(d.result){
@@ -1376,16 +1604,16 @@ async function doBypass(){
       box.className='result '+cls;
       let label='Bypass berhasil!';
       if(d.source==='original')label='Belum selesai — klik bypass lagi:';
-      const detInfo=d.detection?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">Jenis: '+d.detection.type+' · via '+(d.source||'?')+'</div>':(d.source?'<div style="font-size:.7rem;color:#6b6b8a;margin-top:4px">via '+d.source+'</div>':'');
-      box.innerHTML=label+detInfo+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.source!=='original'?'<button class="btn-green" onclick="navigator.clipboard.writeText(window._bypassUrl);this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY LINK\\',1500)">COPY LINK</button>':'')+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');
+      box.innerHTML=label+'<div class="key-line"><a href="'+url+'" target="_blank" style="color:#00d4ff;text-decoration:none">'+url+'</a></div>'+(d.warning?'<div style="font-size:.72rem;color:#ffc832;margin-top:8px">'+d.warning+'</div>':'');
     }else{
       box.className='result err';box.innerHTML=d.error||'Bypass gagal.';
     }
   }catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}
 }
+
 async function doConvert(){
-  const input=document.getElementById('convFile');
-  const box=document.getElementById('convResult');
+  const input=$('convFile');
+  const box=$('convResult');
   if(!input.files||!input.files[0])return;
   const file=input.files[0];
   if(file.size>50*1024*1024){box.style.display='block';box.className='result err';box.innerHTML='File > 50 MB.';return;}
@@ -1401,16 +1629,14 @@ async function doConvert(){
     const blob=new Blob([text],{type:'text/xml'});
     const url=URL.createObjectURL(blob);
     box.className='result ok';
-    box.innerHTML='Berhasil dikonversi!<div class="key-line"><a href="'+url+'" download="'+outName+'" style="color:#00d4ff;text-decoration:none">⬇ Download '+outName+'</a></div>';
-  }catch(e){
-    box.className='result err';box.innerHTML='Error: '+e.message;
-  }
+    box.innerHTML='Berhasil!<div class="key-line"><a href="'+url+'" download="'+outName+'" style="color:#00d4ff;text-decoration:none">⬇ Download '+outName+'</a></div>';
+  }catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}
 }
-// === UPLOADER ===
+
 let _upFile=null;
-const upDrop=document.getElementById('upDrop');
-const upFileInput=document.getElementById('upFileInput');
-const upResult=document.getElementById('upResult');
+const upDrop=$('upDrop');
+const upFileInput=$('upFileInput');
+const upResult=$('upResult');
 upDrop.addEventListener('click',()=>upFileInput.click());
 upDrop.addEventListener('dragover',e=>{e.preventDefault();upDrop.classList.add('over');});
 upDrop.addEventListener('dragleave',()=>upDrop.classList.remove('over'));
@@ -1419,7 +1645,7 @@ upFileInput.addEventListener('change',e=>{if(e.target.files.length)_upHandleFile
 function _upHandleFile(f){
   const n=f.name.toLowerCase();
   if(!n.endsWith('.rbxm')&&!n.endsWith('.rbxmx'))return _upShow('err','File harus .rbxm / .rbxmx');
-  if(f.size>3*1024*1024)return _upShow('err','File > 3 MB. Gak bisa upload.');
+  if(f.size>3*1024*1024)return _upShow('err','File > 3 MB.');
   _upFile=f;
   upDrop.classList.add('done');
   upDrop.querySelector('.drop-icon').textContent='✓';
@@ -1428,42 +1654,47 @@ function _upHandleFile(f){
   upResult.style.display='none';
 }
 function _upShow(type,html){upResult.className='result '+type;upResult.innerHTML=html;}
+
 async function doUploadRbxm(){
-  const username=document.getElementById('upUsername').value.trim();
-  const apiKey=document.getElementById('upApiKey').value.trim();
-  const name=document.getElementById('upName').value.trim();
-  const desc=document.getElementById('upDesc').value.trim();
+  const username=$('upUsername').value.trim();
+  const apiKey=$('upApiKey').value.trim();
+  const name=$('upName').value.trim();
+  const desc=$('upDesc').value.trim();
   if(!username)return _upShow('err','Username kosong');
   if(!apiKey)return _upShow('err','API Key kosong');
   if(!_upFile)return _upShow('err','Belum pilih file');
-  const btn=document.getElementById('upBtn');
+  const btn=$('upBtn');
   btn.disabled=true;btn.textContent='...';
-  _upShow('info','<span class="spinner"></span>Upload ke Roblox, tunggu...');
+  _upShow('info','<span class="spinner"></span>Upload ke Roblox...');
   try{
     const base64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=rej;r.readAsDataURL(_upFile);});
-    const lkRes=await fetch('/api/lookup-username',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username})});
-    const lk=await lkRes.json();
+    const lk=await apiCall('/api/lookup-username',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username})});
     if(!lk.ok)throw new Error(lk.error);
-    const upRes=await fetch('/api/upload-rbxm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apiKey,userId:lk.userId,fileName:_upFile.name,fileBase64:base64,displayName:name||_upFile.name.replace(/\\.(rbxm|rbxmx)$/i,''),description:desc||'Upload via NANG web'})});
-    const up=await upRes.json();
+    const up=await apiCall('/api/upload-rbxm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apiKey,userId:lk.userId,fileName:_upFile.name,fileBase64:base64,displayName:name||_upFile.name.replace(/\\.(rbxm|rbxmx)$/i,''),description:desc||'Upload via NANG web'})});
     if(!up.ok)throw new Error(up.error);
     let assetId=null;
     for(let i=0;i<30;i++){
       await new Promise(r=>setTimeout(r,1500));
-      const st=await fetch('/api/upload-status?id='+encodeURIComponent(up.operationId)+'&k='+encodeURIComponent(apiKey)).then(r=>r.json());
+      const st=await apiCall('/api/upload-status?id='+encodeURIComponent(up.operationId)+'&k='+encodeURIComponent(apiKey));
       if(!st.ok)throw new Error(st.error);
       if(st.done){if(st.error)throw new Error(st.error);assetId=st.assetId;break;}
     }
-    if(!assetId)throw new Error('Timeout. Cek inventory Roblox beberapa menit lagi.');
-    _upShow('ok','<b>BERHASIL</b><div class="key-line">Asset ID: '+assetId+'</div><a class="link-line" href="https://www.roblox.com/library/'+assetId+'" target="_blank">https://www.roblox.com/library/'+assetId+'</a><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+assetId+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY ID\\',1500)">COPY ID</button>');
+    if(!assetId)throw new Error('Timeout.');
+    _upShow('ok','<b>BERHASIL</b><div class="key-line">Asset ID: '+assetId+'</div><a class="link-line" href="https://www.roblox.com/library/'+assetId+'" target="_blank">https://www.roblox.com/library/'+assetId+'</a>');
   }catch(e){_upShow('err','Gagal: '+e.message);}
   finally{btn.disabled=false;btn.textContent='UPLOAD KE ROBLOX';}
 }
+
+document.addEventListener('DOMContentLoaded',()=>{
+  checkSession();
+  ['aLoginUser','aLoginPass'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doAuthLogin();}));
+  ['aRegUser','aRegEmail','aRegPass','aRegPass2'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doAuthRegister();}));
+});
 </script></body></html>`;
 }
 
 // ═══════════════════════════════════════
-// RESELLER PANEL
+// RESELLER PAGE (opsional standalone)
 // ═══════════════════════════════════════
 function resellerPage() {
   return `<!DOCTYPE html>
@@ -1484,27 +1715,13 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
 .tabs button{flex:1;padding:9px;border:none;border-radius:9px;background:transparent;color:var(--muted);font-family:inherit;font-weight:600;font-size:.85rem;cursor:pointer}
 .tabs button.on{background:linear-gradient(135deg,rgba(224,60,138,.2),rgba(155,77,224,.2));color:#fff}
 .inp{width:100%;padding:11px 14px;background:var(--bg3);border:1px solid var(--border);border-radius:9px;color:var(--text);font-size:.88rem;outline:none;margin-bottom:10px;font-family:inherit}
-.inp:focus{border-color:rgba(224,60,138,.5)}
 .btn{width:100%;padding:12px;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;border:none;border-radius:10px;font-weight:700;font-size:.9rem;cursor:pointer;font-family:inherit;margin-bottom:6px}
-.btn.small{padding:9px;font-size:.82rem;margin-bottom:0}
 .btn.gray{background:var(--bg3);color:var(--text);border:1px solid var(--border)}
 .result{padding:12px;border-radius:9px;font-size:.82rem;margin-top:10px;display:none;line-height:1.55;word-break:break-all}
 .result.ok{background:rgba(0,232,122,.06);border:1px solid rgba(0,232,122,.3);color:var(--green);display:block}
 .result.err{background:rgba(255,80,80,.06);border:1px solid rgba(255,80,80,.3);color:var(--red);display:block}
 .result.warn{background:rgba(255,200,50,.06);border:1px solid rgba(255,200,50,.3);color:var(--yellow);display:block}
 .key-line{font-family:'JetBrains Mono',monospace;font-size:1rem;font-weight:700;color:var(--green);padding:10px;background:#0a1520;border-radius:7px;word-break:break-all;margin:8px 0}
-.user-row{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg3);border-radius:9px;margin-bottom:6px;gap:8px;flex-wrap:wrap}
-.user-row .name{font-weight:700;font-size:.9rem}
-.user-row .meta{font-size:.7rem;color:var(--muted)}
-.badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
-.badge.pending{background:rgba(255,200,50,.15);color:var(--yellow)}
-.badge.reseller{background:rgba(0,212,255,.15);color:var(--cyan)}
-.badge.admin{background:rgba(155,77,224,.2);color:#c899ff}
-.badge.owner{background:rgba(224,60,138,.2);color:var(--pink)}
-.badge.banned{background:rgba(255,80,80,.15);color:var(--red)}
-.row-actions{display:flex;gap:4px;flex-wrap:wrap}
-.row-actions button{padding:5px 10px;border:none;border-radius:6px;font-size:.7rem;font-weight:700;cursor:pointer;font-family:inherit;background:var(--bg2);color:var(--text);border:1px solid var(--border)}
-.row-actions button:hover{background:var(--bg3)}
 .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
 .stat{background:var(--bg3);padding:12px;border-radius:9px}
 .stat .label{font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700}
@@ -1515,9 +1732,6 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
 .spinner{display:inline-block;width:12px;height:12px;border:2px solid rgba(255,255,255,.1);border-top-color:var(--pink);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
 .topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:11px}
-.topbar .who{font-size:.85rem}
-.topbar .who b{color:var(--text)}
-.topbar .role{font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700}
 </style></head><body>
 <div class="wrap">
 <div class="hero"><div class="logo">NANG RESELLER</div><div class="sub">Panel reseller key system</div></div>
@@ -1529,15 +1743,16 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
   </div>
   <div class="card" id="cardLogin">
     <h3>Login</h3>
-    <input class="inp" id="liUser" placeholder="Username" autocomplete="username">
-    <input class="inp" id="liPass" type="password" placeholder="Password" autocomplete="current-password">
+    <input class="inp" id="liUser" placeholder="Username atau Email">
+    <input class="inp" id="liPass" type="password" placeholder="Password">
     <button class="btn" onclick="doLogin()">Masuk</button>
     <div class="result" id="liResult"></div>
   </div>
   <div class="card hidden" id="cardRegister">
     <h3>Daftar Reseller</h3>
-    <input class="inp" id="rgUser" placeholder="Username (huruf/angka/_)">
-    <input class="inp" id="rgPass" type="password" placeholder="Password (min 5 karakter)">
+    <input class="inp" id="rgUser" placeholder="Username">
+    <input class="inp" id="rgEmail" type="email" placeholder="Email aktif">
+    <input class="inp" id="rgPass" type="password" placeholder="Password min 5 karakter">
     <input class="inp" id="rgPass2" type="password" placeholder="Konfirmasi password">
     <button class="btn" onclick="doRegister()">Daftar</button>
     <div class="result" id="rgResult"></div>
@@ -1546,43 +1761,30 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
 
 <div id="viewDash" class="hidden">
   <div class="topbar">
-    <div>
-      <div class="who">Halo, <b id="uName">—</b></div>
-      <div class="role" id="uRole">—</div>
-    </div>
-    <button class="btn small gray" style="width:auto;padding:7px 12px" onclick="doLogout()">Logout</button>
+    <div><div style="font-weight:700" id="uName">—</div><div style="font-size:.7rem;color:var(--muted)" id="uRole">—</div></div>
+    <button class="btn gray" style="width:auto;padding:7px 12px;margin:0" onclick="doLogout()">Logout</button>
   </div>
-
   <div class="card">
     <h3>Status</h3>
     <div class="stat-grid">
       <div class="stat"><div class="label">Kuota / hari</div><div class="value" id="stQuota">—</div></div>
       <div class="stat"><div class="label">Hari ini</div><div class="value" id="stToday">—</div></div>
       <div class="stat"><div class="label">Sisa</div><div class="value" id="stLeft">—</div></div>
-      <div class="stat"><div class="label">Total keys</div><div class="value" id="stTotal">—</div></div>
+      <div class="stat"><div class="label">Total</div><div class="value" id="stTotal">—</div></div>
     </div>
-    <div id="pendingMsg" class="result warn" style="display:none">Akun lu masih <b>pending</b>. Tunggu owner approve dulu.</div>
+    <div id="pendingMsg" class="result warn" style="display:none"></div>
   </div>
-
   <div class="card">
     <h3>Generate Key</h3>
     <input class="inp" id="genUid" placeholder="Roblox User ID (angka)">
     <button class="btn" onclick="doGenerate()">Generate</button>
     <div class="result" id="genResult"></div>
   </div>
-
   <div class="card">
     <h3>Riwayat Key</h3>
     <div id="keyList"><div style="color:var(--muted);font-size:.8rem">Belum ada key.</div></div>
   </div>
-
-  <div class="card hidden" id="ownerCard">
-    <h3>Owner — Manage Users</h3>
-    <button class="btn small gray" onclick="loadOwnerUsers()">Refresh list</button>
-    <div id="ownerUsers" style="margin-top:10px"></div>
-  </div>
 </div>
-
 </div>
 
 <script>
@@ -1592,19 +1794,14 @@ function $(id){return document.getElementById(id);}
 function show(id,v){$(id).classList.toggle('hidden',!v);}
 function switchAuth(i){$('tabLogin').classList.toggle('on',i===0);$('tabRegister').classList.toggle('on',i===1);show('cardLogin',i===0);show('cardRegister',i===1);}
 function setRes(id,cls,html){const e=$(id);e.className='result '+cls;e.innerHTML=html;}
-function clearRes(id){const e=$(id);e.className='result';e.innerHTML='';}
-async function api(route,body){const opts={method:body?'POST':'GET'};if(body){opts.headers={'Content-Type':'application/json'};opts.body=JSON.stringify(body);}const r=await fetch('/api/'+route,opts);return r.json();}
 function getToken(){return localStorage.getItem(TOKEN_KEY);}
 function setToken(t){t?localStorage.setItem(TOKEN_KEY,t):localStorage.removeItem(TOKEN_KEY);}
-async function doLogin(){const username=$('liUser').value.trim();const password=$('liPass').value;if(!username||!password)return setRes('liResult','err','Isi username & password');setRes('liResult','warn','<span class="spinner"></span>Masuk...');const d=await api('reseller/login',{username,password});if(d.error)return setRes('liResult','err',d.error);setToken(d.token);await refreshMe();setRes('liResult','ok','Login berhasil');setTimeout(()=>{clearRes('liResult');$('liPass').value='';},800);}
-async function doRegister(){const username=$('rgUser').value.trim();const password=$('rgPass').value;const pass2=$('rgPass2').value;if(password!==pass2)return setRes('rgResult','err','Password tidak sama');setRes('rgResult','warn','<span class="spinner"></span>Mendaftar...');const d=await api('reseller/register',{username,password});if(d.error)return setRes('rgResult','err',d.error);setRes('rgResult','ok',d.message||'Terdaftar. Tunggu approve owner.');$('rgUser').value='';$('rgPass').value='';$('rgPass2').value='';}
+async function api(route,body){const opts={method:body?'POST':'GET'};if(body){opts.headers={'Content-Type':'application/json'};opts.body=JSON.stringify(body);}const r=await fetch('/api/'+route,opts);return r.json();}
+async function doLogin(){const identifier=$('liUser').value.trim();const password=$('liPass').value;if(!identifier||!password)return setRes('liResult','err','Isi dulu');setRes('liResult','warn','<span class="spinner"></span>Masuk...');const d=await api('reseller/login',{identifier,password});if(d.error)return setRes('liResult','err',d.error);setToken(d.token);await refreshMe();}
+async function doRegister(){const username=$('rgUser').value.trim();const email=$('rgEmail').value.trim();const password=$('rgPass').value;const pass2=$('rgPass2').value;if(password!==pass2)return setRes('rgResult','err','Password tidak sama');setRes('rgResult','warn','<span class="spinner"></span>Mendaftar...');const d=await api('reseller/register',{username,email,password});if(d.error)return setRes('rgResult','err',d.error);setRes('rgResult','ok',d.message||'Terdaftar.');}
 async function doLogout(){const token=getToken();if(token)await api('reseller/logout',{token});setToken(null);me=null;show('viewDash',false);show('viewAuth',true);}
-async function refreshMe(){const token=getToken();if(!token){show('viewDash',false);show('viewAuth',true);return;}const d=await api('reseller/me?token='+encodeURIComponent(token));if(!d.ok){setToken(null);show('viewDash',false);show('viewAuth',true);return;}me=d.user;show('viewAuth',false);show('viewDash',true);$('uName').textContent=me.username;$('uRole').textContent=me.role;$('uRole').className='role badge '+me.role;$('stQuota').textContent=me.role==='reseller'?me.quota:'∞';$('stToday').textContent=me.keysToday||0;$('stLeft').textContent=me.role==='reseller'?Math.max(0,me.quota-(me.keysToday||0)):'∞';$('stTotal').textContent=(me.keys||[]).length;const pend=(me.role==='pending'||me.role==='banned');show('pendingMsg',pend);$('pendingMsg').innerHTML=me.role==='banned'?'Akun lu di-<b>ban</b>. Hubungi owner.':'Akun lu masih <b>pending</b>. Tunggu owner approve.';const kl=$('keyList');if(!me.keys||!me.keys.length){kl.innerHTML='<div style="color:var(--muted);font-size:.8rem">Belum ada key.</div>';}else{kl.innerHTML=me.keys.map(k=>('<div class="key-item"><div class="k">'+k.key+'</div><div class="meta">UID: '+k.uid+' · '+(k.name||'?')+' · '+new Date(k.ts).toLocaleString('id-ID')+'</div></div>')).join('');}show('ownerCard',me.role==='owner');if(me.role==='owner')loadOwnerUsers();}
-async function doGenerate(){const token=getToken();const uid=$('genUid').value.trim();if(!uid)return setRes('genResult','err','Isi Roblox User ID');setRes('genResult','warn','<span class="spinner"></span>Generate...');const d=await api('reseller/generate',{token,uid});if(d.error)return setRes('genResult','err',d.error);setRes('genResult','ok','<b>'+(d.username||'Unknown')+'</b><div class="key-line">'+d.key+'</div><div style="font-size:.75rem;color:var(--muted)">Berlaku: '+d.expires+' · Sisa kuota: '+d.remaining+'</div>');await refreshMe();}
-async function loadOwnerUsers(){const token=getToken();const d=await api('owner/users?token='+encodeURIComponent(token));if(d.error)return;const c=$('ownerUsers');c.innerHTML=d.users.map(u=>('<div class="user-row"><div><div class="name">'+u.username+' <span class="badge '+u.role+'">'+u.role+'</span></div><div class="meta">quota '+u.quota+' · hari ini '+u.keysToday+' · total '+u.totalKeys+'</div></div><div class="row-actions">'+(u.role!=='reseller'?'<button onclick="setRole(\\''+u.username+'\\',\\'reseller\\')">Approve</button>':'')+(u.role!=='admin'?'<button onclick="setRole(\\''+u.username+'\\',\\'admin\\')">Admin</button>':'')+(u.role!=='banned'?'<button onclick="setRole(\\''+u.username+'\\',\\'banned\\')">Ban</button>':'<button onclick="setRole(\\''+u.username+'\\',\\'pending\\')">Unban</button>')+'<button onclick="editQuota(\\''+u.username+'\\','+u.quota+')">Quota</button><button onclick="delUser(\\''+u.username+'\\')">Hapus</button></div></div>')).join('');}
-async function setRole(username,role){const token=getToken();const d=await api('owner/setrole',{token,username,role});if(d.error)return alert(d.error);loadOwnerUsers();}
-async function editQuota(username,current){const v=prompt('Kuota harian untuk '+username+':',current);if(v===null)return;const token=getToken();const d=await api('owner/setquota',{token,username,quota:parseInt(v)||0});if(d.error)return alert(d.error);loadOwnerUsers();}
-async function delUser(username){if(!confirm('Hapus user '+username+'?'))return;const token=getToken();const d=await api('owner/delete',{token,username});if(d.error)return alert(d.error);loadOwnerUsers();}
-document.addEventListener('DOMContentLoaded',()=>{refreshMe();['liUser','liPass'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();}));['rgUser','rgPass','rgPass2'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doRegister();}));$('genUid').addEventListener('keydown',e=>{if(e.key==='Enter')doGenerate();});});
+async function refreshMe(){const token=getToken();if(!token){show('viewDash',false);show('viewAuth',true);return;}const d=await api('reseller/me?token='+encodeURIComponent(token));if(!d.ok){setToken(null);show('viewDash',false);show('viewAuth',true);return;}me=d.user;show('viewAuth',false);show('viewDash',true);$('uName').textContent=me.username;$('uRole').textContent=me.role;$('stQuota').textContent=me.role==='reseller'?me.quota:'∞';$('stToday').textContent=me.keysToday||0;$('stLeft').textContent=me.role==='reseller'?Math.max(0,me.quota-(me.keysToday||0)):'∞';$('stTotal').textContent=(me.keys||[]).length;const pend=(me.role==='pending'||me.role==='banned');show('pendingMsg',pend);if(pend)$('pendingMsg').innerHTML=me.role==='banned'?'Akun di-ban.':'Akun masih pending.';const kl=$('keyList');if(!me.keys||!me.keys.length){kl.innerHTML='<div style="color:var(--muted);font-size:.8rem">Belum ada key.</div>';}else{kl.innerHTML=me.keys.map(k=>('<div class="key-item"><div class="k">'+k.key+'</div><div class="meta">UID: '+k.uid+' · '+(k.name||'?')+'</div></div>')).join('');}}
+async function doGenerate(){const token=getToken();const uid=$('genUid').value.trim();if(!uid)return setRes('genResult','err','Isi User ID');setRes('genResult','warn','<span class="spinner"></span>Generate...');const d=await api('reseller/generate',{token,uid});if(d.error)return setRes('genResult','err',d.error);setRes('genResult','ok','<b>'+(d.username||'Unknown')+'</b><div class="key-line">'+d.key+'</div><div style="font-size:.75rem;color:var(--muted)">Berlaku: '+d.expires+'</div>');await refreshMe();}
+document.addEventListener('DOMContentLoaded',()=>{refreshMe();['liUser','liPass'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();}));['rgUser','rgEmail','rgPass','rgPass2'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doRegister();}));$('genUid').addEventListener('keydown',e=>{if(e.key==='Enter')doGenerate();});});
 </script></body></html>`;
 }
