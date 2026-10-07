@@ -1,19 +1,125 @@
-const BUILD = "66.5";
+const BUILD = "67.5";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
+import { createHash, randomBytes } from "node:crypto";
+
+const _KV_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || "";
+const _KV_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || "";
+const _HAS_KV = !!(_KV_URL && _KV_TOKEN);
+
+async function _kvCmd(...args) {
+  if (!_HAS_KV) return null;
+  try {
+    const r = await fetch(_KV_URL, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + _KV_TOKEN, "Content-Type": "application/json" },
+      body: JSON.stringify([args]),
+    });
+    const d = await r.json();
+    return d && d[0] ? d[0].result : null;
+  } catch { return null; }
+}
+
+const _memStore = (global.__nangMem = global.__nangMem || {});
+async function storeGet(key) {
+  if (_HAS_KV) {
+    const raw = await _kvCmd("GET", key);
+    if (raw == null) return null;
+    if (typeof raw === "string") { try { return JSON.parse(raw); } catch { return raw; } }
+    return raw;
+  }
+  return _memStore[key] ?? null;
+}
+async function storeSet(key, val) {
+  const raw = typeof val === "string" ? val : JSON.stringify(val);
+  if (_HAS_KV) { await _kvCmd("SET", key, raw); return true; }
+  _memStore[key] = val;
+  return true;
+}
+async function storeDel(key) {
+  if (_HAS_KV) { await _kvCmd("DEL", key); return true; }
+  delete _memStore[key];
+  return true;
+}
+function hashPw(pw, salt) { return createHash("sha256").update(salt + "::" + pw).digest("hex"); }
+function randomHex(n) { return randomBytes(n).toString("hex"); }
+
+async function getUser(username) {
+  if (!username) return null;
+  return storeGet("nang:user:" + String(username).toLowerCase());
+}
+async function saveUser(user) {
+  await storeSet("nang:user:" + user.username.toLowerCase(), user);
+  if (_HAS_KV) await _kvCmd("SADD", "nang:userlist", user.username);
+  return true;
+}
+async function listUsers() {
+  if (_HAS_KV) {
+    const names = (await _kvCmd("SMEMBERS", "nang:userlist")) || [];
+    const out = [];
+    for (const n of names) {
+      const u = await storeGet("nang:user:" + String(n).toLowerCase());
+      if (u) out.push(u);
+    }
+    return out;
+  }
+  return Object.values(_memStore).filter(v => v && v.username && v.passwordHash);
+}
+
+const _SECRET = "NANG2024";
+const _EXPIRE_MS = 24 * 60 * 60 * 1000;
+function _simpleHash(str) { let h = 0; for (let i = 0; i < str.length; i++) h = ((h * 31) + str.charCodeAt(i)) % 1000000007; return h; }
+function _makeKeyAt(uid, ts) {
+  const code = Math.floor(ts / 60000) % 10000;
+  const h = _simpleHash(_SECRET + String(uid) + String(code));
+  const p1 = String(uid).slice(0, 5).padEnd(5, "0");
+  return "NANG-" + p1 + "-" + String(h % 10000).padStart(4, "0") + "-" + String(Math.floor(h / 10000) % 10000).padStart(4, "0");
+}
+function _makeKey(uid) { return _makeKeyAt(uid, Date.now()); }
+function _verifyKey(uid, key) {
+  const k = String(key || "").toUpperCase().replace(/\s+/g, "");
+  if (!k) return { valid: false, remainingMs: 0 };
+  const now = Date.now();
+  for (let delta = 0; delta < 1440; delta++) {
+    const ts = now - delta * 60000;
+    if (_makeKeyAt(uid, ts) === k) {
+      const rem = Math.max(0, (ts + _EXPIRE_MS) - now);
+      return { valid: rem > 0, remainingMs: rem };
+    }
+  }
+  return { valid: false, remainingMs: 0 };
+}
+function _fmtRemaining(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return Math.floor(s / 3600) + "j " + Math.floor((s % 3600) / 60) + "m";
+}
+function _expiryStr(uid, key) {
+  const r = _verifyKey(uid, key);
+  return r.valid ? _fmtRemaining(r.remainingMs) : null;
+}
+async function _getRobloxUser(uid) {
+  try { const r = await fetch("https://users.roblox.com/v1/users/" + uid); if (!r.ok) return null; return (await r.json()).name || null; }
+  catch { return null; }
+}
+function _getClientIP(req) {
+  const xf = req.headers["x-forwarded-for"];
+  if (xf) return String(xf).split(",")[0].trim();
+  return req.headers["x-real-ip"] || "unknown";
+}
+
 const LINK_PATTERNS = [
-  { name: "LootLabs",     match: ["lootlabs","lootlinks","lootdest"],           auto: "low",    note: "Task-wall. Auto-bypass sering gagal." },
+  { name: "LootLabs",     match: ["lootlabs","lootlinks","lootdest"],           auto: "low",    note: "Task-wall." },
   { name: "Platorelay",   match: ["platorelay"],                                  auto: "medium", note: "Keysystem." },
-  { name: "Linkvertise",  match: ["linkvertise"],                                 auto: "high",   note: "Auto-bypass via API." },
-  { name: "Work.ink",     match: ["work.ink","boost.ink","mboost.me"],            auto: "high",   note: "Auto-bypass via API." },
-  { name: "Rekonise",     match: ["rekonise"],                                    auto: "high",   note: "Auto-bypass via API." },
-  { name: "Sub2Unlock",   match: ["sub2unlock","sub2get","playrole"],             auto: "low",    note: "Butuh social unlock manual." },
-  { name: "SocialWolvez", match: ["socialwolvez","cutsy"],                        auto: "low",    note: "Butuh social unlock manual." },
-  { name: "Adf.ly",       match: ["adf.ly","adfoc"],                              auto: "high",   note: "Auto-bypass via redirect." },
-  { name: "GPLinks",      match: ["gplinks","gplink","tnlink","tnshort"],         auto: "high",   note: "Auto-bypass via API." },
-  { name: "ShrinkMe",     match: ["shrinkme","shrinkearn","shrinkforearn"],       auto: "high",   note: "Auto-bypass via API." },
-  { name: "Ouo.io",       match: ["ouo.io","exe.io","fc.lc","ez4short"],          auto: "high",   note: "Auto-bypass via API." },
-  { name: "Shortener",    match: ["shorte.st","bc.vc","cutt.ly","tii.ai","linkpoi","clk.sh","clicksfly","droplink","yoshort","spaste","za.gl","za.gd","try2link","kyshort","zshort","gtlink","omg10","weboasi","link1s","linkshortify","arolinks","ez4mod","atglinks","indlink","pndk","ldo.tn","mightytr.ee","urlshort","shortlink"], auto: "high", note: "Auto-bypass via API." },
+  { name: "Linkvertise",  match: ["linkvertise"],                                 auto: "high",   note: "Auto-bypass." },
+  { name: "Work.ink",     match: ["work.ink","boost.ink","mboost.me"],            auto: "high",   note: "Auto-bypass." },
+  { name: "Rekonise",     match: ["rekonise"],                                    auto: "high",   note: "Auto-bypass." },
+  { name: "Sub2Unlock",   match: ["sub2unlock","sub2get","playrole"],             auto: "low",    note: "Manual unlock." },
+  { name: "SocialWolvez", match: ["socialwolvez","cutsy"],                        auto: "low",    note: "Manual unlock." },
+  { name: "Adf.ly",       match: ["adf.ly","adfoc"],                              auto: "high",   note: "Auto-bypass." },
+  { name: "GPLinks",      match: ["gplinks","gplink","tnlink","tnshort"],         auto: "high",   note: "Auto-bypass." },
+  { name: "ShrinkMe",     match: ["shrinkme","shrinkearn","shrinkforearn"],       auto: "high",   note: "Auto-bypass." },
+  { name: "Ouo.io",       match: ["ouo.io","exe.io","fc.lc","ez4short"],          auto: "high",   note: "Auto-bypass." },
+  { name: "Shortener",    match: ["shorte.st","bc.vc","cutt.ly","tii.ai","linkpoi","clk.sh","clicksfly","droplink","yoshort","spaste","za.gl","za.gd","try2link","kyshort","zshort","gtlink","omg10","weboasi","link1s","linkshortify","arolinks","ez4mod","atglinks","indlink","pndk","ldo.tn","mightytr.ee","urlshort","shortlink"], auto: "high", note: "Auto-bypass." },
 ];
 
 function detectLink(url) {
@@ -88,67 +194,17 @@ export default async function handler(req, res) {
 }
 
 async function handle(req, res) {
-  const SECRET = "NANG2024";
   const ADMIN_PW = "nangowner123";
-  const EXPIRE_MS = 24 * 60 * 60 * 1000;
-  const KEY_CYCLE = 10000;
   const WA_NUMBER = "6281252425581";
   const BROWSERLESS_TOKEN = "2VO67VgLJTXNszJ47508df1abfc96345f97d220136688f6d6";
   const BROWSERLESS_URL = "https://production-sfo.browserless.io/function";
   const AUTH_DOMAIN = req.headers.host || "localhost";
 
-  function simpleHash(str) { let h = 0; for (let i = 0; i < str.length; i++) h = ((h * 31) + str.charCodeAt(i)) % 1000000007; return h; }
-  function minuteCode(ts) { return Math.floor(ts / 60000) % KEY_CYCLE; }
-
-  function makeKeyAt(uid, ts) {
-    const code = minuteCode(ts);
-    const h = simpleHash(SECRET + String(uid) + String(code));
-    const p1 = String(uid).slice(0, 5).padEnd(5, "0");
-    return "NANG-" + p1 + "-" + String(h % 10000).padStart(4, "0") + "-" + String(Math.floor(h / 10000) % 10000).padStart(4, "0");
-  }
-  function makeKey(uid) { return makeKeyAt(uid, Date.now()); }
-
-  function verifyKey(uid, key) {
-    const k = String(key || "").toUpperCase().replace(/\s+/g, "");
-    if (!k) return { valid: false, remainingMs: 0, issuedAt: 0 };
-    const now = Date.now();
-    for (let delta = 0; delta < 1440; delta++) {
-      const ts = now - delta * 60000;
-      if (makeKeyAt(uid, ts) === k) {
-        const expires = ts + EXPIRE_MS;
-        const remainingMs = Math.max(0, expires - now);
-        return { valid: remainingMs > 0, remainingMs, issuedAt: ts };
-      }
-    }
-    return { valid: false, remainingMs: 0, issuedAt: 0 };
-  }
-  function isValid(uid, key) { return verifyKey(uid, key).valid; }
-
-  function fmtRemaining(ms) {
-    const s = Math.max(0, Math.floor(ms / 1000));
-    return Math.floor(s / 3600) + "j " + Math.floor((s % 3600) / 60) + "m";
-  }
-  function expiryStr(uid, key) {
-    const r = verifyKey(uid, key);
-    return r.valid ? fmtRemaining(r.remainingMs) : null;
-  }
-
   function b64urlEncode(obj) { let b64 = Buffer.from(JSON.stringify(obj), "utf8").toString("base64"); return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
   function b64urlDecode(str) { let s = str.replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "="; return Buffer.from(s, "base64").toString("utf8"); }
-
   function makeAuthLink(uid, key, username) {
     const payload = { u: String(uid), k: key, n: username || "", e: Math.floor(Date.now() / 1000) + 86400 };
     return "https://" + AUTH_DOMAIN + "/auth?d=" + b64urlEncode(payload);
-  }
-
-  async function getRobloxUser(uid) {
-    try { const r = await fetch("https://users.roblox.com/v1/users/" + uid); if (!r.ok) return null; return (await r.json()).name || null; }
-    catch { return null; }
-  }
-  function getClientIP(req) {
-    const xf = req.headers["x-forwarded-for"];
-    if (xf) return String(xf).split(",")[0].trim();
-    return req.headers["x-real-ip"] || "unknown";
   }
 
   const url = new URL(req.url, "https://" + AUTH_DOMAIN);
@@ -162,6 +218,16 @@ async function handle(req, res) {
   if (method === "OPTIONS") { res.status(200).end(); return; }
 
   if (params.has("version")) { res.status(200).json({ version: BUILD, ts: Date.now() }); return; }
+
+  // reseller API + upload API
+  if (path.startsWith("/api/")) {
+    return await handleApi(req, res, path, method, params, { ADMIN_PW, AUTH_DOMAIN });
+  }
+  if (path === "/reseller" || path === "/reseller/") {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.status(200).send(resellerPage());
+    return;
+  }
 
   if (method === "POST") {
     let body = "";
@@ -223,40 +289,40 @@ async function handle(req, res) {
     if (parsed.action === "generate") {
       if (parsed.pw !== ADMIN_PW) {
         sendWebhook([
-          { name: "Event", value: "❌ Admin login GAGAL", inline: false },
-          { name: "IP", value: getClientIP(req), inline: true },
+          { name: "Event", value: "Admin login GAGAL", inline: false },
+          { name: "IP", value: _getClientIP(req), inline: true },
         ]);
         res.status(200).json({ error: "password salah" }); return;
       }
       const uid = String(parsed.uid || "").trim();
       if (!uid) { res.status(200).json({ error: "uid kosong" }); return; }
-      const key = makeKey(uid);
-      const name = await getRobloxUser(uid);
+      const key = _makeKey(uid);
+      const name = await _getRobloxUser(uid);
       sendWebhook([
-        { name: "Event", value: "🔑 Key Generated", inline: false },
+        { name: "Event", value: "Key Generated", inline: false },
         { name: "Username", value: String(name || "Unknown"), inline: true },
         { name: "User ID", value: uid, inline: true },
         { name: "Key", value: key, inline: false },
-        { name: "Expires", value: expiryStr(uid, key), inline: true },
-        { name: "IP", value: getClientIP(req), inline: true },
+        { name: "Expires", value: _expiryStr(uid, key), inline: true },
+        { name: "IP", value: _getClientIP(req), inline: true },
       ]);
-      res.status(200).json({ ok: true, uid, key, expires: expiryStr(uid, key), username: name, authLink: makeAuthLink(uid, key, name) });
+      res.status(200).json({ ok: true, uid, key, expires: _expiryStr(uid, key), username: name, authLink: makeAuthLink(uid, key, name) });
       return;
     }
 
-    const valid = isValid(parsed.uid, parsed.key);
+    const valid = _verifyKey(parsed.uid, parsed.key).valid;
     let username = null;
-    if (valid) username = await getRobloxUser(parsed.uid);
+    if (valid) username = await _getRobloxUser(parsed.uid);
     if (valid) {
       sendWebhook([
-        { name: "Event", value: "✅ Key Verified", inline: false },
+        { name: "Event", value: "Key Verified", inline: false },
         { name: "Username", value: String(username || "Unknown"), inline: true },
         { name: "User ID", value: String(parsed.uid), inline: true },
-        { name: "Remaining", value: expiryStr(parsed.uid, parsed.key), inline: true },
-        { name: "IP", value: getClientIP(req), inline: true },
+        { name: "Remaining", value: _expiryStr(parsed.uid, parsed.key), inline: true },
+        { name: "IP", value: _getClientIP(req), inline: true },
       ]);
     }
-    res.status(200).json({ valid, expires: valid ? expiryStr(parsed.uid, parsed.key) : null, username });
+    res.status(200).json({ valid, expires: valid ? _expiryStr(parsed.uid, parsed.key) : null, username });
     return;
   }
 
@@ -266,13 +332,13 @@ async function handle(req, res) {
     let data;
     try { data = JSON.parse(b64urlDecode(d)); } catch { res.status(400).send("Invalid link"); return; }
     if (!data.u || !data.k) { res.status(400).send("Invalid data"); return; }
-    const valid = isValid(data.u, data.k);
-    const name = data.n || await getRobloxUser(data.u);
+    const valid = _verifyKey(data.u, data.k).valid;
+    const name = data.n || await _getRobloxUser(data.u);
     sendWebhook([
-      { name: "Event", value: valid ? "🔐 Auth Page (Valid)" : "🔐 Auth Page (Expired)", inline: false },
+      { name: "Event", value: valid ? "Auth Page (Valid)" : "Auth Page (Expired)", inline: false },
       { name: "Username", value: String(name || "Unknown"), inline: true },
       { name: "User ID", value: String(data.u), inline: true },
-      { name: "IP", value: getClientIP(req), inline: true },
+      { name: "IP", value: _getClientIP(req), inline: true },
     ]);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.status(200).send(authPage(data, valid, name));
@@ -282,15 +348,15 @@ async function handle(req, res) {
   if (params.has("uid") && params.has("key")) {
     const uid = params.get("uid");
     const key = params.get("key");
-    const valid = isValid(uid, key);
+    const valid = _verifyKey(uid, key).valid;
     let username = null;
-    if (valid) username = await getRobloxUser(uid);
-    res.status(200).json({ valid, expires: valid ? expiryStr(uid, key) : null, username });
+    if (valid) username = await _getRobloxUser(uid);
+    res.status(200).json({ valid, expires: valid ? _expiryStr(uid, key) : null, username });
     return;
   }
 
   if (params.has("lookup")) {
-    const name = await getRobloxUser(params.get("lookup"));
+    const name = await _getRobloxUser(params.get("lookup"));
     res.status(200).json({ uid: params.get("lookup"), name });
     return;
   }
@@ -342,14 +408,14 @@ async function handle(req, res) {
     const placeId = String(params.get("place") || "0").slice(0, 20);
     const jobId = String(params.get("job") || "").slice(0, 40);
     sendWebhook([
-      { name: "Event", value: "🎮 " + event, inline: false },
+      { name: "Event", value: event, inline: false },
       { name: "Username", value: user, inline: true },
       { name: "User ID", value: uid, inline: true },
       { name: "Executor", value: exec, inline: true },
       { name: "Game", value: gameName, inline: true },
       { name: "Place ID", value: placeId, inline: true },
       { name: "Job ID", value: jobId.slice(0, 8), inline: true },
-      { name: "IP", value: getClientIP(req), inline: false },
+      { name: "IP", value: _getClientIP(req), inline: true },
     ]);
     res.status(200).json({ ok: true });
     return;
@@ -364,18 +430,7 @@ async function handle(req, res) {
     const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
     const ACCEPT = "application/json, text/plain, */*";
 
-    const wrappedTokens = [
-      "lootlabs","lootlinks","lootdest","platorelay",
-      "linkvertise","work.ink","sub2unlock","sub2get","playrole","boost.ink",
-      "socialwolvez","cutsy","mboost.me","rekonise","adfoc","adf.ly","adfoc.us",
-      "shrinkme","shrinkearn","ouo.io","exe.io","fc.lc","ez4short",
-      "shorte.st","bc.vc","cutt.ly","tii.ai","linkpoi","bauval.org",
-      "gplinks","gplink","tnlink","tnshort","mdiskshortner","indianshortner",
-      "urlshort","shortlink","clk.sh","clicksfly","mightytr.ee","droplink",
-      "yoshort","spaste","za.gl","za.gd","shrinkforearn","try2link",
-      "kyshort","zshort","gtlink","omg10","weboasi","link1s","linkshortify",
-      "arolinks","ez4mod","atglinks","indlink","pndk","ldo.tn"
-    ];
+    const wrappedTokens = ["lootlabs","lootlinks","lootdest","platorelay","linkvertise","work.ink","sub2unlock","sub2get","playrole","boost.ink","socialwolvez","cutsy","mboost.me","rekonise","adfoc","adf.ly","adfoc.us","shrinkme","shrinkearn","ouo.io","exe.io","fc.lc","ez4short","shorte.st","bc.vc","cutt.ly","tii.ai","linkpoi","bauval.org","gplinks","gplink","tnlink","tnshort","mdiskshortner","indianshortner","urlshort","shortlink","clk.sh","clicksfly","mightytr.ee","droplink","yoshort","spaste","za.gl","za.gd","shrinkforearn","try2link","kyshort","zshort","gtlink","omg10","weboasi","link1s","linkshortify","arolinks","ez4mod","atglinks","indlink","pndk","ldo.tn"];
     const socialTokens = ["instagram.com","youtube.com","youtu.be","tiktok.com","twitter.com","x.com","facebook.com","fb.com","fb.watch","discord.gg","discord.com","snapchat.com","whatsapp.com","wa.me","telegram","t.me","twitch.tv","reddit.com","pinterest.com","linkedin.com","threads.net"];
     const isWrapped = (u) => typeof u === "string" && wrappedTokens.some(s => u.toLowerCase().includes(s));
     const isSocial  = (u) => typeof u === "string" && socialTokens.some(s => u.toLowerCase().includes(s));
@@ -418,11 +473,11 @@ async function handle(req, res) {
     const sendOk = (result, source) => {
       if (isCleanUrl(result)) {
         sendWebhook([
-          { name: "Event", value: "✅ Bypass Success", inline: false },
+          { name: "Event", value: "Bypass Success", inline: false },
           { name: "Shortlink", value: link.slice(0, 100), inline: false },
           { name: "Result", value: result.slice(0, 200), inline: false },
           { name: "Source", value: source, inline: true },
-          { name: "IP", value: getClientIP(req), inline: true },
+          { name: "IP", value: _getClientIP(req), inline: true },
         ]);
         res.status(200).json({ result, source, detection });
         return true;
@@ -438,7 +493,6 @@ async function handle(req, res) {
     if (!isPlatorelay) {
       const q = encodeURIComponent(link);
       const tasks = [];
-
       const inputHost = (() => { try { return new URL(link).hostname.toLowerCase(); } catch { return ""; } })();
       const isCleanStrict = (u) => {
         if (!isCleanUrl(u)) return false;
@@ -549,7 +603,6 @@ async function handle(req, res) {
         let settledCount = 0;
         let done = false;
         const totalTasks = tasks.length;
-
         const finish = () => {
           if (done) return;
           done = true;
@@ -559,9 +612,7 @@ async function handle(req, res) {
           else if (firstValid) resolve({ url: firstValid.result, sources: [firstValid.source] });
           else resolve(null);
         };
-
         const cap = setTimeout(finish, 6000);
-
         for (const p of tasks) {
           p.then((r) => {
             settledCount++;
@@ -682,12 +733,6 @@ async function handle(req, res) {
                 const o = window.setTimeout;
                 window.setTimeout = (fn, d, ...a) => o(fn, Math.min(d || 0, 30), ...a);
                 window.setInterval = (fn, d, ...a) => o(fn, Math.min(d || 0, 30), ...a);
-                document.querySelectorAll("*").forEach(el => {
-                  const t = (el.textContent || "").trim();
-                  if (t === "Bypassing keys is not allowed" || t.includes("Bypassing keys is not allowed")) {
-                    try { el.style.display = "none"; el.remove(); } catch {}
-                  }
-                });
               } catch {}
             });
             const initKey = await tryScrapeKey(page);
@@ -709,37 +754,6 @@ async function handle(req, res) {
               await sleep(900);
               const keyNow = await tryScrapeKey(page);
               if (keyNow) return { key: keyNow, url: page.url(), status: "key-found" };
-              for (let pi = 0; pi < popups.length; pi++) {
-                const p = popups[pi];
-                try {
-                  await sleep(600);
-                  for (let pr = 0; pr < 6; pr++) {
-                    const clicked = await p.evaluate(() => {
-                      const prio = ["continue", "lanjut", "next", "proceed", "click here", "klik", "claim", "get link", "unlock", "verify", "watch", "start", "open", "free access", "visit now", "get now"];
-                      const skip = /\\b(survey|install|casino|register|play store|app store|watch a video|discord|telegram|instagram|youtube|tiktok)\\b/i;
-                      const all = [...document.querySelectorAll("button, a, [role='button'], [onclick]")];
-                      for (const el of all) {
-                        const t = (el.textContent || "").toLowerCase().trim();
-                        if (!t || t.length > 150) continue;
-                        if (skip.test(t)) continue;
-                        if (prio.some(pp => t === pp || t.startsWith(pp))) {
-                          try { el.scrollIntoView({block:'center'}); el.click(); return 1; } catch {}
-                        }
-                      }
-                      return 0;
-                    }).catch(()=>0);
-                    if (!clicked) break;
-                    await sleep(700);
-                    const pk = await tryScrapeKey(p);
-                    if (pk) return { key: pk, url: p.url(), status: "key-found" };
-                    const popupApis = await p.evaluate(() => window.__nangApi || []).catch(()=>[]);
-                    popupApis.forEach(a => { if (a && a.url) apiCalls.push({ ...a, from: "popup" }); });
-                    const pu = p.url();
-                    if (pu && !reject(pu)) return { url: pu, status: "popup-final" };
-                  }
-                  try { await p.close(); } catch {}
-                } catch {}
-              }
               try { const html = await page.content(); harvest(html); } catch {}
               const mainApis = await page.evaluate(() => window.__nangApi || []).catch(()=>[]);
               for (const a of mainApis) {
@@ -769,21 +783,12 @@ async function handle(req, res) {
                 if (ck) return { key: ck, url: cur, status: "key-found" };
                 return { url: cur, status: "resolved" };
               }
-              const done = await page.evaluate(() => {
-                const body = document.body.innerText || "";
-                if (/completed\\s+1\\s+of\\s+1/i.test(body) || /task.*complete/i.test(body)) {
-                  const a = [...document.querySelectorAll("a[href^='http']")].find(x => !/platorelay|lootlabs|lootlinks/i.test(x.href));
-                  return a ? a.href : null;
-                }
-                return null;
-              });
-              if (done && !reject(done)) return { url: done, status: "task-done" };
             }
             const finalKey = await tryScrapeKey(page);
             if (finalKey) return { key: finalKey, url: page.url(), status: "key-found" };
-            return { url: startUrl, status: "wrapped", apis: apiCalls.slice(-10) };
+            return { url: startUrl, status: "wrapped" };
           } catch (e) {
-            return { url: startUrl, status: "err", error: String(e.message || e), apis: apiCalls.slice(-10) };
+            return { url: startUrl, status: "err", error: String(e.message || e) };
           }
         }
       `;
@@ -798,10 +803,10 @@ async function handle(req, res) {
           const d = await readJson(r);
           if (d && d.key) {
             sendWebhook([
-              { name: "Event", value: "🔑 Key Scraped", inline: false },
+              { name: "Event", value: "Key Scraped", inline: false },
               { name: "Shortlink", value: link.slice(0, 100), inline: false },
               { name: "Key", value: d.key, inline: false },
-              { name: "IP", value: getClientIP(req), inline: true },
+              { name: "IP", value: _getClientIP(req), inline: true },
             ]);
             res.status(200).json({ result: d.key, key: d.key, source: "key-scrape", detection });
             return;
@@ -822,16 +827,13 @@ async function handle(req, res) {
     } catch {}
 
     let warning = "Bypass gagal semua layer.";
-    if (detection && detection.auto === "low") {
-      warning = detection.type + " pakai dinding follow/task manual.";
-    } else {
-      warning = "Provider publik kadang down. Coba lagi 1-2 menit.";
-    }
+    if (detection && detection.auto === "low") warning = detection.type + " pakai dinding follow/task manual.";
+    else warning = "Provider publik kadang down. Coba lagi 1-2 menit.";
     sendWebhook([
-      { name: "Event", value: "❌ Bypass Failed", inline: false },
+      { name: "Event", value: "Bypass Failed", inline: false },
       { name: "Shortlink", value: link.slice(0, 100), inline: false },
       { name: "Type", value: detection ? detection.type : "Unknown", inline: true },
-      { name: "IP", value: getClientIP(req), inline: true },
+      { name: "IP", value: _getClientIP(req), inline: true },
     ]);
     res.status(200).json({ result: link, source: "original", detection, warning });
     return;
@@ -841,8 +843,8 @@ async function handle(req, res) {
     const ua = String(req.headers["user-agent"] || "").slice(0, 120);
     if (!ua.includes("Mozilla")) {
       sendWebhook([
-        { name: "Event", value: "👤 Web Visit", inline: false },
-        { name: "IP", value: getClientIP(req), inline: true },
+        { name: "Event", value: "Web Visit", inline: false },
+        { name: "IP", value: _getClientIP(req), inline: true },
         { name: "UA", value: ua, inline: false },
       ]);
     }
@@ -850,6 +852,293 @@ async function handle(req, res) {
 
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.status(200).send(mainPage(WA_NUMBER));
+}
+
+// ═══════════════════════════════════════
+// API HANDLER (reseller + uploader)
+// ═══════════════════════════════════════
+async function handleApi(req, res, path, method, params, ctx) {
+  const { ADMIN_PW } = ctx;
+  const route = path.replace(/^\/api\//, "").replace(/\/$/, "");
+
+  let body = null;
+  if (method === "POST") {
+    let raw = "";
+    await new Promise(r => { req.on("data", c => raw += c); req.on("end", r); });
+    if (raw) { try { body = JSON.parse(raw); } catch { body = null; } }
+  }
+
+  res.setHeader("Content-Type", "application/json");
+
+  async function authFromToken() {
+    const token = (body && body.token) || params.get("token");
+    if (!token) return null;
+    const sess = await storeGet("nang:sess:" + token);
+    if (!sess) return null;
+    if (!sess.expiresAt || sess.expiresAt < Date.now()) {
+      await storeDel("nang:sess:" + token);
+      return null;
+    }
+    const u = await getUser(sess.username);
+    if (!u || u.role === "banned") return null;
+    return u;
+  }
+  async function requireOwner() {
+    const pw = (body && body.pw) || params.get("pw");
+    if (pw === ADMIN_PW) return { username: "OWNER", role: "owner" };
+    const u = await authFromToken();
+    if (u && u.role === "owner") return u;
+    return null;
+  }
+
+  // ═══ UPLOADER API ═══
+  if (route === "lookup-username" && method === "POST") {
+    const username = String((body && body.username) || "").trim();
+    if (!username) return res.status(200).json({ ok: false, error: "username kosong" });
+    try {
+      const r = await fetch("https://users.roblox.com/v1/usernames/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ usernames: [username], excludeBannedUsers: true }),
+      });
+      const data = await r.json();
+      if (!data.data || !data.data[0]) return res.status(200).json({ ok: false, error: "Username tidak ditemukan" });
+      return res.status(200).json({ ok: true, userId: data.data[0].id, name: data.data[0].name });
+    } catch (e) {
+      return res.status(200).json({ ok: false, error: String(e.message || e) });
+    }
+  }
+
+  if (route === "upload-rbxm" && method === "POST") {
+    const apiKey = (body && body.apiKey) || "";
+    const userId = (body && body.userId) || "";
+    const fileBase64 = (body && body.fileBase64) || "";
+    const fileName = (body && body.fileName) || "model.rbxm";
+    const displayName = (body && body.displayName) || "Model";
+    const description = (body && body.description) || "";
+
+    if (!apiKey) return res.status(200).json({ ok: false, error: "API key kosong" });
+    if (!userId) return res.status(200).json({ ok: false, error: "userId kosong" });
+    if (!fileBase64) return res.status(200).json({ ok: false, error: "file kosong" });
+
+    try {
+      const buffer = Buffer.from(fileBase64, "base64");
+      const form = new FormData();
+      const blob = new Blob([buffer], { type: "application/octet-stream" });
+      form.append("file", blob, fileName);
+      form.append("assetType", "Model");
+      form.append("displayName", String(displayName).slice(0, 50));
+      form.append("description", String(description).slice(0, 1000));
+      form.append("creationContext", JSON.stringify({ creator: { userId: Number(userId) } }));
+
+      const r = await fetch("https://apis.roblox.com/assets/v1/assets", {
+        method: "POST",
+        headers: { "x-api-key": apiKey },
+        body: form,
+      });
+
+      const text = await r.text();
+      let data;
+      try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+      if (!r.ok) {
+        const msg = data.message || data.error || data.raw || ("HTTP " + r.status);
+        return res.status(200).json({ ok: false, error: "Roblox: " + msg });
+      }
+
+      const operationId = data.operationId || (data.path && data.path.split("/").pop());
+      if (!operationId) return res.status(200).json({ ok: false, error: "Tidak dapat operationId", raw: data });
+
+      return res.status(200).json({ ok: true, operationId });
+    } catch (e) {
+      return res.status(200).json({ ok: false, error: String(e.message || e) });
+    }
+  }
+
+  if (route === "upload-status" && method === "GET") {
+    const operationId = params.get("id");
+    const apiKey = params.get("k");
+    if (!operationId || !apiKey) return res.status(200).json({ ok: false, error: "missing" });
+    try {
+      const r = await fetch("https://apis.roblox.com/assets/v1/operations/" + encodeURIComponent(operationId), {
+        method: "GET",
+        headers: { "x-api-key": apiKey },
+      });
+      const data = await r.json();
+      if (data.done) {
+        if (data.error) return res.status(200).json({ ok: true, done: true, error: data.error.message || "Upload gagal" });
+        const assetId = data.response && data.response.assetId;
+        return res.status(200).json({ ok: true, done: true, assetId });
+      }
+      return res.status(200).json({ ok: true, done: false });
+    } catch (e) {
+      return res.status(200).json({ ok: false, error: String(e.message || e) });
+    }
+  }
+
+  // ═══ RESELLER API ═══
+  if (route === "reseller/register" && method === "POST") {
+    const username = String((body && body.username) || "").trim();
+    const password = String((body && body.password) || "");
+    if (username.length < 3) return res.status(200).json({ error: "Username minimal 3 karakter" });
+    if (!/^[a-zA-Z0-9_]+$/.test(username)) return res.status(200).json({ error: "Username hanya huruf/angka/underscore" });
+    if (password.length < 5) return res.status(200).json({ error: "Password minimal 5 karakter" });
+    const exist = await getUser(username);
+    if (exist) return res.status(200).json({ error: "Username sudah dipakai" });
+    const salt = randomHex(8);
+    const user = {
+      username, passwordHash: hashPw(password, salt), salt,
+      role: "pending", quota: 20, keysToday: 0, lastReset: Date.now(),
+      createdAt: Date.now(), keys: [],
+    };
+    await saveUser(user);
+    sendWebhook([
+      { name: "Event", value: "Reseller Registered", inline: false },
+      { name: "Username", value: username, inline: true },
+      { name: "Status", value: "pending", inline: true },
+      { name: "IP", value: _getClientIP(req), inline: true },
+    ]);
+    return res.status(200).json({ ok: true, message: "Terdaftar. Tunggu approve owner." });
+  }
+
+  if (route === "reseller/login" && method === "POST") {
+    const username = String((body && body.username) || "").trim();
+    const password = String((body && body.password) || "");
+    const user = await getUser(username);
+    if (!user) return res.status(200).json({ error: "Username tidak ditemukan" });
+    if (user.role === "banned") return res.status(200).json({ error: "Akun di-ban" });
+    if (user.passwordHash !== hashPw(password, user.salt)) return res.status(200).json({ error: "Password salah" });
+    const token = randomHex(32);
+    await storeSet("nang:sess:" + token, { username: user.username, expiresAt: Date.now() + 7 * 24 * 3600 * 1000 });
+    sendWebhook([
+      { name: "Event", value: "Reseller Login", inline: false },
+      { name: "Username", value: user.username, inline: true },
+      { name: "Role", value: user.role, inline: true },
+      { name: "IP", value: _getClientIP(req), inline: true },
+    ]);
+    return res.status(200).json({
+      ok: true, token,
+      user: { username: user.username, role: user.role, quota: user.quota, keysToday: user.keysToday },
+    });
+  }
+
+  if (route === "reseller/me") {
+    const u = await authFromToken();
+    if (!u) return res.status(200).json({ error: "not logged in" });
+    if (Date.now() - u.lastReset > 24 * 3600 * 1000) {
+      u.keysToday = 0; u.lastReset = Date.now();
+      await saveUser(u);
+    }
+    return res.status(200).json({
+      ok: true,
+      user: {
+        username: u.username, role: u.role, quota: u.quota,
+        keysToday: u.keysToday, keys: u.keys || [], createdAt: u.createdAt,
+      },
+    });
+  }
+
+  if (route === "reseller/logout" && method === "POST") {
+    const token = (body && body.token) || params.get("token");
+    if (token) await storeDel("nang:sess:" + token);
+    return res.status(200).json({ ok: true });
+  }
+
+  if (route === "reseller/generate" && method === "POST") {
+    const u = await authFromToken();
+    if (!u) return res.status(200).json({ error: "not logged in" });
+    if (u.role !== "reseller" && u.role !== "admin" && u.role !== "owner") {
+      return res.status(200).json({ error: "Akun belum di-approve owner" });
+    }
+    if (Date.now() - u.lastReset > 24 * 3600 * 1000) { u.keysToday = 0; u.lastReset = Date.now(); }
+    if (u.role === "reseller" && u.keysToday >= u.quota) {
+      return res.status(200).json({ error: "Kuota harian habis (" + u.quota + ")" });
+    }
+    const uid = String((body && body.uid) || "").trim();
+    if (!uid || !/^\d+$/.test(uid)) return res.status(200).json({ error: "Roblox User ID tidak valid" });
+
+    const key = _makeKey(uid);
+    const name = await _getRobloxUser(uid);
+    u.keysToday = (u.keysToday || 0) + 1;
+    u.keys = u.keys || [];
+    u.keys.unshift({ uid, key, name: name || "Unknown", ts: Date.now(), by: u.username });
+    if (u.keys.length > 100) u.keys = u.keys.slice(0, 100);
+    await saveUser(u);
+
+    sendWebhook([
+      { name: "Event", value: "Key Generated (Reseller)", inline: false },
+      { name: "Reseller", value: u.username, inline: true },
+      { name: "Target", value: String(name || "Unknown"), inline: true },
+      { name: "User ID", value: uid, inline: true },
+      { name: "Key", value: key, inline: false },
+      { name: "Expires", value: _expiryStr(uid, key), inline: true },
+    ]);
+    return res.status(200).json({
+      ok: true, key,
+      expires: _expiryStr(uid, key),
+      username: name,
+      remaining: u.role === "reseller" ? (u.quota - u.keysToday) : "unlimited",
+    });
+  }
+
+  if (route === "owner/users") {
+    const o = await requireOwner();
+    if (!o) return res.status(200).json({ error: "forbidden" });
+    const users = await listUsers();
+    users.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    return res.status(200).json({
+      ok: true,
+      users: users.map(u => ({
+        username: u.username, role: u.role, quota: u.quota,
+        keysToday: u.keysToday, totalKeys: (u.keys || []).length,
+        createdAt: u.createdAt,
+      })),
+    });
+  }
+
+  if (route === "owner/setrole" && method === "POST") {
+    const o = await requireOwner();
+    if (!o) return res.status(200).json({ error: "forbidden" });
+    const target = String((body && body.username) || "").trim();
+    const role = String((body && body.role) || "");
+    if (!["pending", "reseller", "admin", "owner", "banned"].includes(role)) {
+      return res.status(200).json({ error: "role invalid" });
+    }
+    const u = await getUser(target);
+    if (!u) return res.status(200).json({ error: "user tidak ditemukan" });
+    u.role = role;
+    await saveUser(u);
+    sendWebhook([
+      { name: "Event", value: "Role Changed", inline: false },
+      { name: "Target", value: u.username, inline: true },
+      { name: "New Role", value: role, inline: true },
+      { name: "By", value: o.username, inline: true },
+    ]);
+    return res.status(200).json({ ok: true });
+  }
+
+  if (route === "owner/setquota" && method === "POST") {
+    const o = await requireOwner();
+    if (!o) return res.status(200).json({ error: "forbidden" });
+    const target = String((body && body.username) || "").trim();
+    const quota = Math.max(0, Math.min(9999, parseInt(body && body.quota) || 0));
+    const u = await getUser(target);
+    if (!u) return res.status(200).json({ error: "user tidak ditemukan" });
+    u.quota = quota;
+    await saveUser(u);
+    return res.status(200).json({ ok: true });
+  }
+
+  if (route === "owner/delete" && method === "POST") {
+    const o = await requireOwner();
+    if (!o) return res.status(200).json({ error: "forbidden" });
+    const target = String((body && body.username) || "").trim();
+    await storeDel("nang:user:" + target.toLowerCase());
+    if (_HAS_KV) await _kvCmd("SREM", "nang:userlist", target);
+    return res.status(200).json({ ok: true });
+  }
+
+  return res.status(200).json({ error: "unknown route", route, method });
 }
 
 function authPage(data, valid, username) {
@@ -934,9 +1223,10 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
 .btn-cyan{width:100%;padding:12px;background:linear-gradient(135deg,#0099cc,var(--cyan));color:#000;border:none;border-radius:11px;font-weight:700;font-size:0.9rem;cursor:pointer;font-family:inherit}
 .btn-green{width:100%;padding:11px;background:linear-gradient(135deg,#00b866,var(--green));color:#000;border:none;border-radius:11px;font-weight:700;font-size:0.85rem;cursor:pointer;font-family:inherit;margin-top:8px}
 .result{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:12px;font-size:0.78rem;margin-top:10px;display:none;word-break:break-all;line-height:1.6}
-.result.ok{border-color:rgba(0,232,122,0.3);color:var(--green)}
-.result.err{border-color:rgba(255,80,80,0.3);color:#ff6b6b;background:rgba(255,40,40,0.05)}
-.result.warn{border-color:rgba(255,200,50,0.3);color:#ffc832;background:rgba(255,200,50,0.05)}
+.result.ok{border-color:rgba(0,232,122,0.3);color:var(--green);display:block}
+.result.err{border-color:rgba(255,80,80,0.3);color:#ff6b6b;background:rgba(255,40,40,0.05);display:block}
+.result.warn{border-color:rgba(255,200,50,0.3);color:#ffc832;background:rgba(255,200,50,0.05);display:block}
+.result.info{border-color:rgba(0,212,255,0.3);color:var(--cyan);background:rgba(0,212,255,0.05);display:block}
 .result .key-line{font-family:monospace;font-size:0.9rem;color:var(--green);font-weight:700;margin:6px 0;padding:8px;background:#0a1520;border-radius:6px;word-break:break-all}
 .result .link-line{font-family:monospace;font-size:0.7rem;color:var(--cyan);word-break:break-all;padding:6px;background:#0a1520;border-radius:6px;display:block;text-decoration:none;border:1px solid rgba(0,212,255,0.15);margin:6px 0}
 .tags{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px}
@@ -960,17 +1250,26 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
 .detect.low .d-badge{background:rgba(255,200,50,0.15);color:var(--yellow)}
 .detect.none{background:rgba(255,80,80,0.06);border:1px solid rgba(255,80,80,0.25);color:var(--text)}
 .detect.none .d-badge{background:rgba(255,80,80,0.15);color:var(--red)}
+.drop{border:2px dashed var(--border);border-radius:12px;padding:24px 16px;text-align:center;cursor:pointer;transition:all .2s;background:var(--bg3);margin-bottom:12px}
+.drop:hover,.drop.over{border-color:var(--pink);background:rgba(224,60,138,0.05)}
+.drop.done{border-color:var(--green);background:rgba(0,232,122,0.05)}
+.drop-icon{font-size:1.8rem;margin-bottom:6px;opacity:.6}
+.drop-text{font-size:0.85rem;color:var(--text);margin-bottom:4px}
+.drop-hint{font-size:0.7rem;color:var(--muted)}
 footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opacity:0.5}
 #ownerFab{position:fixed;bottom:20px;right:20px;width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,var(--pink),var(--purple));display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 12px rgba(224,60,138,0.4);font-size:20px;user-select:none;opacity:0.35;transition:opacity .2s}
 #ownerFab:hover{opacity:1}
 #genPanel{position:fixed;inset:0;background:rgba(0,0,0,0.7);display:none;align-items:center;justify-content:center;z-index:100;padding:20px}
 #genPanel.show{display:flex}
-#genPanel .box{background:#0f0f1a;border:1px solid var(--pink);border-radius:16px;padding:24px;max-width:400px;width:100%;position:relative}
+#genPanel .box{background:#0f0f1a;border:1px solid var(--pink);border-radius:16px;padding:24px;max-width:400px;width:100%;position:relative;max-height:90vh;overflow-y:auto}
 #genPanel h3{color:var(--pink);font-size:1rem;margin-bottom:14px}
 #genPanel .close{position:absolute;top:12px;right:16px;cursor:pointer;color:var(--muted);font-size:22px}
+.warn-box{padding:10px 12px;background:rgba(255,200,50,0.06);border:1px solid rgba(255,200,50,0.2);border-radius:9px;font-size:0.75rem;color:var(--yellow);margin-bottom:12px;line-height:1.6}
+.warn-box b{color:#fff}
+.warn-box a{color:var(--yellow)}
 </style></head><body>
 <div class="hero"><div class="logo">NANG<span class="logo-badge">KEY</span></div><div class="sub">Roblox Script Key System</div></div>
-<div class="nav"><button class="nav-btn active" onclick="switchTab(0)">Beli Key</button><button class="nav-btn" onclick="switchTab(1)">Bypass</button><button class="nav-btn" onclick="switchTab(2)">Convert</button></div>
+<div class="nav"><button class="nav-btn active" onclick="switchTab(0)">Beli Key</button><button class="nav-btn" onclick="switchTab(1)">Bypass</button><button class="nav-btn" onclick="switchTab(2)">Convert</button><button class="nav-btn" onclick="switchTab(3)">Upload</button></div>
 
 <div class="panel active" id="tab0">
 <div class="card">
@@ -983,6 +1282,7 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 <a href="https://wa.me/${wa}?text=Beli%20Key%20NANG" class="wa-btn" id="waBtn" target="_blank"><svg class="wa-icon" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347"/></svg>Chat WhatsApp Owner</a>
 </div>
 <div class="card"><div class="card-title">Cek Username Roblox</div><input type="text" class="inp" id="lookupId" placeholder="Masukkan Roblox User ID..."><button class="btn-main" onclick="doLookup()">Cek Username</button><div id="lookupResult"></div></div>
+<div class="card" style="text-align:center"><a href="/reseller" style="color:var(--muted);font-size:.8rem;text-decoration:none">Reseller Panel →</a></div>
 </div>
 
 <div class="panel" id="tab1">
@@ -999,10 +1299,36 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 <div class="panel" id="tab2">
 <div class="card">
 <div class="card-title">RBXL / RBXM → RBXLX</div>
-<div class="fmt-box">Upload file <span class="field">.rbxl</span> / <span class="field">.rbxm</span> (biner) atau <span class="field">.rbxlx</span> / <span class="field">.rbxmx</span> (XML). File biner otomatis dikonversi ke XML. Hasil: <span class="field">.rbxlx</span> siap insert.</div>
+<div class="fmt-box">Upload file <span class="field">.rbxl</span> / <span class="field">.rbxm</span> (biner) atau <span class="field">.rbxlx</span> / <span class="field">.rbxmx</span> (XML). Hasil: <span class="field">.rbxlx</span> siap insert.</div>
 <input type="file" id="convFile" accept=".rbxl,.rbxm,.rbxlx,.rbxmx" style="display:none" onchange="doConvert()">
 <button class="btn-cyan" onclick="document.getElementById('convFile').click()">Pilih File (.rbxl / .rbxm / .rbxlx)</button>
 <div class="result" id="convResult"></div>
+</div>
+</div>
+
+<div class="panel" id="tab3">
+<div class="warn-box">
+<b>Butuh API Key Roblox.</b> Buat di
+<a href="https://create.roblox.com/dashboard/credentials" target="_blank">Creator Dashboard → Credentials</a>.
+Aktifkan permission <b>Assets API: Read & Write</b>. IP: Unrestricted.
+</div>
+<div class="card">
+<div class="card-title">Akun Roblox</div>
+<input type="text" class="inp" id="upUsername" placeholder="Username Roblox..." autocomplete="username">
+<input type="password" class="inp" id="upApiKey" placeholder="API Key Roblox...">
+</div>
+<div class="card">
+<div class="card-title">File Model</div>
+<div class="drop" id="upDrop">
+<div class="drop-icon">📦</div>
+<div class="drop-text">Klik atau drop file di sini</div>
+<div class="drop-hint">.rbxm / .rbxmx — max 3 MB</div>
+</div>
+<input type="file" id="upFileInput" accept=".rbxm,.rbxmx" hidden>
+<input type="text" class="inp" id="upName" placeholder="Nama asset (opsional)">
+<input type="text" class="inp" id="upDesc" placeholder="Deskripsi (opsional)">
+<button class="btn-cyan" id="upBtn" onclick="doUploadRbxm()">UPLOAD KE ROBLOX</button>
+<div class="result" id="upResult"></div>
 </div>
 </div>
 
@@ -1019,20 +1345,20 @@ let detectTimer=null;
 let lastDetect=null;
 function switchTab(i){document.querySelectorAll('.nav-btn').forEach((b,j)=>b.classList.toggle('active',i===j));document.querySelectorAll('.panel').forEach((p,j)=>p.classList.toggle('active',i===j));}
 function updateWA(){if(!lastLookup.name)return;const text="Beli Key NANG%0ANama: "+encodeURIComponent(lastLookup.name)+"%0ARoblox ID: "+lastLookup.uid+"%0ABukti TF: [screenshot]";document.getElementById('waBtn').href="https://wa.me/"+WA_NUMBER+"?text="+text;document.getElementById('waNama').textContent=lastLookup.name;document.getElementById('waUid').textContent=lastLookup.uid;}
-async function doLookup(){const uid=document.getElementById('lookupId').value.trim();const box=document.getElementById('lookupResult');if(!uid)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Mencari...';try{const r=await fetch('/?lookup='+encodeURIComponent(uid));const d=await r.json();if(d.name){lastLookup={uid:d.uid,name:d.name};updateWA();box.style.display='none';const ex=document.getElementById('userCard');if(ex)ex.remove();const card=document.createElement('div');card.id='userCard';card.className='user-card';card.innerHTML='<div class="user-avatar">'+d.name.charAt(0).toUpperCase()+'</div><div class="user-info"><div class="user-name">'+d.name+'</div><div class="user-id">ID: '+d.uid+'</div></div>';box.parentNode.insertBefore(card,box.nextSibling);}else{box.className='result err';box.innerHTML='User ID tidak ditemukan';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
+async function doLookup(){const uid=document.getElementById('lookupId').value.trim();const box=document.getElementById('lookupResult');if(!uid)return;box.style.display='block';box.className='result info';box.innerHTML='<span class="spinner"></span>Mencari...';try{const r=await fetch('/?lookup='+encodeURIComponent(uid));const d=await r.json();if(d.name){lastLookup={uid:d.uid,name:d.name};updateWA();box.style.display='none';const ex=document.getElementById('userCard');if(ex)ex.remove();const card=document.createElement('div');card.id='userCard';card.className='user-card';card.innerHTML='<div class="user-avatar">'+d.name.charAt(0).toUpperCase()+'</div><div class="user-info"><div class="user-name">'+d.name+'</div><div class="user-id">ID: '+d.uid+'</div></div>';box.parentNode.insertBefore(card,box.nextSibling);}else{box.className='result err';box.innerHTML='User ID tidak ditemukan';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 let lookupT;document.getElementById('lookupId').addEventListener('input',()=>{clearTimeout(lookupT);lookupT=setTimeout(doLookup,600);});
 function openGen(){document.getElementById('genPanel').classList.add('show');}
 function closeGen(){document.getElementById('genPanel').classList.remove('show');document.getElementById('genPw').value='';document.getElementById('genForm').style.display='none';document.getElementById('genResult').style.display='none';ownerPw=null;document.getElementById('genPw').disabled=false;}
 document.getElementById('genPanel').addEventListener('click',(e)=>{if(e.target.id==='genPanel')closeGen();});
 async function doLogin(){const pw=document.getElementById('genPw').value;if(!pw)return;try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:pw,uid:'1'})});const d=await r.json();if(d.error==='password salah'){document.getElementById('genPw').value='';document.getElementById('genPw').placeholder='password salah';}else if(d.ok){ownerPw=pw;document.getElementById('genForm').style.display='block';document.getElementById('genPw').disabled=true;}}catch(e){}}
-async function doGenerate(){const uid=document.getElementById('genUid').value.trim();const box=document.getElementById('genResult');if(!uid||!ownerPw)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Generating...';try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:ownerPw,uid:uid})});const d=await r.json();if(d.ok){box.className='result ok';box.innerHTML='<b>Username:</b> '+(d.username||'Unknown')+'<div class="key-line">'+d.key+'</div><b style="color:#6b6b8a;font-size:.72rem">Expires:</b> '+d.expires+'<br><b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b><a href="'+d.authLink+'" target="_blank" class="link-line">'+d.authLink+'</a><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';}else{box.className='result err';box.innerHTML=d.error||'Gagal';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
+async function doGenerate(){const uid=document.getElementById('genUid').value.trim();const box=document.getElementById('genResult');if(!uid||!ownerPw)return;box.style.display='block';box.className='result info';box.innerHTML='<span class="spinner"></span>Generating...';try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:ownerPw,uid:uid})});const d=await r.json();if(d.ok){box.className='result ok';box.innerHTML='<b>Username:</b> '+(d.username||'Unknown')+'<div class="key-line">'+d.key+'</div><b style="color:#6b6b8a;font-size:.72rem">Expires:</b> '+d.expires+'<br><b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b><a href="'+d.authLink+'" target="_blank" class="link-line">'+d.authLink+'</a><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';}else{box.className='result err';box.innerHTML=d.error||'Gagal';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 async function detectLinkNow(url){const box=document.getElementById('detectBox');const badge=document.getElementById('detectBadge');const text=document.getElementById('detectText');if(!url||url.length<8){box.classList.remove('show');lastDetect=null;return;}try{const r=await fetch('/?detect='+encodeURIComponent(url));const d=await r.json();const det=d.detection;if(!det){box.classList.remove('show');return;}lastDetect=det;box.className='detect show '+det.auto;const labels={high:'AUTO',medium:'COBA',low:'MANUAL',none:'INVALID'};badge.textContent=det.type+' · '+labels[det.auto];text.textContent=det.note;}catch(e){box.classList.remove('show');}}
 document.getElementById('bypassUrl').addEventListener('input',()=>{clearTimeout(detectTimer);detectTimer=setTimeout(()=>detectLinkNow(document.getElementById('bypassUrl').value.trim()),500);});
 async function doBypass(){
   const link=document.getElementById('bypassUrl').value.trim();
   const box=document.getElementById('bypassResult');
   if(!link)return;
-  box.style.display='block';box.className='result';
+  box.style.display='block';box.className='result info';
   const detLabel=lastDetect?'('+lastDetect.type+')':'';
   box.innerHTML='<span class="spinner"></span>Memproses '+detLabel+' — max 10 detik...';
   try{
@@ -1046,7 +1372,7 @@ async function doBypass(){
     if(d.result){
       const url=d.result;
       window._bypassUrl=url;
-      const cls=d.source==='browserless'?'ok':(d.source==='original'?'warn':'ok');
+      const cls=d.source==='original'?'warn':'ok';
       box.className='result '+cls;
       let label='Bypass berhasil!';
       if(d.source==='original')label='Belum selesai — klik bypass lagi:';
@@ -1063,7 +1389,7 @@ async function doConvert(){
   if(!input.files||!input.files[0])return;
   const file=input.files[0];
   if(file.size>50*1024*1024){box.style.display='block';box.className='result err';box.innerHTML='File > 50 MB.';return;}
-  box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Mengkonversi '+file.name+'...';
+  box.style.display='block';box.className='result info';box.innerHTML='<span class="spinner"></span>Mengkonversi '+file.name+'...';
   try{
     const buf=await file.arrayBuffer();
     const r=await fetch('/api/convert',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:buf});
@@ -1071,14 +1397,214 @@ async function doConvert(){
     let errMsg=null;
     try{const j=JSON.parse(text);if(j&&j.ok===false){errMsg=j.error||'Konversi gagal';}}catch{}
     if(!r.ok||errMsg){box.className='result err';box.innerHTML='Gagal: '+(errMsg||text.slice(0,200));return;}
-    const outName=file.name.replace(/\.(rbxl|rbxm)$/i,'.rbxlx')||('converted-'+Date.now()+'.rbxlx');
+    const outName=file.name.replace(/\\.(rbxl|rbxm)$/i,'.rbxlx')||('converted-'+Date.now()+'.rbxlx');
     const blob=new Blob([text],{type:'text/xml'});
     const url=URL.createObjectURL(blob);
     box.className='result ok';
-    box.innerHTML='Berhasil dikonversi!<div class="key-line"><a href="'+url+'" download="'+outName+'" style="color:#00d4ff;text-decoration:none">⬇ Download '+outName+'</a></div><div style="font-size:.72rem;color:#6b6b8a;margin-top:6px">File XML siap di-insert ke Roblox Studio.</div>';
+    box.innerHTML='Berhasil dikonversi!<div class="key-line"><a href="'+url+'" download="'+outName+'" style="color:#00d4ff;text-decoration:none">⬇ Download '+outName+'</a></div>';
   }catch(e){
     box.className='result err';box.innerHTML='Error: '+e.message;
   }
 }
+// === UPLOADER ===
+let _upFile=null;
+const upDrop=document.getElementById('upDrop');
+const upFileInput=document.getElementById('upFileInput');
+const upResult=document.getElementById('upResult');
+upDrop.addEventListener('click',()=>upFileInput.click());
+upDrop.addEventListener('dragover',e=>{e.preventDefault();upDrop.classList.add('over');});
+upDrop.addEventListener('dragleave',()=>upDrop.classList.remove('over'));
+upDrop.addEventListener('drop',e=>{e.preventDefault();upDrop.classList.remove('over');if(e.dataTransfer.files.length)_upHandleFile(e.dataTransfer.files[0]);});
+upFileInput.addEventListener('change',e=>{if(e.target.files.length)_upHandleFile(e.target.files[0]);});
+function _upHandleFile(f){
+  const n=f.name.toLowerCase();
+  if(!n.endsWith('.rbxm')&&!n.endsWith('.rbxmx'))return _upShow('err','File harus .rbxm / .rbxmx');
+  if(f.size>3*1024*1024)return _upShow('err','File > 3 MB. Gak bisa upload.');
+  _upFile=f;
+  upDrop.classList.add('done');
+  upDrop.querySelector('.drop-icon').textContent='✓';
+  upDrop.querySelector('.drop-text').textContent=f.name;
+  upDrop.querySelector('.drop-hint').textContent=(f.size/1024).toFixed(1)+' KB';
+  upResult.style.display='none';
+}
+function _upShow(type,html){upResult.className='result '+type;upResult.innerHTML=html;}
+async function doUploadRbxm(){
+  const username=document.getElementById('upUsername').value.trim();
+  const apiKey=document.getElementById('upApiKey').value.trim();
+  const name=document.getElementById('upName').value.trim();
+  const desc=document.getElementById('upDesc').value.trim();
+  if(!username)return _upShow('err','Username kosong');
+  if(!apiKey)return _upShow('err','API Key kosong');
+  if(!_upFile)return _upShow('err','Belum pilih file');
+  const btn=document.getElementById('upBtn');
+  btn.disabled=true;btn.textContent='...';
+  _upShow('info','<span class="spinner"></span>Upload ke Roblox, tunggu...');
+  try{
+    const base64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=rej;r.readAsDataURL(_upFile);});
+    const lkRes=await fetch('/api/lookup-username',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username})});
+    const lk=await lkRes.json();
+    if(!lk.ok)throw new Error(lk.error);
+    const upRes=await fetch('/api/upload-rbxm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apiKey,userId:lk.userId,fileName:_upFile.name,fileBase64:base64,displayName:name||_upFile.name.replace(/\\.(rbxm|rbxmx)$/i,''),description:desc||'Upload via NANG web'})});
+    const up=await upRes.json();
+    if(!up.ok)throw new Error(up.error);
+    let assetId=null;
+    for(let i=0;i<30;i++){
+      await new Promise(r=>setTimeout(r,1500));
+      const st=await fetch('/api/upload-status?id='+encodeURIComponent(up.operationId)+'&k='+encodeURIComponent(apiKey)).then(r=>r.json());
+      if(!st.ok)throw new Error(st.error);
+      if(st.done){if(st.error)throw new Error(st.error);assetId=st.assetId;break;}
+    }
+    if(!assetId)throw new Error('Timeout. Cek inventory Roblox beberapa menit lagi.');
+    _upShow('ok','<b>BERHASIL</b><div class="key-line">Asset ID: '+assetId+'</div><a class="link-line" href="https://www.roblox.com/library/'+assetId+'" target="_blank">https://www.roblox.com/library/'+assetId+'</a><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+assetId+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY ID\\',1500)">COPY ID</button>');
+  }catch(e){_upShow('err','Gagal: '+e.message);}
+  finally{btn.disabled=false;btn.textContent='UPLOAD KE ROBLOX';}
+}
+</script></body></html>`;
+}
+
+// ═══════════════════════════════════════
+// RESELLER PANEL
+// ═══════════════════════════════════════
+function resellerPage() {
+  return `<!DOCTYPE html>
+<html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NANG Reseller</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--pink:#e03c8a;--purple:#9b4de0;--cyan:#00d4ff;--green:#00e87a;--yellow:#ffc832;--red:#ff6b6b;--bg:#08080f;--bg2:#0f0f1a;--bg3:#16162a;--border:#ffffff12;--text:#e8e8f0;--muted:#6b6b8a}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-height:100vh;padding:24px 16px}
+.hidden{display:none!important}
+.wrap{max-width:520px;margin:0 auto}
+.hero{text-align:center;margin-bottom:26px}
+.logo{font-size:2.2rem;font-weight:900;background:linear-gradient(135deg,var(--pink),var(--purple),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.sub{color:var(--muted);font-size:.8rem;margin-top:4px}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:12px}
+.card h3{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;font-weight:700;margin-bottom:14px}
+.tabs{display:flex;gap:4px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:4px;margin-bottom:16px}
+.tabs button{flex:1;padding:9px;border:none;border-radius:9px;background:transparent;color:var(--muted);font-family:inherit;font-weight:600;font-size:.85rem;cursor:pointer}
+.tabs button.on{background:linear-gradient(135deg,rgba(224,60,138,.2),rgba(155,77,224,.2));color:#fff}
+.inp{width:100%;padding:11px 14px;background:var(--bg3);border:1px solid var(--border);border-radius:9px;color:var(--text);font-size:.88rem;outline:none;margin-bottom:10px;font-family:inherit}
+.inp:focus{border-color:rgba(224,60,138,.5)}
+.btn{width:100%;padding:12px;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;border:none;border-radius:10px;font-weight:700;font-size:.9rem;cursor:pointer;font-family:inherit;margin-bottom:6px}
+.btn.small{padding:9px;font-size:.82rem;margin-bottom:0}
+.btn.gray{background:var(--bg3);color:var(--text);border:1px solid var(--border)}
+.result{padding:12px;border-radius:9px;font-size:.82rem;margin-top:10px;display:none;line-height:1.55;word-break:break-all}
+.result.ok{background:rgba(0,232,122,.06);border:1px solid rgba(0,232,122,.3);color:var(--green);display:block}
+.result.err{background:rgba(255,80,80,.06);border:1px solid rgba(255,80,80,.3);color:var(--red);display:block}
+.result.warn{background:rgba(255,200,50,.06);border:1px solid rgba(255,200,50,.3);color:var(--yellow);display:block}
+.key-line{font-family:'JetBrains Mono',monospace;font-size:1rem;font-weight:700;color:var(--green);padding:10px;background:#0a1520;border-radius:7px;word-break:break-all;margin:8px 0}
+.user-row{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg3);border-radius:9px;margin-bottom:6px;gap:8px;flex-wrap:wrap}
+.user-row .name{font-weight:700;font-size:.9rem}
+.user-row .meta{font-size:.7rem;color:var(--muted)}
+.badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
+.badge.pending{background:rgba(255,200,50,.15);color:var(--yellow)}
+.badge.reseller{background:rgba(0,212,255,.15);color:var(--cyan)}
+.badge.admin{background:rgba(155,77,224,.2);color:#c899ff}
+.badge.owner{background:rgba(224,60,138,.2);color:var(--pink)}
+.badge.banned{background:rgba(255,80,80,.15);color:var(--red)}
+.row-actions{display:flex;gap:4px;flex-wrap:wrap}
+.row-actions button{padding:5px 10px;border:none;border-radius:6px;font-size:.7rem;font-weight:700;cursor:pointer;font-family:inherit;background:var(--bg2);color:var(--text);border:1px solid var(--border)}
+.row-actions button:hover{background:var(--bg3)}
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+.stat{background:var(--bg3);padding:12px;border-radius:9px}
+.stat .label{font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700}
+.stat .value{font-size:1.4rem;font-weight:900;margin-top:4px}
+.key-item{padding:10px;background:var(--bg3);border-radius:8px;margin-bottom:6px;font-size:.75rem}
+.key-item .k{font-family:'JetBrains Mono',monospace;color:var(--green);font-weight:700;word-break:break-all}
+.key-item .meta{color:var(--muted);font-size:.68rem;margin-top:4px}
+.spinner{display:inline-block;width:12px;height:12px;border:2px solid rgba(255,255,255,.1);border-top-color:var(--pink);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:11px}
+.topbar .who{font-size:.85rem}
+.topbar .who b{color:var(--text)}
+.topbar .role{font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700}
+</style></head><body>
+<div class="wrap">
+<div class="hero"><div class="logo">NANG RESELLER</div><div class="sub">Panel reseller key system</div></div>
+
+<div id="viewAuth">
+  <div class="tabs">
+    <button id="tabLogin" class="on" onclick="switchAuth(0)">Masuk</button>
+    <button id="tabRegister" onclick="switchAuth(1)">Daftar</button>
+  </div>
+  <div class="card" id="cardLogin">
+    <h3>Login</h3>
+    <input class="inp" id="liUser" placeholder="Username" autocomplete="username">
+    <input class="inp" id="liPass" type="password" placeholder="Password" autocomplete="current-password">
+    <button class="btn" onclick="doLogin()">Masuk</button>
+    <div class="result" id="liResult"></div>
+  </div>
+  <div class="card hidden" id="cardRegister">
+    <h3>Daftar Reseller</h3>
+    <input class="inp" id="rgUser" placeholder="Username (huruf/angka/_)">
+    <input class="inp" id="rgPass" type="password" placeholder="Password (min 5 karakter)">
+    <input class="inp" id="rgPass2" type="password" placeholder="Konfirmasi password">
+    <button class="btn" onclick="doRegister()">Daftar</button>
+    <div class="result" id="rgResult"></div>
+  </div>
+</div>
+
+<div id="viewDash" class="hidden">
+  <div class="topbar">
+    <div>
+      <div class="who">Halo, <b id="uName">—</b></div>
+      <div class="role" id="uRole">—</div>
+    </div>
+    <button class="btn small gray" style="width:auto;padding:7px 12px" onclick="doLogout()">Logout</button>
+  </div>
+
+  <div class="card">
+    <h3>Status</h3>
+    <div class="stat-grid">
+      <div class="stat"><div class="label">Kuota / hari</div><div class="value" id="stQuota">—</div></div>
+      <div class="stat"><div class="label">Hari ini</div><div class="value" id="stToday">—</div></div>
+      <div class="stat"><div class="label">Sisa</div><div class="value" id="stLeft">—</div></div>
+      <div class="stat"><div class="label">Total keys</div><div class="value" id="stTotal">—</div></div>
+    </div>
+    <div id="pendingMsg" class="result warn" style="display:none">Akun lu masih <b>pending</b>. Tunggu owner approve dulu.</div>
+  </div>
+
+  <div class="card">
+    <h3>Generate Key</h3>
+    <input class="inp" id="genUid" placeholder="Roblox User ID (angka)">
+    <button class="btn" onclick="doGenerate()">Generate</button>
+    <div class="result" id="genResult"></div>
+  </div>
+
+  <div class="card">
+    <h3>Riwayat Key</h3>
+    <div id="keyList"><div style="color:var(--muted);font-size:.8rem">Belum ada key.</div></div>
+  </div>
+
+  <div class="card hidden" id="ownerCard">
+    <h3>Owner — Manage Users</h3>
+    <button class="btn small gray" onclick="loadOwnerUsers()">Refresh list</button>
+    <div id="ownerUsers" style="margin-top:10px"></div>
+  </div>
+</div>
+
+</div>
+
+<script>
+const TOKEN_KEY='nang_reseller_token';
+let me=null;
+function $(id){return document.getElementById(id);}
+function show(id,v){$(id).classList.toggle('hidden',!v);}
+function switchAuth(i){$('tabLogin').classList.toggle('on',i===0);$('tabRegister').classList.toggle('on',i===1);show('cardLogin',i===0);show('cardRegister',i===1);}
+function setRes(id,cls,html){const e=$(id);e.className='result '+cls;e.innerHTML=html;}
+function clearRes(id){const e=$(id);e.className='result';e.innerHTML='';}
+async function api(route,body){const opts={method:body?'POST':'GET'};if(body){opts.headers={'Content-Type':'application/json'};opts.body=JSON.stringify(body);}const r=await fetch('/api/'+route,opts);return r.json();}
+function getToken(){return localStorage.getItem(TOKEN_KEY);}
+function setToken(t){t?localStorage.setItem(TOKEN_KEY,t):localStorage.removeItem(TOKEN_KEY);}
+async function doLogin(){const username=$('liUser').value.trim();const password=$('liPass').value;if(!username||!password)return setRes('liResult','err','Isi username & password');setRes('liResult','warn','<span class="spinner"></span>Masuk...');const d=await api('reseller/login',{username,password});if(d.error)return setRes('liResult','err',d.error);setToken(d.token);await refreshMe();setRes('liResult','ok','Login berhasil');setTimeout(()=>{clearRes('liResult');$('liPass').value='';},800);}
+async function doRegister(){const username=$('rgUser').value.trim();const password=$('rgPass').value;const pass2=$('rgPass2').value;if(password!==pass2)return setRes('rgResult','err','Password tidak sama');setRes('rgResult','warn','<span class="spinner"></span>Mendaftar...');const d=await api('reseller/register',{username,password});if(d.error)return setRes('rgResult','err',d.error);setRes('rgResult','ok',d.message||'Terdaftar. Tunggu approve owner.');$('rgUser').value='';$('rgPass').value='';$('rgPass2').value='';}
+async function doLogout(){const token=getToken();if(token)await api('reseller/logout',{token});setToken(null);me=null;show('viewDash',false);show('viewAuth',true);}
+async function refreshMe(){const token=getToken();if(!token){show('viewDash',false);show('viewAuth',true);return;}const d=await api('reseller/me?token='+encodeURIComponent(token));if(!d.ok){setToken(null);show('viewDash',false);show('viewAuth',true);return;}me=d.user;show('viewAuth',false);show('viewDash',true);$('uName').textContent=me.username;$('uRole').textContent=me.role;$('uRole').className='role badge '+me.role;$('stQuota').textContent=me.role==='reseller'?me.quota:'∞';$('stToday').textContent=me.keysToday||0;$('stLeft').textContent=me.role==='reseller'?Math.max(0,me.quota-(me.keysToday||0)):'∞';$('stTotal').textContent=(me.keys||[]).length;const pend=(me.role==='pending'||me.role==='banned');show('pendingMsg',pend);$('pendingMsg').innerHTML=me.role==='banned'?'Akun lu di-<b>ban</b>. Hubungi owner.':'Akun lu masih <b>pending</b>. Tunggu owner approve.';const kl=$('keyList');if(!me.keys||!me.keys.length){kl.innerHTML='<div style="color:var(--muted);font-size:.8rem">Belum ada key.</div>';}else{kl.innerHTML=me.keys.map(k=>('<div class="key-item"><div class="k">'+k.key+'</div><div class="meta">UID: '+k.uid+' · '+(k.name||'?')+' · '+new Date(k.ts).toLocaleString('id-ID')+'</div></div>')).join('');}show('ownerCard',me.role==='owner');if(me.role==='owner')loadOwnerUsers();}
+async function doGenerate(){const token=getToken();const uid=$('genUid').value.trim();if(!uid)return setRes('genResult','err','Isi Roblox User ID');setRes('genResult','warn','<span class="spinner"></span>Generate...');const d=await api('reseller/generate',{token,uid});if(d.error)return setRes('genResult','err',d.error);setRes('genResult','ok','<b>'+(d.username||'Unknown')+'</b><div class="key-line">'+d.key+'</div><div style="font-size:.75rem;color:var(--muted)">Berlaku: '+d.expires+' · Sisa kuota: '+d.remaining+'</div>');await refreshMe();}
+async function loadOwnerUsers(){const token=getToken();const d=await api('owner/users?token='+encodeURIComponent(token));if(d.error)return;const c=$('ownerUsers');c.innerHTML=d.users.map(u=>('<div class="user-row"><div><div class="name">'+u.username+' <span class="badge '+u.role+'">'+u.role+'</span></div><div class="meta">quota '+u.quota+' · hari ini '+u.keysToday+' · total '+u.totalKeys+'</div></div><div class="row-actions">'+(u.role!=='reseller'?'<button onclick="setRole(\\''+u.username+'\\',\\'reseller\\')">Approve</button>':'')+(u.role!=='admin'?'<button onclick="setRole(\\''+u.username+'\\',\\'admin\\')">Admin</button>':'')+(u.role!=='banned'?'<button onclick="setRole(\\''+u.username+'\\',\\'banned\\')">Ban</button>':'<button onclick="setRole(\\''+u.username+'\\',\\'pending\\')">Unban</button>')+'<button onclick="editQuota(\\''+u.username+'\\','+u.quota+')">Quota</button><button onclick="delUser(\\''+u.username+'\\')">Hapus</button></div></div>')).join('');}
+async function setRole(username,role){const token=getToken();const d=await api('owner/setrole',{token,username,role});if(d.error)return alert(d.error);loadOwnerUsers();}
+async function editQuota(username,current){const v=prompt('Kuota harian untuk '+username+':',current);if(v===null)return;const token=getToken();const d=await api('owner/setquota',{token,username,quota:parseInt(v)||0});if(d.error)return alert(d.error);loadOwnerUsers();}
+async function delUser(username){if(!confirm('Hapus user '+username+'?'))return;const token=getToken();const d=await api('owner/delete',{token,username});if(d.error)return alert(d.error);loadOwnerUsers();}
+document.addEventListener('DOMContentLoaded',()=>{refreshMe();['liUser','liPass'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();}));['rgUser','rgPass','rgPass2'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doRegister();}));$('genUid').addEventListener('keydown',e=>{if(e.key==='Enter')doGenerate();});});
 </script></body></html>`;
 }
