@@ -1,4 +1,4 @@
-const BUILD = "68.8";
+const BUILD = "68.9";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -64,7 +64,7 @@ async function storeDel(key) {
 function hashPw(pw, salt) { return createHash("sha256").update(salt + "::" + pw).digest("hex"); }
 function randomHex(n) { return randomBytes(n).toString("hex"); }
 
-const DEFAULT_STORE = { price: 500, wa: "", name: "", active: false };
+const DEFAULT_STORE = { price: 500, wa: "", name: "", active: false, qr: "" };
 
 function ensureStore(u) {
   if (!u) return u;
@@ -73,6 +73,7 @@ function ensureStore(u) {
   if (typeof u.store.wa !== "string") u.store.wa = "";
   if (typeof u.store.name !== "string") u.store.name = "";
   if (typeof u.store.active !== "boolean") u.store.active = false;
+  if (typeof u.store.qr !== "string") u.store.qr = "";
   return u;
 }
 
@@ -445,7 +446,7 @@ async function handleApi(req, res, path, method, params, ctx) {
       passwordHash: hashPw(password, salt), salt,
       role: "member", quota: DEFAULT_QUOTA, keysToday: 0, lastReset: Date.now(),
       createdAt: Date.now(), keys: [],
-      store: { price: 500, wa: "", name: username, active: false },
+      store: { price: 500, wa: "", name: username, active: false, qr: "" },
     };
     await saveUser(user);
     await storeSet(emailKey, username);
@@ -568,7 +569,10 @@ async function handleApi(req, res, path, method, params, ctx) {
     let wa = String(body.wa || "").trim().replace(/[^0-9]/g, "");
     const name = String(body.name || "").trim().slice(0, 40);
     const active = !!body.active;
+    let qr = String(body.qr || "").trim();
 
+    if (qr && !qr.startsWith("data:image/")) return res.status(200).json({ error: "Format QR tidak valid" });
+    if (qr.length > 700000) return res.status(200).json({ error: "QR terlalu besar (max ~500 KB)" });
     if (wa && wa.length < 8) return res.status(200).json({ error: "Nomor WA minimal 8 digit" });
     if (wa.startsWith("0")) wa = "62" + wa.slice(1);
 
@@ -577,6 +581,7 @@ async function handleApi(req, res, path, method, params, ctx) {
       wa,
       name: name || u.username,
       active: (active && wa.length >= 8) ? true : false,
+      qr: qr,
     };
     await saveUser(u);
     sendWebhook([
@@ -585,11 +590,12 @@ async function handleApi(req, res, path, method, params, ctx) {
       { name: "Price", value: "Rp" + price, inline: true },
       { name: "WA", value: wa || "-", inline: true },
       { name: "Active", value: u.store.active ? "Ya" : "Tidak", inline: true },
+      { name: "QR", value: qr ? "Ada" : "Tidak", inline: true },
     ]);
     return res.status(200).json({ ok: true, store: u.store });
   }
 
-  // STORE — list all active (buat dropdown Beli Key)
+  // STORE — list active
   if (route === "stores/list" && method === "GET") {
     const u = await authFromToken();
     if (!u) return res.status(200).json({ error: "not logged in" });
@@ -601,11 +607,23 @@ async function handleApi(req, res, path, method, params, ctx) {
         name: x.store.name || x.username,
         price: x.store.price || 500,
         wa: x.store.wa,
+        hasQr: !!(x.store.qr && x.store.qr.length > 0),
         role: x.role,
       }));
     const order = { owner: 0, admin: 1, reseller: 2 };
     stores.sort((a, b) => (order[a.role] || 9) - (order[b.role] || 9) || a.name.localeCompare(b.name));
     return res.status(200).json({ ok: true, stores });
+  }
+
+  // STORE — get QR data
+  if (route === "stores/qr" && method === "GET") {
+    const u = await authFromToken();
+    if (!u) return res.status(200).json({ error: "not logged in" });
+    const target = String(params.get("username") || "").trim();
+    if (!target) return res.status(200).json({ error: "username kosong" });
+    const t = await getUser(target);
+    if (!t || !t.store || !t.store.active || !t.store.wa) return res.status(200).json({ ok: true, qr: "" });
+    return res.status(200).json({ ok: true, qr: t.store.qr || "" });
   }
 
   // STORE — owner/admin set store orang lain
@@ -626,11 +644,16 @@ async function handleApi(req, res, path, method, params, ctx) {
     const active = !!body.active;
     if (wa.startsWith("0")) wa = "62" + wa.slice(1);
 
+    let qr = String(body.qr || "").trim();
+    if (qr && !qr.startsWith("data:image/")) qr = "";
+    if (qr.length > 700000) qr = "";
+
     u.store = {
       price,
       wa,
       name: name || u.username,
       active: (active && wa.length >= 8) ? true : false,
+      qr: qr || (u.store && u.store.qr) || "",
     };
     await saveUser(u);
     return res.status(200).json({ ok: true, store: u.store });
@@ -905,12 +928,19 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 </div>
 
 <div class="card">
-<div class="card-title">Pembayaran QRIS</div>
+<div class="card-title">Pembayaran</div>
 <div class="qr-wrap">
-<img src="/qr.png" class="qr-img" alt="QR" onerror="this.outerHTML='<div class=qr-img-placeholder>QR<br>belum<br>tersedia</div>'">
-<div class="qr-info"><div class="price-badge" id="buyPrice">Rp500 / Key</div><div class="qr-steps">Scan QR di kiri<br>Transfer <span id="buyPriceTransfer">Rp500</span><br>Chat WA penjual<br>Key dikirim otomatis</div></div>
+<img id="buyQrImg" class="qr-img" style="display:none;background:#fff;padding:4px" alt="QRIS">
+<div id="buyQrPlaceholder" class="qr-img-placeholder">QR<br>belum<br>tersedia</div>
+<div class="qr-info">
+  <div class="price-badge" id="buyPrice">Rp500 / Key</div>
+  <div class="qr-steps">
+    Transfer <span id="buyPriceTransfer">Rp500</span><br>
+    <span style="font-size:.7rem;color:var(--muted)">Scan QR atau klik nomor WA di bawah</span>
+  </div>
 </div>
-<div class="fmt-box"><span class="label">Format pesan WA:</span><br><span class="field" id="buyWaName">Beli Key NANG</span><br>Nama: <span class="field" id="waNama">[isi di bawah]</span><br>Roblox ID: <span class="field" id="waUid">[isi di bawah]</span><br>Bukti TF: <span class="field">[screenshot]</span></div>
+</div>
+<div class="fmt-box"><span class="label">Format pesan WA:</span><br><span class="field" id="buyWaName">Beli Key NANG</span><br>Nama: <span class="field" id="waNama">[isi di bawah]</span><br>Roblox ID: <span class="field" id="waUid">[isi di bawah]</span><br>Bukti TF: <span class="field">[screenshot]</span><br><br><span class="label">Nomor WA penjual:</span><br><a href="#" id="buyWaNumLink" target="_blank" style="color:var(--green);font-family:'JetBrains Mono',monospace;font-weight:700;font-size:.9rem;text-decoration:none">-</a></div>
 <a href="#" class="wa-btn" id="waBtn" target="_blank"><svg class="wa-icon" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347"/></svg><span id="buyWaBtnText">Chat WhatsApp Penjual</span></a>
 </div>
 
@@ -1014,9 +1044,28 @@ Limit web ini: max <span class="field">3 MB</span>
   <span>Aktifkan toko di halaman Beli Key</span>
   <div class="switch" id="stActiveSw" onclick="toggleStoreActive()"></div>
 </div>
+</div>
+
+<div class="card">
+<div class="card-title">📷 QRIS (opsional)</div>
+<div class="fmt-box">Upload gambar QRIS. Kalau ada, user bisa scan. Kalau kosong, user cuma bisa chat WA.</div>
+<input type="file" id="stQrFile" accept="image/*" style="display:none" onchange="onQrFileChange(event)">
+<div id="stQrPreviewWrap" class="hidden" style="text-align:center;margin-bottom:12px">
+  <img id="stQrPreview" style="max-width:200px;max-height:200px;border-radius:12px;border:1px solid var(--border);background:#fff;padding:6px">
+</div>
+<div id="stQrEmpty" class="drop" onclick="document.getElementById('stQrFile').click()">
+<div class="drop-icon">📷</div>
+<div class="drop-text">Klik upload QRIS</div>
+<div class="drop-hint">PNG / JPG — max 500 KB</div>
+</div>
+<button class="btn-main" id="stQrDelBtn" style="background:var(--bg3);color:var(--red);border:1px solid var(--border);display:none;margin-top:8px" onclick="delQr()">Hapus QR</button>
+</div>
+
+<div class="card">
 <button class="btn-cyan" onclick="doSaveStore()">SIMPAN TOKO</button>
 <div class="result" id="stResult"></div>
 </div>
+
 <div class="card">
 <div class="card-title">Preview</div>
 <div class="fmt-box" id="stPreview">
@@ -1061,7 +1110,8 @@ let OWNER_TOKEN = localStorage.getItem('nang_owner') || null;
 let ME = null;
 let lastLookup={uid:null,name:null};
 let STORES = [];
-let MY_STORE = { price: 500, wa: "", name: "", active: false };
+let MY_STORE = { price: 500, wa: "", name: "", active: false, qr: "" };
+let _qrData = "";
 
 function $(id){return document.getElementById(id);}
 function apiCall(url, opts){
@@ -1220,16 +1270,43 @@ function onStoreChange(){
   const idx = parseInt($('buyStoreSel').value);
   if(isNaN(idx) || !STORES[idx]){
     $('buyStoreInfo').innerHTML = 'Pilih penjual di atas.';
+    $('buyQrImg').style.display = 'none';
+    $('buyQrPlaceholder').style.display = 'flex';
+    $('buyWaNumLink').textContent = '-';
+    $('buyWaNumLink').href = '#';
     return;
   }
   const s = STORES[idx];
   const price = s.price || 500;
-  $('buyStoreInfo').innerHTML = 'Penjual: <span class="field">'+s.name+'</span><br>Harga: <span class="field">'+fmtRp(price)+'</span><br>WA: <span class="field">'+s.wa+'</span>';
+  $('buyStoreInfo').innerHTML = 'Penjual: <span class="field">'+s.name+'</span><br>Harga: <span class="field">'+fmtRp(price)+'</span><br>WA: <span class="field">+'+s.wa+'</span>';
   $('buyPrice').textContent = fmtRp(price) + ' / Key';
   $('buyPriceTransfer').textContent = fmtRp(price);
   $('buyWaName').textContent = 'Beli Key ' + s.name;
   $('buyWaBtnText').textContent = 'Chat WhatsApp ' + s.name;
+  $('buyWaNumLink').textContent = '+' + s.wa;
+  $('buyWaNumLink').href = 'https://wa.me/' + s.wa;
   updateWA();
+
+  if(s.hasQr){
+    $('buyQrImg').style.display = 'block';
+    $('buyQrPlaceholder').style.display = 'none';
+    $('buyQrImg').src = "";
+    apiCall('/?api=stores/qr&username='+encodeURIComponent(s.username)+'&token='+encodeURIComponent(TOKEN))
+      .then(r => {
+        if(r.ok && r.qr) $('buyQrImg').src = r.qr;
+        else {
+          $('buyQrImg').style.display = 'none';
+          $('buyQrPlaceholder').style.display = 'flex';
+        }
+      })
+      .catch(() => {
+        $('buyQrImg').style.display = 'none';
+        $('buyQrPlaceholder').style.display = 'flex';
+      });
+  } else {
+    $('buyQrImg').style.display = 'none';
+    $('buyQrPlaceholder').style.display = 'flex';
+  }
 }
 
 function updateWA(){
@@ -1328,17 +1405,53 @@ async function refreshStore(){
   if(!TOKEN) return;
   const d = await apiCall('/?api=reseller/store&token='+encodeURIComponent(TOKEN));
   if(!d.ok) return;
-  MY_STORE = d.store || { price: 500, wa: "", name: "", active: false };
+  MY_STORE = d.store || { price: 500, wa: "", name: "", active: false, qr: "" };
   $('stName').value = MY_STORE.name || '';
   $('stPrice').value = MY_STORE.price || 500;
   $('stWa').value = MY_STORE.wa || '';
   $('stActiveSw').classList.toggle('on', !!MY_STORE.active);
+  _qrData = MY_STORE.qr || "";
+  if(_qrData){
+    $('stQrPreview').src = _qrData;
+    $('stQrPreviewWrap').classList.remove('hidden');
+    $('stQrEmpty').classList.add('hidden');
+    $('stQrDelBtn').style.display = 'block';
+  } else {
+    $('stQrPreview').src = "";
+    $('stQrPreviewWrap').classList.add('hidden');
+    $('stQrEmpty').classList.remove('hidden');
+    $('stQrDelBtn').style.display = 'none';
+  }
   updateStorePreview();
 }
 
 function toggleStoreActive(){
   $('stActiveSw').classList.toggle('on');
   updateStorePreview();
+}
+
+function onQrFileChange(e){
+  const f = e.target.files[0];
+  if(!f) return;
+  if(!f.type.startsWith("image/")) { alert("Harus file gambar (PNG/JPG)"); return; }
+  if(f.size > 500*1024) { alert("Max 500 KB"); return; }
+  const r = new FileReader();
+  r.onload = () => {
+    _qrData = r.result;
+    $('stQrPreview').src = _qrData;
+    $('stQrPreviewWrap').classList.remove('hidden');
+    $('stQrEmpty').classList.add('hidden');
+    $('stQrDelBtn').style.display = 'block';
+  };
+  r.readAsDataURL(f);
+  e.target.value = "";
+}
+function delQr(){
+  _qrData = "";
+  $('stQrPreview').src = "";
+  $('stQrPreviewWrap').classList.add('hidden');
+  $('stQrEmpty').classList.remove('hidden');
+  $('stQrDelBtn').style.display = 'none';
 }
 
 function updateStorePreview(){
@@ -1370,7 +1483,7 @@ async function doSaveStore(){
   if(active && wa.length < 8){ box.className='result err'; box.innerHTML='Kalau toko aktif, nomor WA wajib (min 8 digit)'; return; }
   box.className='result info'; box.innerHTML='<span class="spinner"></span>Menyimpan...';
   try {
-    const d = await apiCall('/?api=reseller/store',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN, name, price, wa, active})});
+    const d = await apiCall('/?api=reseller/store',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN, name, price, wa, active, qr: _qrData || ""})});
     if(d.error){ box.className='result err'; box.innerHTML=d.error; return; }
     MY_STORE = d.store;
     box.className='result ok';
