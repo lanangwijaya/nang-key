@@ -1,4 +1,4 @@
-const BUILD = "68.4";
+const BUILD = "68.5";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -95,6 +95,7 @@ async function listUsers() {
 
 const _SECRET = "NANG2024";
 const _EXPIRE_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_QUOTA = 10;
 function _simpleHash(str) { let h = 0; for (let i = 0; i < str.length; i++) h = ((h * 31) + str.charCodeAt(i)) % 1000000007; return h; }
 function _makeKeyAt(uid, ts) {
   const code = Math.floor(ts / 60000) % 10000;
@@ -201,30 +202,6 @@ async function handle(req, res) {
     let parsed;
     try { parsed = JSON.parse(body); } catch { res.status(400).json({ valid: false, error: "bad json" }); return; }
 
-    if (parsed.action === "generate") {
-      if (parsed.pw !== ADMIN_PW) {
-        sendWebhook([
-          { name: "Event", value: "Admin login GAGAL", inline: false },
-          { name: "IP", value: _getClientIP(req), inline: true },
-        ]);
-        res.status(200).json({ error: "password salah" }); return;
-      }
-      const uid = String(parsed.uid || "").trim();
-      if (!uid) { res.status(200).json({ error: "uid kosong" }); return; }
-      const key = _makeKey(uid);
-      const name = await _getRobloxUser(uid);
-      sendWebhook([
-        { name: "Event", value: "Key Generated", inline: false },
-        { name: "Username", value: String(name || "Unknown"), inline: true },
-        { name: "User ID", value: uid, inline: true },
-        { name: "Key", value: key, inline: false },
-        { name: "Expires", value: _expiryStr(uid, key), inline: true },
-        { name: "IP", value: _getClientIP(req), inline: true },
-      ]);
-      res.status(200).json({ ok: true, uid, key, expires: _expiryStr(uid, key), username: name, authLink: makeAuthLink(uid, key, name) });
-      return;
-    }
-
     const valid = _verifyKey(parsed.uid, parsed.key).valid;
     let username = null;
     if (valid) username = await _getRobloxUser(parsed.uid);
@@ -328,17 +305,6 @@ async function handleApi(req, res, path, method, params, ctx) {
     return u;
   }
 
-  async function checkOwnerPwAsync(pw, ot) {
-    if (pw === ADMIN_PW) return true;
-    if (ot) {
-      const memSess = _memStore["nang:owner_token:" + ot];
-      if (memSess && memSess.expiresAt > Date.now()) return true;
-      const sess = await storeGet("nang:owner_token:" + ot);
-      if (sess && sess.expiresAt > Date.now()) return true;
-    }
-    return false;
-  }
-
   async function getOwnerRole(pw, ot) {
     if (pw === ADMIN_PW) return "owner";
     if (ot) {
@@ -375,7 +341,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     const key = _makeKey(uid);
     const name = await _getRobloxUser(uid);
     sendWebhook([
-      { name: "Event", value: "Key Generated (Owner)", inline: false },
+      { name: "Event", value: "Key Generated (Owner Panel)", inline: false },
       { name: "Target", value: String(name || "Unknown"), inline: true },
       { name: "User ID", value: uid, inline: true },
       { name: "Key", value: key, inline: false },
@@ -492,7 +458,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     const user = {
       username, email,
       passwordHash: hashPw(password, salt), salt,
-      role: "member", quota: 20, keysToday: 0, lastReset: Date.now(),
+      role: "member", quota: DEFAULT_QUOTA, keysToday: 0, lastReset: Date.now(),
       createdAt: Date.now(), keys: [],
     };
     await saveUser(user);
@@ -502,7 +468,7 @@ async function handleApi(req, res, path, method, params, ctx) {
       { name: "Event", value: "New Member Registered", inline: false },
       { name: "Username", value: username, inline: true },
       { name: "Email", value: email, inline: true },
-      { name: "Status", value: "member", inline: true },
+      { name: "Role", value: "member", inline: true },
       { name: "IP", value: _getClientIP(req), inline: true },
     ]);
     return res.status(200).json({ ok: true, message: "Terdaftar sebagai member." });
@@ -527,12 +493,6 @@ async function handleApi(req, res, path, method, params, ctx) {
     const expires = Date.now() + 7 * 24 * 3600 * 1000;
     _memStore["nang:sess:" + token] = { username: user.username, expiresAt: expires };
     storeSet("nang:sess:" + token, { username: user.username, expiresAt: expires }).catch(() => {});
-    sendWebhook([
-      { name: "Event", value: "Login", inline: false },
-      { name: "Username", value: user.username, inline: true },
-      { name: "Role", value: user.role, inline: true },
-      { name: "IP", value: _getClientIP(req), inline: true },
-    ]);
     return res.status(200).json({
       ok: true, token,
       user: { username: user.username, role: user.role, quota: user.quota, keysToday: user.keysToday },
@@ -646,6 +606,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     }
 
     u.role = role;
+    if (role === "reseller" && (!u.quota || u.quota < 1)) u.quota = DEFAULT_QUOTA;
     await saveUser(u);
     sendWebhook([
       { name: "Event", value: "Role Changed", inline: false },
@@ -785,6 +746,15 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
 .drop-icon{font-size:1.8rem;margin-bottom:6px;opacity:.6}
 .drop-text{font-size:0.85rem;color:var(--text);margin-bottom:4px}
 .drop-hint{font-size:0.7rem;color:var(--muted)}
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+.stat{background:var(--bg3);padding:12px;border-radius:9px}
+.stat .label{font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700}
+.stat .value{font-size:1.4rem;font-weight:900;margin-top:4px}
+.key-item{padding:10px;background:var(--bg3);border-radius:8px;margin-bottom:6px;font-size:.75rem;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.key-item .info{flex:1;min-width:0}
+.key-item .k{font-family:'JetBrains Mono',monospace;color:var(--green);font-weight:700;word-break:break-all}
+.key-item .meta{color:var(--muted);font-size:.68rem;margin-top:4px}
+.key-item .cp{padding:5px 10px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.68rem;font-weight:700;cursor:pointer;font-family:inherit}
 footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opacity:0.5}
 .hidden{display:none!important}
 .auth-bar{position:fixed;top:16px;right:16px;z-index:50;display:flex;gap:8px;align-items:center;font-size:.8rem}
@@ -803,7 +773,7 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 .modal-tabs button.on{background:linear-gradient(135deg,rgba(224,60,138,.2),rgba(155,77,224,.2));color:#fff}
 .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.75);display:none;align-items:center;justify-content:center;z-index:100;padding:20px}
 .modal-bg.show{display:flex}
-.modal-box{background:var(--bg2);border:1px solid var(--pink);border-radius:16px;padding:24px;max-width:400px;width:100%;position:relative;max-height:90vh;overflow-y:auto}
+.modal-box{background:var(--bg2);border:1px solid var(--pink);border-radius:16px;padding:24px;max-width:420px;width:100%;position:relative;max-height:90vh;overflow-y:auto}
 .modal-box h3{color:var(--pink);font-size:1rem;margin-bottom:14px}
 .modal-box .x{position:absolute;top:12px;right:16px;cursor:pointer;color:var(--muted);font-size:22px;line-height:1}
 .user-row{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg3);border-radius:9px;margin-bottom:6px;gap:8px;flex-wrap:wrap}
@@ -824,7 +794,7 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 
 <div class="auth-bar" id="authBar"></div>
 
-<button class="fab hidden" id="ownerFab" onclick="openOwnerModal()" title="Owner">🔒</button>
+<button class="fab" id="ownerFab" onclick="openOwnerModal()" title="Owner">🔒</button>
 
 <div class="hero"><div class="logo">NANG<span class="logo-badge">KEY</span></div><div class="sub">Roblox Script Key System</div></div>
 
@@ -858,6 +828,7 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
   <button class="nav-btn active" onclick="switchTab(0)">Beli Key</button>
   <button class="nav-btn" onclick="switchTab(1)">Convert</button>
   <button class="nav-btn" id="navUpload" onclick="switchTab(2)">Upload</button>
+  <button class="nav-btn hidden" id="navMyKeys" onclick="switchTab(3)">My Keys</button>
 </div>
 
 <div class="panel active" id="tab0">
@@ -917,6 +888,29 @@ Aktifkan <b>Assets API: Read & Write</b>. IP: Unrestricted.
 </div>
 </div>
 </div>
+
+<div class="panel" id="tab3">
+<div class="card">
+<div class="card-title">Kuota Saya</div>
+<div class="stat-grid">
+  <div class="stat"><div class="label">Kuota / hari</div><div class="value" id="mkQuota">—</div></div>
+  <div class="stat"><div class="label">Dipakai hari ini</div><div class="value" id="mkToday">—</div></div>
+  <div class="stat"><div class="label">Sisa</div><div class="value" id="mkLeft">—</div></div>
+  <div class="stat"><div class="label">Total key</div><div class="value" id="mkTotal">—</div></div>
+</div>
+</div>
+<div class="card">
+<div class="card-title">Generate Key</div>
+<div class="fmt-box">Masukkan Roblox User ID target. Key valid 24 jam dari sekarang.</div>
+<input type="text" class="inp" id="mkUid" placeholder="Roblox User ID (angka)">
+<button class="btn-cyan" id="mkGenBtn" onclick="doMyKeysGenerate()">GENERATE KEY</button>
+<div class="result" id="mkResult"></div>
+</div>
+<div class="card">
+<div class="card-title">Riwayat Key</div>
+<div id="mkHistory"><div style="color:var(--muted);font-size:.8rem">Belum ada key.</div></div>
+</div>
+</div>
 </div>
 
 <footer>NANG RBXM Tool &copy; 2025 &middot; v${BUILD}</footer>
@@ -964,6 +958,7 @@ function apiCall(url, opts){
 function switchTab(i){
   document.querySelectorAll('.nav-btn').forEach((b,j)=>b.classList.toggle('active',i===j));
   document.querySelectorAll('.panel').forEach((p,j)=>p.classList.toggle('active',i===j));
+  if(i===3) refreshMyKeys();
 }
 
 async function checkSession(){
@@ -993,6 +988,9 @@ function updateAuthUI(){
   const canUpload = logged && (ME.role==='owner'||ME.role==='admin'||ME.role==='reseller');
   $('uploadLocked').classList.toggle('hidden', canUpload);
   $('uploadContent').classList.toggle('hidden', !canUpload);
+
+  const canMyKeys = logged && (ME.role==='owner'||ME.role==='admin'||ME.role==='reseller');
+  $('navMyKeys').classList.toggle('hidden', !canMyKeys);
 }
 
 function lwSwitch(i){
@@ -1043,6 +1041,65 @@ async function doAuthLogout(){
   updateAuthUI();
 }
 
+// === MY KEYS ===
+async function refreshMyKeys(){
+  if(!TOKEN) return;
+  const d = await apiCall('/?api=reseller/me&token='+encodeURIComponent(TOKEN));
+  if(!d.ok) return;
+  ME = d.user;
+  const isReseller = ME.role === 'reseller';
+  const quota = isReseller ? ME.quota : '∞';
+  const today = ME.keysToday || 0;
+  const left = isReseller ? Math.max(0, ME.quota - today) : '∞';
+  const total = (ME.keys || []).length;
+
+  $('mkQuota').textContent = quota;
+  $('mkToday').textContent = today;
+  $('mkLeft').textContent = left;
+  $('mkTotal').textContent = total;
+
+  const hist = $('mkHistory');
+  if(!ME.keys || !ME.keys.length){
+    hist.innerHTML = '<div style="color:var(--muted);font-size:.8rem">Belum ada key.</div>';
+    return;
+  }
+  hist.innerHTML = ME.keys.map(k => (
+    '<div class="key-item">'+
+      '<div class="info"><div class="k">'+k.key+'</div>'+
+      '<div class="meta">UID: '+k.uid+' · '+(k.name||'?')+' · '+new Date(k.ts).toLocaleString('id-ID')+'</div></div>'+
+      '<button class="cp" onclick="copyKey(\\''+k.key+'\\',this)">COPY</button>'+
+    '</div>'
+  )).join('');
+}
+
+function copyKey(k, btn){
+  navigator.clipboard.writeText(k).then(()=>{
+    if(btn){ btn.textContent = 'OK'; setTimeout(()=>{ btn.textContent = 'COPY'; }, 1200); }
+  });
+}
+
+async function doMyKeysGenerate(){
+  const uid = $('mkUid').value.trim();
+  const box = $('mkResult');
+  const btn = $('mkGenBtn');
+  if(!uid){ box.className='result err'; box.innerHTML='Isi Roblox User ID'; return; }
+  btn.disabled = true; btn.textContent = '...';
+  box.className='result info'; box.innerHTML='<span class="spinner"></span>Generate...';
+  try {
+    const d = await apiCall('/?api=reseller/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN, uid})});
+    if(d.error){ box.className='result err'; box.innerHTML=d.error; return; }
+    box.className='result ok';
+    box.innerHTML = '<b>'+(d.username||'Unknown')+'</b><div class="key-line">'+d.key+'</div><div style="font-size:.75rem;color:var(--muted)">Berlaku: '+d.expires+' · Sisa kuota: '+d.remaining+'</div><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';
+    $('mkUid').value='';
+    await refreshMyKeys();
+  } catch(e) {
+    box.className='result err'; box.innerHTML='Error: '+e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = 'GENERATE KEY';
+  }
+}
+
+// === OWNER FAB ===
 function openOwnerModal(){
   $('ownerModal').classList.add('show');
   if(OWNER_TOKEN){
@@ -1255,11 +1312,11 @@ async function doUploadRbxm(){
 
 document.addEventListener('DOMContentLoaded',()=>{
   checkSession();
-  if(OWNER_TOKEN) $('ownerFab').classList.remove('hidden');
   ['lwUser','lwPass'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')lwDoLogin();}));
   ['lwRegUser','lwRegEmail','lwRegPass','lwRegPass2'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')lwDoRegister();}));
   ['oPw'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doOwnerLogin();}));
   ['oGenUid'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doOwnerGen();}));
+  ['mkUid'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doMyKeysGenerate();}));
 });
 </script></body></html>`;
 }
