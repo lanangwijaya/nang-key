@@ -1,4 +1,4 @@
-const BUILD = "68.0";
+const BUILD = "68.1";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -232,56 +232,6 @@ async function handle(req, res) {
     let body = "";
     await new Promise(r => { req.on("data", c => body += c); req.on("end", r); });
 
-    if (path === "/rbxl" || path === "/rbxl/") {
-      try {
-        function parseRbxlx(xml) {
-          function parseValue(typeTag, content) {
-            const t = typeTag.toLowerCase();
-            if (t === "string" || t === "protectedstring") return content.replace(/<!\[CDATA\[|\]\]>/g, "").trim();
-            if (t === "bool") return content.trim() === "true";
-            if (t === "int" || t === "int64") return parseInt(content.trim()) || 0;
-            if (t === "float" || t === "double") return parseFloat(content.trim()) || 0;
-            return content.trim();
-          }
-          function parseItem(itemXml) {
-            const classMatch = itemXml.match(/class="([^"]+)"/);
-            if (!classMatch) return null;
-            const props = {};
-            const propsMatch = itemXml.match(/<Properties>([\s\S]*?)<\/Properties>/);
-            if (propsMatch) {
-              const propRe = /<(\w+)\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/\1>/g;
-              let m;
-              while ((m = propRe.exec(propsMatch[1])) !== null) {
-                const val = parseValue(m[1], m[3]);
-                if (val !== null && val !== undefined) props[m[2]] = val;
-              }
-            }
-            const children = [];
-            const childRe = /<Item class="[^"]*"[\s\S]*?<\/Item>/g;
-            const withoutProps = itemXml.replace(/<Properties>[\s\S]*?<\/Properties>/, "");
-            let cm;
-            while ((cm = childRe.exec(withoutProps)) !== null) {
-              const child = parseItem(cm[0]);
-              if (child) children.push(child);
-            }
-            return { class: classMatch[1], properties: props, children };
-          }
-          const items = [];
-          const topRe = /<Item class="[^"]*"[\s\S]*?<\/Item>/g;
-          const inner = xml.replace(/<roblox[^>]*>/, "").replace(/<\/roblox>/, "");
-          let m;
-          while ((m = topRe.exec(inner)) !== null) {
-            const item = parseItem(m[0]);
-            if (item) items.push(item);
-          }
-          return items;
-        }
-        const items = parseRbxlx(body);
-        res.status(200).json({ ok: true, count: items.length, items });
-        return;
-      } catch (e) { res.status(200).json({ ok: false, error: String(e.message || e) }); return; }
-    }
-
     let parsed;
     try { parsed = JSON.parse(body); } catch { res.status(400).json({ valid: false, error: "bad json" }); return; }
 
@@ -333,12 +283,6 @@ async function handle(req, res) {
     if (!data.u || !data.k) { res.status(400).send("Invalid data"); return; }
     const valid = _verifyKey(data.u, data.k).valid;
     const name = data.n || await _getRobloxUser(data.u);
-    sendWebhook([
-      { name: "Event", value: valid ? "Auth Page (Valid)" : "Auth Page (Expired)", inline: false },
-      { name: "Username", value: String(name || "Unknown"), inline: true },
-      { name: "User ID", value: String(data.u), inline: true },
-      { name: "IP", value: _getClientIP(req), inline: true },
-    ]);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.status(200).send(authPage(data, valid, name));
     return;
@@ -361,13 +305,6 @@ async function handle(req, res) {
   }
 
   if (params.has("detect")) { res.status(200).json({ detection: detectLink(params.get("detect")) }); return; }
-
-  if (params.has("testurl")) {
-    const u = params.get("testurl");
-    const reason = hardReject(u);
-    res.status(200).json({ url: u, rejected: !!reason, reason: reason || "ok" });
-    return;
-  }
 
   if (params.has("chat")) {
     const action = params.get("chat");
@@ -727,13 +664,6 @@ async function handle(req, res) {
             page.on("dialog", async (d) => { try { await d.dismiss(); } catch {} });
             await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 6000 });
             await sleep(1200);
-            await page.evaluate(() => {
-              try {
-                const o = window.setTimeout;
-                window.setTimeout = (fn, d, ...a) => o(fn, Math.min(d || 0, 30), ...a);
-                window.setInterval = (fn, d, ...a) => o(fn, Math.min(d || 0, 30), ...a);
-              } catch {}
-            });
             const initKey = await tryScrapeKey(page);
             if (initKey) return { key: initKey, url: page.url(), status: "key-found" };
             for (let r = 0; r < 10; r++) {
@@ -754,24 +684,6 @@ async function handle(req, res) {
               const keyNow = await tryScrapeKey(page);
               if (keyNow) return { key: keyNow, url: page.url(), status: "key-found" };
               try { const html = await page.content(); harvest(html); } catch {}
-              const mainApis = await page.evaluate(() => window.__nangApi || []).catch(()=>[]);
-              for (const a of mainApis) {
-                if (!a || !a.url) continue;
-                const u = a.url.toLowerCase();
-                if (/verify|complete|callback|claim|destination|resolve|unlock|task/i.test(u)) {
-                  apiCalls.push({ ...a, from: "main" });
-                  if (a.resp) {
-                    try {
-                      const j = JSON.parse(a.resp);
-                      const dest = j.destination || j.url || j.target || j.result || j.link || j.redirect;
-                      if (dest && /^https?:\\/\\//.test(dest) && !reject(dest)) destinationFromApi = dest;
-                    } catch {
-                      const m = a.resp.match(/https?:\\/\\/[^"'\\s<>)]+/);
-                      if (m && !reject(m[0])) destinationFromApi = m[0];
-                    }
-                  }
-                }
-              }
               const keyMid = await tryScrapeKey(page);
               if (keyMid) return { key: keyMid, url: page.url(), status: "key-found" };
               if (destinationFromApi) return { url: destinationFromApi, status: "api-intercept" };
@@ -838,23 +750,12 @@ async function handle(req, res) {
     return;
   }
 
-  if (method === "GET" && path === "/") {
-    const ua = String(req.headers["user-agent"] || "").slice(0, 120);
-    if (!ua.includes("Mozilla")) {
-      sendWebhook([
-        { name: "Event", value: "Web Visit", inline: false },
-        { name: "IP", value: _getClientIP(req), inline: true },
-        { name: "UA", value: ua, inline: false },
-      ]);
-    }
-  }
-
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.status(200).send(mainPage(WA_NUMBER));
 }
 
 // ═══════════════════════════════════════
-// API HANDLER (reseller + uploader)
+// API HANDLER (reseller + uploader + owner)
 // ═══════════════════════════════════════
 async function handleApi(req, res, path, method, params, ctx) {
   const { ADMIN_PW } = ctx;
@@ -890,7 +791,18 @@ async function handleApi(req, res, path, method, params, ctx) {
     return null;
   }
 
-  // ═══ UPLOADER API ═══
+  // owner verify (buat FAB)
+  if (route === "owner/verify" && method === "POST") {
+    const pw = body && body.pw;
+    if (pw === ADMIN_PW) {
+      const token = randomHex(24);
+      await storeSet("nang:owner_token:" + token, { expiresAt: Date.now() + 12 * 3600 * 1000 });
+      return res.status(200).json({ ok: true, token });
+    }
+    return res.status(200).json({ ok: false, error: "password salah" });
+  }
+
+  // UPLOADER API
   if (route === "lookup-username" && method === "POST") {
     const username = String((body && body.username) || "").trim();
     if (!username) return res.status(200).json({ ok: false, error: "username kosong" });
@@ -975,7 +887,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     }
   }
 
-  // ═══ RESELLER API ═══
+  // RESELLER API
   if (route === "reseller/register" && method === "POST") {
     const username = String((body && body.username) || "").trim();
     const email = String((body && body.email) || "").trim().toLowerCase();
@@ -1102,9 +1014,21 @@ async function handleApi(req, res, path, method, params, ctx) {
     });
   }
 
+  // OWNER API
   if (route === "owner/users") {
-    const o = await requireOwner();
-    if (!o) return res.status(200).json({ error: "forbidden" });
+    const pw = params.get("pw") || (body && body.pw);
+    const ot = params.get("ot") || (body && body.ot);
+    let ok = false;
+    if (pw === ADMIN_PW) ok = true;
+    else if (ot) {
+      const sess = await storeGet("nang:owner_token:" + ot);
+      if (sess && sess.expiresAt > Date.now()) ok = true;
+    }
+    if (!ok) {
+      const u = await authFromToken();
+      if (u && u.role === "owner") ok = true;
+    }
+    if (!ok) return res.status(200).json({ error: "forbidden" });
     const users = await listUsers();
     users.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     return res.status(200).json({
@@ -1118,8 +1042,14 @@ async function handleApi(req, res, path, method, params, ctx) {
   }
 
   if (route === "owner/setrole" && method === "POST") {
-    const o = await requireOwner();
-    if (!o) return res.status(200).json({ error: "forbidden" });
+    const pw = body.pw, ot = body.ot;
+    let ok = false;
+    if (pw === ADMIN_PW) ok = true;
+    else if (ot) {
+      const sess = await storeGet("nang:owner_token:" + ot);
+      if (sess && sess.expiresAt > Date.now()) ok = true;
+    }
+    if (!ok) return res.status(200).json({ error: "forbidden" });
     const target = String((body && body.username) || "").trim();
     const role = String((body && body.role) || "");
     if (!["pending", "reseller", "admin", "owner", "banned"].includes(role)) {
@@ -1129,18 +1059,18 @@ async function handleApi(req, res, path, method, params, ctx) {
     if (!u) return res.status(200).json({ error: "user tidak ditemukan" });
     u.role = role;
     await saveUser(u);
-    sendWebhook([
-      { name: "Event", value: "Role Changed", inline: false },
-      { name: "Target", value: u.username, inline: true },
-      { name: "New Role", value: role, inline: true },
-      { name: "By", value: o.username, inline: true },
-    ]);
     return res.status(200).json({ ok: true });
   }
 
   if (route === "owner/setquota" && method === "POST") {
-    const o = await requireOwner();
-    if (!o) return res.status(200).json({ error: "forbidden" });
+    const pw = body.pw, ot = body.ot;
+    let ok = false;
+    if (pw === ADMIN_PW) ok = true;
+    else if (ot) {
+      const sess = await storeGet("nang:owner_token:" + ot);
+      if (sess && sess.expiresAt > Date.now()) ok = true;
+    }
+    if (!ok) return res.status(200).json({ error: "forbidden" });
     const target = String((body && body.username) || "").trim();
     const quota = Math.max(0, Math.min(9999, parseInt(body && body.quota) || 0));
     const u = await getUser(target);
@@ -1151,8 +1081,14 @@ async function handleApi(req, res, path, method, params, ctx) {
   }
 
   if (route === "owner/delete" && method === "POST") {
-    const o = await requireOwner();
-    if (!o) return res.status(200).json({ error: "forbidden" });
+    const pw = body.pw, ot = body.ot;
+    let ok = false;
+    if (pw === ADMIN_PW) ok = true;
+    else if (ot) {
+      const sess = await storeGet("nang:owner_token:" + ot);
+      if (sess && sess.expiresAt > Date.now()) ok = true;
+    }
+    if (!ok) return res.status(200).json({ error: "forbidden" });
     const target = String((body && body.username) || "").trim();
     const u = await getUser(target);
     if (u && u.email) await storeDel("nang:email:" + u.email.toLowerCase());
@@ -1214,7 +1150,7 @@ function mainPage(wa) {
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--pink:#e03c8a;--purple:#9b4de0;--cyan:#00d4ff;--green:#00e87a;--yellow:#ffc832;--red:#ff6b6b;--bg:#08080f;--bg2:#0f0f1a;--bg3:#16162a;--border:#ffffff12;--text:#e8e8f0;--muted:#6b6b8a}
-body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px 16px}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:60px 16px 24px}
 .hero{text-align:center;margin-bottom:28px}
 .logo{font-size:2.6rem;font-weight:900;background:linear-gradient(135deg,var(--pink),var(--purple),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;line-height:1}
 .logo-badge{display:inline-block;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;font-size:0.6rem;font-weight:700;padding:2px 7px;border-radius:20px;vertical-align:super;margin-left:4px;letter-spacing:1px}
@@ -1311,11 +1247,16 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 .warn-box{padding:10px 12px;background:rgba(255,200,50,0.06);border:1px solid rgba(255,200,50,0.2);border-radius:9px;font-size:0.75rem;color:var(--yellow);margin-bottom:12px;line-height:1.6}
 .warn-box b{color:#fff}
 .warn-box a{color:var(--yellow)}
+.fab{position:fixed;bottom:20px;right:20px;width:48px;height:48px;border-radius:50%;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;cursor:pointer;z-index:80;box-shadow:0 6px 20px rgba(224,60,138,0.4);border:none;font-family:inherit;transition:transform .15s}
+.fab:hover{transform:scale(1.05)}
+.fab.active{background:linear-gradient(135deg,#00b866,var(--green))}
 </style></head><body>
 
 <div class="auth-bar" id="authBar">
   <button class="auth-btn" onclick="openAuthModal()">Login</button>
 </div>
+
+<button class="fab" id="ownerFab" onclick="openOwnerModal()" title="Owner">🔒</button>
 
 <div class="modal-bg" id="authModal">
   <div class="modal-box">
@@ -1342,13 +1283,35 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
   </div>
 </div>
 
+<div class="modal-bg" id="ownerModal">
+  <div class="modal-box">
+    <span class="x" onclick="closeOwnerModal()">&times;</span>
+    <h3>Owner Panel</h3>
+    <div id="ownerLoginForm">
+      <input class="inp" id="oPw" type="password" placeholder="Password owner...">
+      <button class="btn-main" onclick="doOwnerLogin()">Masuk</button>
+      <div class="result" id="oResult"></div>
+    </div>
+    <div id="ownerPanel" class="hidden">
+      <button class="btn-main" onclick="loadUsers()">Refresh Users</button>
+      <div id="usersList" style="margin-top:12px"></div>
+      <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+        <div style="font-size:.72rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px">Owner Actions</div>
+        <input class="inp" id="oGenUid" placeholder="Roblox User ID">
+        <button class="btn-main" onclick="doOwnerGen()">Generate Key</button>
+        <div class="result" id="oGenResult"></div>
+        <button class="btn-main" style="background:var(--bg3);color:var(--text);border:1px solid var(--border)" onclick="doOwnerLogout()">Logout Owner</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="hero"><div class="logo">NANG<span class="logo-badge">KEY</span></div><div class="sub">Roblox Script Key System</div></div>
 <div class="nav">
   <button class="nav-btn active" onclick="switchTab(0)">Beli Key</button>
   <button class="nav-btn" onclick="switchTab(1)">Bypass</button>
   <button class="nav-btn" onclick="switchTab(2)">Convert</button>
-  <button class="nav-btn hidden" id="navUpload" onclick="switchTab(3)">Upload</button>
-  <button class="nav-btn hidden" id="navUsers" onclick="switchTab(4)">Users</button>
+  <button class="nav-btn" id="navUpload" onclick="switchTab(3)">Upload</button>
 </div>
 
 <div class="panel active" id="tab0">
@@ -1389,8 +1352,8 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 <div id="uploadLocked" class="card">
 <div class="locked">
 🔒 Login dulu untuk akses upload<br>
-<div style="font-size:.75rem;margin-top:6px">Role minimal: reseller</div>
-<button class="btn-main" onclick="openAuthModal()">Login</button>
+<div style="font-size:.75rem;margin-top:6px">Role minimal: reseller — di-approve owner</div>
+<button class="btn-main" onclick="openAuthModal()">Login / Daftar</button>
 </div>
 </div>
 <div id="uploadContent" class="hidden">
@@ -1420,19 +1383,12 @@ Aktifkan <b>Assets API: Read & Write</b>. IP: Unrestricted.
 </div>
 </div>
 
-<div class="panel" id="tab4">
-<div class="card">
-<div class="card-title">Manage Users</div>
-<button class="btn-main" onclick="loadUsers()">Refresh</button>
-<div id="usersList" style="margin-top:12px"></div>
-</div>
-</div>
-
 <footer>NANG RBXM Tool &copy; 2025 &middot; v${BUILD}</footer>
 
 <script>
 const WA_NUMBER="${wa}";
 let TOKEN = localStorage.getItem('nang_session') || null;
+let OWNER_TOKEN = localStorage.getItem('nang_owner') || null;
 let ME = null;
 let lastLookup={uid:null,name:null};
 let detectTimer=null;
@@ -1444,7 +1400,6 @@ function apiCall(url, opts){ return fetch(url, opts).then(r=>r.json()); }
 function switchTab(i){
   document.querySelectorAll('.nav-btn').forEach((b,j)=>b.classList.toggle('active',i===j));
   document.querySelectorAll('.panel').forEach((p,j)=>p.classList.toggle('active',i===j));
-  if (i===4) loadUsers();
 }
 
 function openAuthModal(){ $('authModal').classList.add('show'); }
@@ -1476,13 +1431,8 @@ function updateAuthUI(){
   }
   const isLogged = !!ME && ME.role !== 'banned';
   const canUpload = isLogged && (ME.role==='owner'||ME.role==='admin'||ME.role==='reseller');
-  const isOwner = ME && ME.role==='owner';
-  $('navUpload').classList.toggle('hidden', !canUpload);
-  $('navUsers').classList.toggle('hidden', !isOwner);
   $('uploadLocked').classList.toggle('hidden', canUpload);
   $('uploadContent').classList.toggle('hidden', !canUpload);
-  if(!canUpload && $('tab3').classList.contains('active')) switchTab(0);
-  if(!isOwner && $('tab4').classList.contains('active')) switchTab(0);
 }
 
 async function doAuthLogin(){
@@ -1530,23 +1480,63 @@ async function doAuthLogout(){
   updateAuthUI();
 }
 
+// === OWNER FAB ===
+function openOwnerModal(){
+  $('ownerModal').classList.add('show');
+  if(OWNER_TOKEN){
+    $('ownerLoginForm').classList.add('hidden');
+    $('ownerPanel').classList.remove('hidden');
+    loadUsers();
+  } else {
+    $('ownerLoginForm').classList.remove('hidden');
+    $('ownerPanel').classList.add('hidden');
+  }
+}
+function closeOwnerModal(){ $('ownerModal').classList.remove('show'); }
+$('ownerModal').addEventListener('click',e=>{ if(e.target.id==='ownerModal') closeOwnerModal(); });
+
+async function doOwnerLogin(){
+  const pw = $('oPw').value;
+  const box = $('oResult');
+  if(!pw){ box.className='result err'; box.innerHTML='Isi password'; return; }
+  box.className='result info'; box.innerHTML='<span class="spinner"></span>Cek...';
+  const d = await apiCall('/api/owner/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pw})});
+  if(!d.ok){ box.className='result err'; box.innerHTML=d.error||'Gagal'; return; }
+  OWNER_TOKEN = d.token;
+  localStorage.setItem('nang_owner', OWNER_TOKEN);
+  $('oPw').value='';
+  box.className='result'; box.innerHTML='';
+  $('ownerLoginForm').classList.add('hidden');
+  $('ownerPanel').classList.remove('hidden');
+  $('ownerFab').classList.add('active');
+  loadUsers();
+}
+
+function doOwnerLogout(){
+  OWNER_TOKEN = null;
+  localStorage.removeItem('nang_owner');
+  $('ownerLoginForm').classList.remove('hidden');
+  $('ownerPanel').classList.add('hidden');
+  $('ownerFab').classList.remove('active');
+}
+
 async function loadUsers(){
   const box = $('usersList');
-  if(!TOKEN){ box.innerHTML='<div style="color:var(--red);font-size:.8rem">Belum login</div>'; return; }
+  if(!OWNER_TOKEN){ box.innerHTML='<div style="color:var(--red);font-size:.8rem">Belum login owner</div>'; return; }
   box.innerHTML='<div style="color:var(--muted);font-size:.8rem"><span class="spinner"></span>Loading...</div>';
   try{
-    const d = await apiCall('/api/owner/users?token='+encodeURIComponent(TOKEN));
+    const d = await apiCall('/api/owner/users?ot='+encodeURIComponent(OWNER_TOKEN));
     if(d.error){ box.innerHTML='<div style="color:var(--red);font-size:.8rem">'+d.error+'</div>'; return; }
     if(!d.users || !d.users.length){ box.innerHTML='<div style="color:var(--muted);font-size:.8rem">Belum ada user</div>'; return; }
     box.innerHTML = d.users.map(u => (
       '<div class="user-row">'+
         '<div><div class="name">'+u.username+' <span class="role-tag '+u.role+'">'+u.role+'</span></div>'+
-        '<div class="meta">'+(u.email ? u.email + ' · ' : '')+'quota '+u.quota+' · hari ini '+u.keysToday+' · total '+u.totalKeys+'</div></div>'+
+        '<div class="meta">'+(u.email ? u.email + ' · ' : '')+'q:'+u.quota+' t:'+u.keysToday+'</div></div>'+
         '<div class="row-actions">'+
           (u.role!=='reseller'?'<button onclick="setUserRole(\\''+u.username+'\\',\\'reseller\\')">Approve</button>':'')+
           (u.role!=='admin'?'<button onclick="setUserRole(\\''+u.username+'\\',\\'admin\\')">Admin</button>':'')+
           (u.role!=='banned'?'<button onclick="setUserRole(\\''+u.username+'\\',\\'banned\\')">Ban</button>':'<button onclick="setUserRole(\\''+u.username+'\\',\\'pending\\')">Unban</button>')+
-          '<button onclick="editUserQuota(\\''+u.username+'\\','+u.quota+')">Quota</button>'+
+          '<button onclick="editUserQuota(\\''+u.username+'\\','+u.quota+')">Q</button>'+
           '<button onclick="delUser(\\''+u.username+'\\')">Hapus</button>'+
         '</div>'+
       '</div>'
@@ -1557,24 +1547,39 @@ async function loadUsers(){
 }
 
 async function setUserRole(username, role){
-  const d = await apiCall('/api/owner/setrole',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN, username, role})});
+  const d = await apiCall('/api/owner/setrole',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ot:OWNER_TOKEN, username, role})});
   if(d.error) return alert(d.error);
   loadUsers();
 }
 async function editUserQuota(username, current){
   const v = prompt('Kuota harian untuk '+username+':', current);
   if(v===null) return;
-  const d = await apiCall('/api/owner/setquota',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN, username, quota:parseInt(v)||0})});
+  const d = await apiCall('/api/owner/setquota',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ot:OWNER_TOKEN, username, quota:parseInt(v)||0})});
   if(d.error) return alert(d.error);
   loadUsers();
 }
 async function delUser(username){
   if(!confirm('Hapus user '+username+'?')) return;
-  const d = await apiCall('/api/owner/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN, username})});
+  const d = await apiCall('/api/owner/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ot:OWNER_TOKEN, username})});
   if(d.error) return alert(d.error);
   loadUsers();
 }
 
+async function doOwnerGen(){
+  const uid = $('oGenUid').value.trim();
+  const box = $('oGenResult');
+  if(!uid) { box.className='result err'; box.innerHTML='Isi User ID'; return; }
+  box.className='result info'; box.innerHTML='<span class="spinner"></span>Generate...';
+  // pakai endpoint reseller/generate tapi lewat owner token? kita pake admin pw
+  // endpoint generate butuh pw / token session. Owner token bukan session.
+  // pakai endpoint khusus
+  const d = await apiCall('/api/owner/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ot:OWNER_TOKEN, uid})});
+  if(d.error){ box.className='result err'; box.innerHTML=d.error; return; }
+  box.className='result ok';
+  box.innerHTML = '<b>'+(d.username||'Unknown')+'</b><div class="key-line">'+d.key+'</div><div style="font-size:.75rem;color:var(--muted)">Expires: '+d.expires+'</div>';
+}
+
+// === LOOKUP, BYPASS, CONVERT, UPLOAD ===
 function updateWA(){if(!lastLookup.name)return;const text="Beli Key NANG%0ANama: "+encodeURIComponent(lastLookup.name)+"%0ARoblox ID: "+lastLookup.uid+"%0ABukti TF: [screenshot]";$('waBtn').href="https://wa.me/"+WA_NUMBER+"?text="+text;$('waNama').textContent=lastLookup.name;$('waUid').textContent=lastLookup.uid;}
 async function doLookup(){const uid=$('lookupId').value.trim();const box=$('lookupResult');if(!uid)return;box.style.display='block';box.className='result info';box.innerHTML='<span class="spinner"></span>Mencari...';try{const r=await fetch('/?lookup='+encodeURIComponent(uid));const d=await r.json();if(d.name){lastLookup={uid:d.uid,name:d.name};updateWA();box.style.display='none';const ex=$('userCard');if(ex)ex.remove();const card=document.createElement('div');card.id='userCard';card.className='user-card';card.innerHTML='<div class="user-avatar">'+d.name.charAt(0).toUpperCase()+'</div><div class="user-info"><div class="user-name">'+d.name+'</div><div class="user-id">ID: '+d.uid+'</div></div>';box.parentNode.insertBefore(card,box.nextSibling);}else{box.className='result err';box.innerHTML='User ID tidak ditemukan';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 let lookupT;$('lookupId').addEventListener('input',()=>{clearTimeout(lookupT);lookupT=setTimeout(doLookup,600);});
@@ -1587,19 +1592,17 @@ async function doBypass(){
   const box=$('bypassResult');
   if(!link)return;
   box.style.display='block';box.className='result info';
-  const detLabel=lastDetect?'('+lastDetect.type+')':'';
-  box.innerHTML='<span class="spinner"></span>Memproses '+detLabel+' — max 10 detik...';
+  box.innerHTML='<span class="spinner"></span>Memproses...';
   try{
     const r=await fetch('/?bypass='+encodeURIComponent(link));
     const d=await r.json();
     if(d.key){
       box.className='result ok';
-      box.innerHTML='<b>KEY DITEMUKAN</b><div class="key-line">'+d.key+'</div><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';
+      box.innerHTML='<b>KEY DITEMUKAN</b><div class="key-line">'+d.key+'</div>';
       return;
     }
     if(d.result){
       const url=d.result;
-      window._bypassUrl=url;
       const cls=d.source==='original'?'warn':'ok';
       box.className='result '+cls;
       let label='Bypass berhasil!';
@@ -1687,121 +1690,15 @@ async function doUploadRbxm(){
 
 document.addEventListener('DOMContentLoaded',()=>{
   checkSession();
+  if(OWNER_TOKEN) $('ownerFab').classList.add('active');
   ['aLoginUser','aLoginPass'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doAuthLogin();}));
   ['aRegUser','aRegEmail','aRegPass','aRegPass2'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doAuthRegister();}));
+  ['oPw'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doOwnerLogin();}));
+  ['oGenUid'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doOwnerGen();}));
 });
 </script></body></html>`;
 }
 
-// ═══════════════════════════════════════
-// RESELLER PAGE (opsional standalone)
-// ═══════════════════════════════════════
 function resellerPage() {
-  return `<!DOCTYPE html>
-<html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NANG Reseller</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-:root{--pink:#e03c8a;--purple:#9b4de0;--cyan:#00d4ff;--green:#00e87a;--yellow:#ffc832;--red:#ff6b6b;--bg:#08080f;--bg2:#0f0f1a;--bg3:#16162a;--border:#ffffff12;--text:#e8e8f0;--muted:#6b6b8a}
-body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-height:100vh;padding:24px 16px}
-.hidden{display:none!important}
-.wrap{max-width:520px;margin:0 auto}
-.hero{text-align:center;margin-bottom:26px}
-.logo{font-size:2.2rem;font-weight:900;background:linear-gradient(135deg,var(--pink),var(--purple),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.sub{color:var(--muted);font-size:.8rem;margin-top:4px}
-.card{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:12px}
-.card h3{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;font-weight:700;margin-bottom:14px}
-.tabs{display:flex;gap:4px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:4px;margin-bottom:16px}
-.tabs button{flex:1;padding:9px;border:none;border-radius:9px;background:transparent;color:var(--muted);font-family:inherit;font-weight:600;font-size:.85rem;cursor:pointer}
-.tabs button.on{background:linear-gradient(135deg,rgba(224,60,138,.2),rgba(155,77,224,.2));color:#fff}
-.inp{width:100%;padding:11px 14px;background:var(--bg3);border:1px solid var(--border);border-radius:9px;color:var(--text);font-size:.88rem;outline:none;margin-bottom:10px;font-family:inherit}
-.btn{width:100%;padding:12px;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;border:none;border-radius:10px;font-weight:700;font-size:.9rem;cursor:pointer;font-family:inherit;margin-bottom:6px}
-.btn.gray{background:var(--bg3);color:var(--text);border:1px solid var(--border)}
-.result{padding:12px;border-radius:9px;font-size:.82rem;margin-top:10px;display:none;line-height:1.55;word-break:break-all}
-.result.ok{background:rgba(0,232,122,.06);border:1px solid rgba(0,232,122,.3);color:var(--green);display:block}
-.result.err{background:rgba(255,80,80,.06);border:1px solid rgba(255,80,80,.3);color:var(--red);display:block}
-.result.warn{background:rgba(255,200,50,.06);border:1px solid rgba(255,200,50,.3);color:var(--yellow);display:block}
-.key-line{font-family:'JetBrains Mono',monospace;font-size:1rem;font-weight:700;color:var(--green);padding:10px;background:#0a1520;border-radius:7px;word-break:break-all;margin:8px 0}
-.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
-.stat{background:var(--bg3);padding:12px;border-radius:9px}
-.stat .label{font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700}
-.stat .value{font-size:1.4rem;font-weight:900;margin-top:4px}
-.key-item{padding:10px;background:var(--bg3);border-radius:8px;margin-bottom:6px;font-size:.75rem}
-.key-item .k{font-family:'JetBrains Mono',monospace;color:var(--green);font-weight:700;word-break:break-all}
-.key-item .meta{color:var(--muted);font-size:.68rem;margin-top:4px}
-.spinner{display:inline-block;width:12px;height:12px;border:2px solid rgba(255,255,255,.1);border-top-color:var(--pink);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
-@keyframes spin{to{transform:rotate(360deg)}}
-.topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:11px}
-</style></head><body>
-<div class="wrap">
-<div class="hero"><div class="logo">NANG RESELLER</div><div class="sub">Panel reseller key system</div></div>
-
-<div id="viewAuth">
-  <div class="tabs">
-    <button id="tabLogin" class="on" onclick="switchAuth(0)">Masuk</button>
-    <button id="tabRegister" onclick="switchAuth(1)">Daftar</button>
-  </div>
-  <div class="card" id="cardLogin">
-    <h3>Login</h3>
-    <input class="inp" id="liUser" placeholder="Username atau Email">
-    <input class="inp" id="liPass" type="password" placeholder="Password">
-    <button class="btn" onclick="doLogin()">Masuk</button>
-    <div class="result" id="liResult"></div>
-  </div>
-  <div class="card hidden" id="cardRegister">
-    <h3>Daftar Reseller</h3>
-    <input class="inp" id="rgUser" placeholder="Username">
-    <input class="inp" id="rgEmail" type="email" placeholder="Email aktif">
-    <input class="inp" id="rgPass" type="password" placeholder="Password min 5 karakter">
-    <input class="inp" id="rgPass2" type="password" placeholder="Konfirmasi password">
-    <button class="btn" onclick="doRegister()">Daftar</button>
-    <div class="result" id="rgResult"></div>
-  </div>
-</div>
-
-<div id="viewDash" class="hidden">
-  <div class="topbar">
-    <div><div style="font-weight:700" id="uName">—</div><div style="font-size:.7rem;color:var(--muted)" id="uRole">—</div></div>
-    <button class="btn gray" style="width:auto;padding:7px 12px;margin:0" onclick="doLogout()">Logout</button>
-  </div>
-  <div class="card">
-    <h3>Status</h3>
-    <div class="stat-grid">
-      <div class="stat"><div class="label">Kuota / hari</div><div class="value" id="stQuota">—</div></div>
-      <div class="stat"><div class="label">Hari ini</div><div class="value" id="stToday">—</div></div>
-      <div class="stat"><div class="label">Sisa</div><div class="value" id="stLeft">—</div></div>
-      <div class="stat"><div class="label">Total</div><div class="value" id="stTotal">—</div></div>
-    </div>
-    <div id="pendingMsg" class="result warn" style="display:none"></div>
-  </div>
-  <div class="card">
-    <h3>Generate Key</h3>
-    <input class="inp" id="genUid" placeholder="Roblox User ID (angka)">
-    <button class="btn" onclick="doGenerate()">Generate</button>
-    <div class="result" id="genResult"></div>
-  </div>
-  <div class="card">
-    <h3>Riwayat Key</h3>
-    <div id="keyList"><div style="color:var(--muted);font-size:.8rem">Belum ada key.</div></div>
-  </div>
-</div>
-</div>
-
-<script>
-const TOKEN_KEY='nang_reseller_token';
-let me=null;
-function $(id){return document.getElementById(id);}
-function show(id,v){$(id).classList.toggle('hidden',!v);}
-function switchAuth(i){$('tabLogin').classList.toggle('on',i===0);$('tabRegister').classList.toggle('on',i===1);show('cardLogin',i===0);show('cardRegister',i===1);}
-function setRes(id,cls,html){const e=$(id);e.className='result '+cls;e.innerHTML=html;}
-function getToken(){return localStorage.getItem(TOKEN_KEY);}
-function setToken(t){t?localStorage.setItem(TOKEN_KEY,t):localStorage.removeItem(TOKEN_KEY);}
-async function api(route,body){const opts={method:body?'POST':'GET'};if(body){opts.headers={'Content-Type':'application/json'};opts.body=JSON.stringify(body);}const r=await fetch('/api/'+route,opts);return r.json();}
-async function doLogin(){const identifier=$('liUser').value.trim();const password=$('liPass').value;if(!identifier||!password)return setRes('liResult','err','Isi dulu');setRes('liResult','warn','<span class="spinner"></span>Masuk...');const d=await api('reseller/login',{identifier,password});if(d.error)return setRes('liResult','err',d.error);setToken(d.token);await refreshMe();}
-async function doRegister(){const username=$('rgUser').value.trim();const email=$('rgEmail').value.trim();const password=$('rgPass').value;const pass2=$('rgPass2').value;if(password!==pass2)return setRes('rgResult','err','Password tidak sama');setRes('rgResult','warn','<span class="spinner"></span>Mendaftar...');const d=await api('reseller/register',{username,email,password});if(d.error)return setRes('rgResult','err',d.error);setRes('rgResult','ok',d.message||'Terdaftar.');}
-async function doLogout(){const token=getToken();if(token)await api('reseller/logout',{token});setToken(null);me=null;show('viewDash',false);show('viewAuth',true);}
-async function refreshMe(){const token=getToken();if(!token){show('viewDash',false);show('viewAuth',true);return;}const d=await api('reseller/me?token='+encodeURIComponent(token));if(!d.ok){setToken(null);show('viewDash',false);show('viewAuth',true);return;}me=d.user;show('viewAuth',false);show('viewDash',true);$('uName').textContent=me.username;$('uRole').textContent=me.role;$('stQuota').textContent=me.role==='reseller'?me.quota:'∞';$('stToday').textContent=me.keysToday||0;$('stLeft').textContent=me.role==='reseller'?Math.max(0,me.quota-(me.keysToday||0)):'∞';$('stTotal').textContent=(me.keys||[]).length;const pend=(me.role==='pending'||me.role==='banned');show('pendingMsg',pend);if(pend)$('pendingMsg').innerHTML=me.role==='banned'?'Akun di-ban.':'Akun masih pending.';const kl=$('keyList');if(!me.keys||!me.keys.length){kl.innerHTML='<div style="color:var(--muted);font-size:.8rem">Belum ada key.</div>';}else{kl.innerHTML=me.keys.map(k=>('<div class="key-item"><div class="k">'+k.key+'</div><div class="meta">UID: '+k.uid+' · '+(k.name||'?')+'</div></div>')).join('');}}
-async function doGenerate(){const token=getToken();const uid=$('genUid').value.trim();if(!uid)return setRes('genResult','err','Isi User ID');setRes('genResult','warn','<span class="spinner"></span>Generate...');const d=await api('reseller/generate',{token,uid});if(d.error)return setRes('genResult','err',d.error);setRes('genResult','ok','<b>'+(d.username||'Unknown')+'</b><div class="key-line">'+d.key+'</div><div style="font-size:.75rem;color:var(--muted)">Berlaku: '+d.expires+'</div>');await refreshMe();}
-document.addEventListener('DOMContentLoaded',()=>{refreshMe();['liUser','liPass'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();}));['rgUser','rgEmail','rgPass','rgPass2'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doRegister();}));$('genUid').addEventListener('keydown',e=>{if(e.key==='Enter')doGenerate();});});
-</script></body></html>`;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Redirect</title><script>location.href='/';</script></head><body>Redirecting...</body></html>`;
 }
