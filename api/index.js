@@ -1,4 +1,4 @@
-const BUILD = "68.6";
+const BUILD = "68.7";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -311,7 +311,6 @@ async function handleApi(req, res, path, method, params, ctx) {
     return null;
   }
 
-  // OWNER VERIFY
   if (route === "owner/verify" && method === "POST") {
     const pw = body && body.pw;
     if (pw === ADMIN_PW) {
@@ -325,7 +324,6 @@ async function handleApi(req, res, path, method, params, ctx) {
     return res.status(200).json({ ok: false, error: "password salah" });
   }
 
-  // OWNER GENERATE KEY
   if (route === "owner/generate" && method === "POST") {
     const reqRole = await getOwnerRole(body && body.pw, body && body.ot);
     if (!reqRole || (reqRole !== "owner" && reqRole !== "admin")) {
@@ -345,7 +343,6 @@ async function handleApi(req, res, path, method, params, ctx) {
     return res.status(200).json({ ok: true, key, expires: _expiryStr(uid, key), username: name });
   }
 
-  // UPLOADER
   if (route === "lookup-username" && method === "POST") {
     const username = String((body && body.username) || "").trim();
     if (!username) return res.status(200).json({ ok: false, error: "username kosong" });
@@ -430,7 +427,6 @@ async function handleApi(req, res, path, method, params, ctx) {
     }
   }
 
-  // RESELLER — register
   if (route === "reseller/register" && method === "POST") {
     const username = String((body && body.username) || "").trim();
     const email = String((body && body.email) || "").trim().toLowerCase();
@@ -573,7 +569,6 @@ async function handleApi(req, res, path, method, params, ctx) {
     });
   }
 
-  // OWNER / ADMIN endpoints
   if (route === "owner/users") {
     const reqRole = await getOwnerRole(params.get("pw") || (body && body.pw), params.get("ot") || (body && body.ot));
     if (!reqRole) {
@@ -728,6 +723,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
 .fmt-box{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:12px;font-size:0.75rem;color:var(--muted);line-height:1.9;margin-bottom:12px}
 .fmt-box .label{color:var(--pink);font-weight:600}
 .fmt-box .field{color:var(--text)}
+.fmt-box a{color:var(--cyan)}
 .wa-btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:13px;background:linear-gradient(135deg,#25d366,#128c7e);color:#fff;border:none;border-radius:12px;font-size:0.95rem;font-weight:700;cursor:pointer;text-decoration:none;font-family:inherit}
 .wa-icon{width:18px;height:18px;fill:#fff}
 .inp{width:100%;padding:11px 14px;background:var(--bg3);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:0.88rem;outline:none;margin-bottom:10px;font-family:inherit}
@@ -873,16 +869,61 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 </div>
 </div>
 <div id="uploadContent" class="hidden">
-<div class="warn-box">
-<b>Butuh API Key Roblox.</b> Buat di
-<a href="https://create.roblox.com/dashboard/credentials" target="_blank">Creator Dashboard → Credentials</a>.
-Aktifkan <b>Assets API: Read & Write</b>. IP: Unrestricted.
+
+<div class="card">
+<div class="card-title">📖 Cara Bikin API Key Roblox</div>
+<div class="fmt-box">
+<span class="label">1. Buka:</span><br>
+<a href="https://create.roblox.com/dashboard/credentials" target="_blank">create.roblox.com/dashboard/credentials</a><br><br>
+
+<span class="label">2. Tab API Keys → Create API Key</span><br>
+Kasih nama: <span class="field">NANG_UPLOADER_KEY</span><br><br>
+
+<span class="label">3. Access Permissions:</span><br>
+• Klik <span class="field">Select API System</span> → pilih <span class="field">Assets API</span><br>
+• Centang <span class="field">Write</span> ✅ (wajib)<br>
+• Centang <span class="field">Read</span> ✅ (disarankan)<br><br>
+
+<span class="label">4. Experience Restriction:</span><br>
+Biarkan <span class="field">nonaktif</span> biar bisa upload ke semua game<br><br>
+
+<span class="label">5. IP Restriction:</span><br>
+Biarkan <span class="field">nonaktif</span> biar bisa diakses dari server web<br><br>
+
+<span class="label">6. Save & Generate Key</span> → copy key<br>
+⚠️ Key cuma muncul <span class="field">sekali</span> — simpan dulu
 </div>
+</div>
+
+<div class="card">
+<div class="card-title">📦 Format yang Bisa Diupload</div>
+<div class="fmt-box">
+<span class="label">Model:</span><br>
+• <span class="field">.rbxm</span> — Binary model<br>
+• <span class="field">.rbxmx</span> — XML model<br>
+Max 20 MB per file (Roblox API)<br><br>
+
+<span class="label">Audio:</span><br>
+• <span class="field">.mp3</span> · <span class="field">.ogg</span> · <span class="field">.wav</span> · <span class="field">.flac</span><br>
+Max 7 menit · max 20 MB<br>
+Limit: 10/bulan (belum ID-verified) · 100/bulan (verified)<br><br>
+
+<span class="label">Catatan limit web ini:</span><br>
+Max <span class="field">3 MB</span> per upload (Vercel limit).<br>
+Kalau file lebih besar, pakai Roblox Studio langsung.
+</div>
+</div>
+
+<div class="warn-box">
+<b>Butuh API Key Roblox.</b> Ikutin petunjuk di atas. Kalau salah setting permission, upload bakal gagal dengan error <b>Roblox: unauthorized</b>.
+</div>
+
 <div class="card">
 <div class="card-title">Akun Roblox</div>
 <input type="text" class="inp" id="upUsername" placeholder="Username Roblox..." autocomplete="username">
-<input type="password" class="inp" id="upApiKey" placeholder="API Key Roblox...">
+<input type="password" class="inp" id="upApiKey" placeholder="API Key Roblox (paste di sini)...">
 </div>
+
 <div class="card">
 <div class="card-title">File Model</div>
 <div class="drop" id="upDrop">
@@ -896,6 +937,7 @@ Aktifkan <b>Assets API: Read & Write</b>. IP: Unrestricted.
 <button class="btn-cyan" id="upBtn" onclick="doUploadRbxm()">UPLOAD KE ROBLOX</button>
 <div class="result" id="upResult"></div>
 </div>
+
 </div>
 </div>
 
