@@ -1,4 +1,4 @@
-const BUILD = "68.5";
+const BUILD = "68.6";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -96,6 +96,7 @@ async function listUsers() {
 const _SECRET = "NANG2024";
 const _EXPIRE_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_QUOTA = 10;
+const SESSION_MS = 30 * 24 * 3600 * 1000;
 function _simpleHash(str) { let h = 0; for (let i = 0; i < str.length; i++) h = ((h * 31) + str.charCodeAt(i)) % 1000000007; return h; }
 function _makeKeyAt(uid, ts) {
   const code = Math.floor(ts / 60000) % 10000;
@@ -170,10 +171,6 @@ async function handle(req, res) {
 
   function b64urlEncode(obj) { let b64 = Buffer.from(JSON.stringify(obj), "utf8").toString("base64"); return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
   function b64urlDecode(str) { let s = str.replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "="; return Buffer.from(s, "base64").toString("utf8"); }
-  function makeAuthLink(uid, key, username) {
-    const payload = { u: String(uid), k: key, n: username || "", e: Math.floor(Date.now() / 1000) + 86400 };
-    return "https://" + AUTH_DOMAIN + "/auth?d=" + b64urlEncode(payload);
-  }
 
   const url = new URL(req.url, "https://" + AUTH_DOMAIN);
   const params = url.searchParams;
@@ -198,10 +195,8 @@ async function handle(req, res) {
   if (method === "POST") {
     let body = "";
     await new Promise(r => { req.on("data", c => body += c); req.on("end", r); });
-
     let parsed;
     try { parsed = JSON.parse(body); } catch { res.status(400).json({ valid: false, error: "bad json" }); return; }
-
     const valid = _verifyKey(parsed.uid, parsed.key).valid;
     let username = null;
     if (valid) username = await _getRobloxUser(parsed.uid);
@@ -321,7 +316,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     const pw = body && body.pw;
     if (pw === ADMIN_PW) {
       const token = randomHex(24);
-      const expires = Date.now() + 12 * 3600 * 1000;
+      const expires = Date.now() + SESSION_MS;
       const payload = { expiresAt: expires, role: "owner" };
       _memStore["nang:owner_token:" + token] = payload;
       storeSet("nang:owner_token:" + token, payload).catch(() => {});
@@ -490,7 +485,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     if (user.passwordHash !== hashPw(password, user.salt)) return res.status(200).json({ error: "Password salah" });
 
     const token = randomHex(32);
-    const expires = Date.now() + 7 * 24 * 3600 * 1000;
+    const expires = Date.now() + SESSION_MS;
     _memStore["nang:sess:" + token] = { username: user.username, expiresAt: expires };
     storeSet("nang:sess:" + token, { username: user.username, expiresAt: expires }).catch(() => {});
     return res.status(200).json({
@@ -513,6 +508,21 @@ async function handleApi(req, res, path, method, params, ctx) {
         keysToday: u.keysToday, keys: u.keys || [], createdAt: u.createdAt,
       },
     });
+  }
+
+  if (route === "reseller/refresh" && method === "POST") {
+    const u = await authFromToken();
+    if (!u) return res.status(200).json({ error: "not logged in" });
+    const oldToken = (body && body.token) || params.get("token");
+    if (oldToken) {
+      delete _memStore["nang:sess:" + oldToken];
+      await storeDel("nang:sess:" + oldToken);
+    }
+    const token = randomHex(32);
+    const expires = Date.now() + SESSION_MS;
+    _memStore["nang:sess:" + token] = { username: u.username, expiresAt: expires };
+    storeSet("nang:sess:" + token, { username: u.username, expiresAt: expires }).catch(() => {});
+    return res.status(200).json({ ok: true, token });
   }
 
   if (route === "reseller/logout" && method === "POST") {
@@ -955,6 +965,17 @@ function apiCall(url, opts){
   });
 }
 
+function setCookie(name, val, days){
+  try { document.cookie = name + '=' + encodeURIComponent(val) + '; max-age=' + (days*24*3600) + '; path=/; SameSite=Lax'; } catch(e) {}
+}
+function getCookie(name){
+  try {
+    const m = document.cookie.match(new RegExp('(^|;\\\\s*)' + name + '=([^;]*)'));
+    return m ? decodeURIComponent(m[2]) : null;
+  } catch(e) { return null; }
+}
+function delCookie(name){ setCookie(name, '', -1); }
+
 function switchTab(i){
   document.querySelectorAll('.nav-btn').forEach((b,j)=>b.classList.toggle('active',i===j));
   document.querySelectorAll('.panel').forEach((p,j)=>p.classList.toggle('active',i===j));
@@ -962,12 +983,29 @@ function switchTab(i){
 }
 
 async function checkSession(){
+  if(!TOKEN){
+    const ck = getCookie('nang_session');
+    if(ck){ TOKEN = ck; localStorage.setItem('nang_session', ck); }
+  }
   if(!TOKEN){ ME=null; updateAuthUI(); return; }
   try{
     const d = await apiCall('/?api=reseller/me&token='+encodeURIComponent(TOKEN));
-    if(d.ok){ ME = d.user; }
-    else { TOKEN=null; localStorage.removeItem('nang_session'); }
-  }catch(e){ TOKEN=null; }
+    if(d.ok){
+      ME = d.user;
+      try {
+        const rf = await apiCall('/?api=reseller/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN})});
+        if(rf.ok && rf.token){
+          TOKEN = rf.token;
+          localStorage.setItem('nang_session', TOKEN);
+          setCookie('nang_session', TOKEN, 30);
+        }
+      } catch(e) {}
+    } else {
+      TOKEN=null; ME=null;
+      localStorage.removeItem('nang_session');
+      delCookie('nang_session');
+    }
+  }catch(e){ TOKEN=null; ME=null; }
   updateAuthUI();
 }
 
@@ -1010,6 +1048,7 @@ async function lwDoLogin(){
   if(d.error){ box.className='result err'; box.innerHTML=d.error; return; }
   TOKEN = d.token;
   localStorage.setItem('nang_session', TOKEN);
+  setCookie('nang_session', TOKEN, 30);
   box.className='result ok'; box.innerHTML='Berhasil masuk';
   await checkSession();
 }
@@ -1038,10 +1077,10 @@ async function doAuthLogout(){
   }
   TOKEN=null; ME=null;
   localStorage.removeItem('nang_session');
+  delCookie('nang_session');
   updateAuthUI();
 }
 
-// === MY KEYS ===
 async function refreshMyKeys(){
   if(!TOKEN) return;
   const d = await apiCall('/?api=reseller/me&token='+encodeURIComponent(TOKEN));
@@ -1099,7 +1138,6 @@ async function doMyKeysGenerate(){
   }
 }
 
-// === OWNER FAB ===
 function openOwnerModal(){
   $('ownerModal').classList.add('show');
   if(OWNER_TOKEN){
@@ -1311,6 +1349,10 @@ async function doUploadRbxm(){
 }
 
 document.addEventListener('DOMContentLoaded',()=>{
+  if(!TOKEN){
+    const ck = getCookie('nang_session');
+    if(ck){ TOKEN = ck; localStorage.setItem('nang_session', ck); }
+  }
   checkSession();
   ['lwUser','lwPass'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')lwDoLogin();}));
   ['lwRegUser','lwRegEmail','lwRegPass','lwRegPass2'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')lwDoRegister();}));
