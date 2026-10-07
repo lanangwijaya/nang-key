@@ -1,4 +1,4 @@
-const BUILD = "68.7";
+const BUILD = "68.8";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -64,11 +64,25 @@ async function storeDel(key) {
 function hashPw(pw, salt) { return createHash("sha256").update(salt + "::" + pw).digest("hex"); }
 function randomHex(n) { return randomBytes(n).toString("hex"); }
 
+const DEFAULT_STORE = { price: 500, wa: "", name: "", active: false };
+
+function ensureStore(u) {
+  if (!u) return u;
+  if (!u.store) u.store = { ...DEFAULT_STORE };
+  if (typeof u.store.price !== "number") u.store.price = 500;
+  if (typeof u.store.wa !== "string") u.store.wa = "";
+  if (typeof u.store.name !== "string") u.store.name = "";
+  if (typeof u.store.active !== "boolean") u.store.active = false;
+  return u;
+}
+
 async function getUser(username) {
   if (!username) return null;
-  return storeGet("nang:user:" + String(username).toLowerCase());
+  const u = await storeGet("nang:user:" + String(username).toLowerCase());
+  return ensureStore(u);
 }
 async function saveUser(user) {
+  ensureStore(user);
   await storeSet("nang:user:" + user.username.toLowerCase(), user);
   if (_HAS_KV && Date.now() > _kvBrokenUntil) await _kvCmd("SADD", "nang:userlist", user.username);
   return true;
@@ -80,13 +94,13 @@ async function listUsers() {
     const names = (await _kvCmd("SMEMBERS", "nang:userlist")) || [];
     for (const n of names) {
       const u = await storeGet("nang:user:" + String(n).toLowerCase());
-      if (u && u.username) { out.push(u); seen[u.username.toLowerCase()] = true; }
+      if (u && u.username) { out.push(ensureStore(u)); seen[u.username.toLowerCase()] = true; }
     }
   }
   for (const k of Object.keys(_memStore)) {
     const v = _memStore[k];
     if (v && v.username && v.passwordHash && !seen[v.username.toLowerCase()]) {
-      out.push(v);
+      out.push(ensureStore({ ...v }));
       seen[v.username.toLowerCase()] = true;
     }
   }
@@ -186,10 +200,10 @@ async function handle(req, res) {
 
   if (params.has("api")) {
     const apiPath = "/api/" + String(params.get("api") || "");
-    return await handleApi(req, res, apiPath, method, params, { ADMIN_PW, AUTH_DOMAIN });
+    return await handleApi(req, res, apiPath, method, params, { ADMIN_PW, AUTH_DOMAIN, WA_NUMBER });
   }
   if (path.startsWith("/api/")) {
-    return await handleApi(req, res, path, method, params, { ADMIN_PW, AUTH_DOMAIN });
+    return await handleApi(req, res, path, method, params, { ADMIN_PW, AUTH_DOMAIN, WA_NUMBER });
   }
 
   if (method === "POST") {
@@ -269,7 +283,7 @@ async function handle(req, res) {
 }
 
 async function handleApi(req, res, path, method, params, ctx) {
-  const { ADMIN_PW } = ctx;
+  const { ADMIN_PW, WA_NUMBER } = ctx;
   const route = path.replace(/^\/api\//, "").replace(/\/$/, "");
 
   let body = null;
@@ -333,13 +347,6 @@ async function handleApi(req, res, path, method, params, ctx) {
     if (!uid || !/^\d+$/.test(uid)) return res.status(200).json({ error: "User ID tidak valid" });
     const key = _makeKey(uid);
     const name = await _getRobloxUser(uid);
-    sendWebhook([
-      { name: "Event", value: "Key Generated (Owner Panel)", inline: false },
-      { name: "Target", value: String(name || "Unknown"), inline: true },
-      { name: "User ID", value: uid, inline: true },
-      { name: "Key", value: key, inline: false },
-      { name: "Expires", value: _expiryStr(uid, key), inline: true },
-    ]);
     return res.status(200).json({ ok: true, key, expires: _expiryStr(uid, key), username: name });
   }
 
@@ -367,11 +374,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     const fileName = (body && body.fileName) || "model.rbxm";
     const displayName = (body && body.displayName) || "Model";
     const description = (body && body.description) || "";
-
-    if (!apiKey) return res.status(200).json({ ok: false, error: "API key kosong" });
-    if (!userId) return res.status(200).json({ ok: false, error: "userId kosong" });
-    if (!fileBase64) return res.status(200).json({ ok: false, error: "file kosong" });
-
+    if (!apiKey || !userId || !fileBase64) return res.status(200).json({ ok: false, error: "data kurang" });
     try {
       const buffer = Buffer.from(fileBase64, "base64");
       const form = new FormData();
@@ -381,25 +384,20 @@ async function handleApi(req, res, path, method, params, ctx) {
       form.append("displayName", String(displayName).slice(0, 50));
       form.append("description", String(description).slice(0, 1000));
       form.append("creationContext", JSON.stringify({ creator: { userId: Number(userId) } }));
-
       const r = await fetch("https://apis.roblox.com/assets/v1/assets", {
         method: "POST",
         headers: { "x-api-key": apiKey },
         body: form,
       });
-
       const text = await r.text();
       let data;
       try { data = JSON.parse(text); } catch { data = { raw: text }; }
-
       if (!r.ok) {
         const msg = data.message || data.error || data.raw || ("HTTP " + r.status);
         return res.status(200).json({ ok: false, error: "Roblox: " + msg });
       }
-
       const operationId = data.operationId || (data.path && data.path.split("/").pop());
       if (!operationId) return res.status(200).json({ ok: false, error: "Tidak dapat operationId", raw: data });
-
       return res.status(200).json({ ok: true, operationId });
     } catch (e) {
       return res.status(200).json({ ok: false, error: String(e.message || e) });
@@ -431,30 +429,26 @@ async function handleApi(req, res, path, method, params, ctx) {
     const username = String((body && body.username) || "").trim();
     const email = String((body && body.email) || "").trim().toLowerCase();
     const password = String((body && body.password) || "");
-
     if (username.length < 3) return res.status(200).json({ error: "Username minimal 3 karakter" });
     if (!/^[a-zA-Z0-9_]+$/.test(username)) return res.status(200).json({ error: "Username hanya huruf/angka/underscore" });
     if (!email) return res.status(200).json({ error: "Email wajib diisi" });
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(200).json({ error: "Format email tidak valid" });
     if (password.length < 5) return res.status(200).json({ error: "Password minimal 5 karakter" });
-
     const exist = await getUser(username);
     if (exist) return res.status(200).json({ error: "Username sudah dipakai" });
-
     const emailKey = "nang:email:" + email;
     const emailExist = await storeGet(emailKey);
     if (emailExist) return res.status(200).json({ error: "Email sudah terdaftar" });
-
     const salt = randomHex(8);
     const user = {
       username, email,
       passwordHash: hashPw(password, salt), salt,
       role: "member", quota: DEFAULT_QUOTA, keysToday: 0, lastReset: Date.now(),
       createdAt: Date.now(), keys: [],
+      store: { price: 500, wa: "", name: username, active: false },
     };
     await saveUser(user);
     await storeSet(emailKey, username);
-
     sendWebhook([
       { name: "Event", value: "New Member Registered", inline: false },
       { name: "Username", value: username, inline: true },
@@ -469,7 +463,6 @@ async function handleApi(req, res, path, method, params, ctx) {
     const identifier = String((body && (body.identifier || body.username)) || "").trim();
     const password = String((body && body.password) || "");
     if (!identifier) return res.status(200).json({ error: "Username / email kosong" });
-
     let user = await getUser(identifier);
     if (!user) {
       const emailKey = "nang:email:" + identifier.toLowerCase();
@@ -479,7 +472,6 @@ async function handleApi(req, res, path, method, params, ctx) {
     if (!user) return res.status(200).json({ error: "Akun tidak ditemukan" });
     if (user.role === "banned") return res.status(200).json({ error: "Akun di-ban" });
     if (user.passwordHash !== hashPw(password, user.salt)) return res.status(200).json({ error: "Password salah" });
-
     const token = randomHex(32);
     const expires = Date.now() + SESSION_MS;
     _memStore["nang:sess:" + token] = { username: user.username, expiresAt: expires };
@@ -502,6 +494,7 @@ async function handleApi(req, res, path, method, params, ctx) {
       user: {
         username: u.username, email: u.email || null, role: u.role, quota: u.quota,
         keysToday: u.keysToday, keys: u.keys || [], createdAt: u.createdAt,
+        store: u.store || { ...DEFAULT_STORE },
       },
     });
   }
@@ -534,16 +527,13 @@ async function handleApi(req, res, path, method, params, ctx) {
     const u = await authFromToken();
     if (!u) return res.status(200).json({ error: "not logged in" });
     const canGenerate = u.role === "reseller" || u.role === "admin" || u.role === "owner";
-    if (!canGenerate) {
-      return res.status(200).json({ error: "Role '" + u.role + "' belum bisa generate. Tunggu approve jadi reseller." });
-    }
+    if (!canGenerate) return res.status(200).json({ error: "Role belum bisa generate." });
     if (Date.now() - u.lastReset > 24 * 3600 * 1000) { u.keysToday = 0; u.lastReset = Date.now(); }
     if (u.role === "reseller" && u.keysToday >= u.quota) {
       return res.status(200).json({ error: "Kuota harian habis (" + u.quota + ")" });
     }
     const uid = String((body && body.uid) || "").trim();
     if (!uid || !/^\d+$/.test(uid)) return res.status(200).json({ error: "Roblox User ID tidak valid" });
-
     const key = _makeKey(uid);
     const name = await _getRobloxUser(uid);
     u.keysToday = (u.keysToday || 0) + 1;
@@ -551,16 +541,6 @@ async function handleApi(req, res, path, method, params, ctx) {
     u.keys.unshift({ uid, key, name: name || "Unknown", ts: Date.now(), by: u.username });
     if (u.keys.length > 100) u.keys = u.keys.slice(0, 100);
     await saveUser(u);
-
-    sendWebhook([
-      { name: "Event", value: "Key Generated", inline: false },
-      { name: "By", value: u.username, inline: true },
-      { name: "Role", value: u.role, inline: true },
-      { name: "Target", value: String(name || "Unknown"), inline: true },
-      { name: "User ID", value: uid, inline: true },
-      { name: "Key", value: key, inline: false },
-      { name: "Expires", value: _expiryStr(uid, key), inline: true },
-    ]);
     return res.status(200).json({
       ok: true, key,
       expires: _expiryStr(uid, key),
@@ -569,6 +549,94 @@ async function handleApi(req, res, path, method, params, ctx) {
     });
   }
 
+  // STORE — own
+  if (route === "reseller/store" && method === "GET") {
+    const u = await authFromToken();
+    if (!u) return res.status(200).json({ error: "not logged in" });
+    const can = u.role === "reseller" || u.role === "admin" || u.role === "owner";
+    if (!can) return res.status(200).json({ error: "role belum bisa punya toko" });
+    return res.status(200).json({ ok: true, store: u.store || { ...DEFAULT_STORE } });
+  }
+
+  if (route === "reseller/store" && method === "POST") {
+    const u = await authFromToken();
+    if (!u) return res.status(200).json({ error: "not logged in" });
+    const can = u.role === "reseller" || u.role === "admin" || u.role === "owner";
+    if (!can) return res.status(200).json({ error: "role belum bisa punya toko" });
+
+    const price = Math.max(0, Math.min(99999999, parseInt(body.price) || 500));
+    let wa = String(body.wa || "").trim().replace(/[^0-9]/g, "");
+    const name = String(body.name || "").trim().slice(0, 40);
+    const active = !!body.active;
+
+    if (wa && wa.length < 8) return res.status(200).json({ error: "Nomor WA minimal 8 digit" });
+    if (wa.startsWith("0")) wa = "62" + wa.slice(1);
+
+    u.store = {
+      price,
+      wa,
+      name: name || u.username,
+      active: (active && wa.length >= 8) ? true : false,
+    };
+    await saveUser(u);
+    sendWebhook([
+      { name: "Event", value: "Store Updated", inline: false },
+      { name: "Username", value: u.username, inline: true },
+      { name: "Price", value: "Rp" + price, inline: true },
+      { name: "WA", value: wa || "-", inline: true },
+      { name: "Active", value: u.store.active ? "Ya" : "Tidak", inline: true },
+    ]);
+    return res.status(200).json({ ok: true, store: u.store });
+  }
+
+  // STORE — list all active (buat dropdown Beli Key)
+  if (route === "stores/list" && method === "GET") {
+    const u = await authFromToken();
+    if (!u) return res.status(200).json({ error: "not logged in" });
+    const all = await listUsers();
+    const stores = all
+      .filter(x => x.store && x.store.active && x.store.wa && x.role !== "banned" && x.role !== "member")
+      .map(x => ({
+        username: x.username,
+        name: x.store.name || x.username,
+        price: x.store.price || 500,
+        wa: x.store.wa,
+        role: x.role,
+      }));
+    const order = { owner: 0, admin: 1, reseller: 2 };
+    stores.sort((a, b) => (order[a.role] || 9) - (order[b.role] || 9) || a.name.localeCompare(b.name));
+    return res.status(200).json({ ok: true, stores });
+  }
+
+  // STORE — owner/admin set store orang lain
+  if (route === "owner/setstore" && method === "POST") {
+    const reqRole = await getOwnerRole(body.pw, body.ot);
+    if (!reqRole || (reqRole !== "owner" && reqRole !== "admin")) {
+      return res.status(200).json({ error: "forbidden" });
+    }
+    const target = String(body.username || "").trim();
+    const u = await getUser(target);
+    if (!u) return res.status(200).json({ error: "user tidak ditemukan" });
+    const can = u.role === "reseller" || u.role === "admin" || u.role === "owner";
+    if (!can) return res.status(200).json({ error: "role target belum bisa punya toko" });
+
+    const price = Math.max(0, Math.min(99999999, parseInt(body.price) || 500));
+    let wa = String(body.wa || "").trim().replace(/[^0-9]/g, "");
+    const name = String(body.name || "").trim().slice(0, 40);
+    const active = !!body.active;
+    if (wa.startsWith("0")) wa = "62" + wa.slice(1);
+
+    u.store = {
+      price,
+      wa,
+      name: name || u.username,
+      active: (active && wa.length >= 8) ? true : false,
+    };
+    await saveUser(u);
+    return res.status(200).json({ ok: true, store: u.store });
+  }
+
+  // OWNER/ADMIN
   if (route === "owner/users") {
     const reqRole = await getOwnerRole(params.get("pw") || (body && body.pw), params.get("ot") || (body && body.ot));
     if (!reqRole) {
@@ -583,6 +651,7 @@ async function handleApi(req, res, path, method, params, ctx) {
         username: u.username, email: u.email || null, role: u.role, quota: u.quota,
         keysToday: u.keysToday, totalKeys: (u.keys || []).length,
         createdAt: u.createdAt,
+        store: u.store || null,
       })),
     });
   }
@@ -590,43 +659,25 @@ async function handleApi(req, res, path, method, params, ctx) {
   if (route === "owner/setrole" && method === "POST") {
     const reqRole = await getOwnerRole(body.pw, body.ot);
     if (!reqRole) return res.status(200).json({ error: "forbidden" });
-
     const target = String((body && body.username) || "").trim();
     const role = String((body && body.role) || "");
     const validRoles = ["member", "reseller", "admin", "owner", "banned"];
-    if (!validRoles.includes(role)) {
-      return res.status(200).json({ error: "role invalid" });
-    }
-
+    if (!validRoles.includes(role)) return res.status(200).json({ error: "role invalid" });
     const u = await getUser(target);
     if (!u) return res.status(200).json({ error: "user tidak ditemukan" });
-
     if (reqRole === "admin") {
-      if (u.role === "admin" || u.role === "owner") {
-        return res.status(200).json({ error: "admin tidak bisa ubah " + u.role });
-      }
-      if (role === "admin" || role === "owner") {
-        return res.status(200).json({ error: "admin tidak bisa promote ke " + role });
-      }
+      if (u.role === "admin" || u.role === "owner") return res.status(200).json({ error: "admin gak bisa ubah " + u.role });
+      if (role === "admin" || role === "owner") return res.status(200).json({ error: "admin gak bisa promote ke " + role });
     }
-
     u.role = role;
     if (role === "reseller" && (!u.quota || u.quota < 1)) u.quota = DEFAULT_QUOTA;
     await saveUser(u);
-    sendWebhook([
-      { name: "Event", value: "Role Changed", inline: false },
-      { name: "Target", value: u.username, inline: true },
-      { name: "New Role", value: role, inline: true },
-      { name: "By", value: reqRole, inline: true },
-    ]);
     return res.status(200).json({ ok: true });
   }
 
   if (route === "owner/setquota" && method === "POST") {
     const reqRole = await getOwnerRole(body.pw, body.ot);
-    if (!reqRole || (reqRole !== "owner" && reqRole !== "admin")) {
-      return res.status(200).json({ error: "forbidden" });
-    }
+    if (!reqRole || (reqRole !== "owner" && reqRole !== "admin")) return res.status(200).json({ error: "forbidden" });
     const target = String((body && body.username) || "").trim();
     const quota = Math.max(0, Math.min(9999, parseInt(body && body.quota) || 0));
     const u = await getUser(target);
@@ -638,7 +689,7 @@ async function handleApi(req, res, path, method, params, ctx) {
 
   if (route === "owner/delete" && method === "POST") {
     const reqRole = await getOwnerRole(body.pw, body.ot);
-    if (reqRole !== "owner") return res.status(200).json({ error: "cuma owner yang bisa hapus user" });
+    if (reqRole !== "owner") return res.status(200).json({ error: "cuma owner" });
     const target = String((body && body.username) || "").trim();
     const u = await getUser(target);
     if (u && u.email) await storeDel("nang:email:" + u.email.toLowerCase());
@@ -725,10 +776,12 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
 .fmt-box .field{color:var(--text)}
 .fmt-box a{color:var(--cyan)}
 .wa-btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:13px;background:linear-gradient(135deg,#25d366,#128c7e);color:#fff;border:none;border-radius:12px;font-size:0.95rem;font-weight:700;cursor:pointer;text-decoration:none;font-family:inherit}
+.wa-btn:disabled{opacity:.5;cursor:not-allowed}
 .wa-icon{width:18px;height:18px;fill:#fff}
 .inp{width:100%;padding:11px 14px;background:var(--bg3);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:0.88rem;outline:none;margin-bottom:10px;font-family:inherit}
 .inp:focus{border-color:rgba(224,60,138,0.5)}
 .inp::placeholder{color:var(--muted)}
+select.inp{cursor:pointer;-webkit-appearance:none;appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);background-position:calc(100% - 18px) 50%,calc(100% - 13px) 50%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:34px}
 .btn-main{width:100%;padding:12px;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;border:none;border-radius:11px;font-weight:700;font-size:0.9rem;cursor:pointer;font-family:inherit;margin-bottom:8px}
 .btn-cyan{width:100%;padding:12px;background:linear-gradient(135deg,#0099cc,var(--cyan));color:#000;border:none;border-radius:11px;font-weight:700;font-size:0.9rem;cursor:pointer;font-family:inherit}
 .btn-green{width:100%;padding:11px;background:linear-gradient(135deg,#00b866,var(--green));color:#000;border:none;border-radius:11px;font-weight:700;font-size:0.85rem;cursor:pointer;font-family:inherit;margin-top:8px}
@@ -761,6 +814,11 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
 .key-item .k{font-family:'JetBrains Mono',monospace;color:var(--green);font-weight:700;word-break:break-all}
 .key-item .meta{color:var(--muted);font-size:.68rem;margin-top:4px}
 .key-item .cp{padding:5px 10px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.68rem;font-weight:700;cursor:pointer;font-family:inherit}
+.toggle{display:flex;align-items:center;justify-content:space-between;padding:10px 0;font-size:.85rem}
+.toggle .switch{position:relative;width:44px;height:24px;background:var(--bg3);border-radius:12px;cursor:pointer;transition:.2s;border:1px solid var(--border)}
+.toggle .switch.on{background:linear-gradient(135deg,var(--pink),var(--purple));border-color:transparent}
+.toggle .switch::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;background:#fff;border-radius:50%;transition:.2s}
+.toggle .switch.on::after{left:22px}
 footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opacity:0.5}
 .hidden{display:none!important}
 .auth-bar{position:fixed;top:16px;right:16px;z-index:50;display:flex;gap:8px;align-items:center;font-size:.8rem}
@@ -799,7 +857,6 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 </style></head><body>
 
 <div class="auth-bar" id="authBar"></div>
-
 <button class="fab" id="ownerFab" onclick="openOwnerModal()" title="Owner">🔒</button>
 
 <div class="hero"><div class="logo">NANG<span class="logo-badge">KEY</span></div><div class="sub">Roblox Script Key System</div></div>
@@ -835,18 +892,28 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
   <button class="nav-btn" onclick="switchTab(1)">Convert</button>
   <button class="nav-btn" id="navUpload" onclick="switchTab(2)">Upload</button>
   <button class="nav-btn hidden" id="navMyKeys" onclick="switchTab(3)">My Keys</button>
+  <button class="nav-btn hidden" id="navStore" onclick="switchTab(4)">Toko</button>
 </div>
 
 <div class="panel active" id="tab0">
 <div class="card">
+<div class="card-title">Pilih Penjual</div>
+<select class="inp" id="buyStoreSel" onchange="onStoreChange()">
+  <option value="">Memuat...</option>
+</select>
+<div class="fmt-box" id="buyStoreInfo">Pilih penjual di atas buat liat harga + WA.</div>
+</div>
+
+<div class="card">
 <div class="card-title">Pembayaran QRIS</div>
 <div class="qr-wrap">
 <img src="/qr.png" class="qr-img" alt="QR" onerror="this.outerHTML='<div class=qr-img-placeholder>QR<br>belum<br>tersedia</div>'">
-<div class="qr-info"><div class="price-badge">Rp500 / Key</div><div class="qr-steps">Scan QR di kiri<br>Transfer <span>Rp500</span><br>Chat WA owner<br>Key dikirim otomatis</div></div>
+<div class="qr-info"><div class="price-badge" id="buyPrice">Rp500 / Key</div><div class="qr-steps">Scan QR di kiri<br>Transfer <span id="buyPriceTransfer">Rp500</span><br>Chat WA penjual<br>Key dikirim otomatis</div></div>
 </div>
-<div class="fmt-box"><span class="label">Format pesan WA:</span><br><span class="field">Beli Key NANG</span><br>Nama: <span class="field" id="waNama">[isi di bawah]</span><br>Roblox ID: <span class="field" id="waUid">[isi di bawah]</span><br>Bukti TF: <span class="field">[screenshot]</span></div>
-<a href="https://wa.me/${wa}?text=Beli%20Key%20NANG" class="wa-btn" id="waBtn" target="_blank"><svg class="wa-icon" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347"/></svg>Chat WhatsApp Owner</a>
+<div class="fmt-box"><span class="label">Format pesan WA:</span><br><span class="field" id="buyWaName">Beli Key NANG</span><br>Nama: <span class="field" id="waNama">[isi di bawah]</span><br>Roblox ID: <span class="field" id="waUid">[isi di bawah]</span><br>Bukti TF: <span class="field">[screenshot]</span></div>
+<a href="#" class="wa-btn" id="waBtn" target="_blank"><svg class="wa-icon" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347"/></svg><span id="buyWaBtnText">Chat WhatsApp Penjual</span></a>
 </div>
+
 <div class="card"><div class="card-title">Cek Username Roblox</div><input type="text" class="inp" id="lookupId" placeholder="Masukkan Roblox User ID..."><button class="btn-main" onclick="doLookup()">Cek Username</button><div id="lookupResult"></div></div>
 </div>
 
@@ -865,70 +932,44 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 <div class="locked">
 🔒 Role lu belum bisa upload<br>
 <div style="font-size:.75rem;margin-top:6px">Butuh role minimal: <b>reseller</b></div>
-<div style="font-size:.7rem;margin-top:4px;color:var(--muted)">Hubungi owner buat naikin role.</div>
 </div>
 </div>
 <div id="uploadContent" class="hidden">
-
 <div class="card">
 <div class="card-title">📖 Cara Bikin API Key Roblox</div>
 <div class="fmt-box">
-<span class="label">1. Buka:</span><br>
-<a href="https://create.roblox.com/dashboard/credentials" target="_blank">create.roblox.com/dashboard/credentials</a><br><br>
-
-<span class="label">2. Tab API Keys → Create API Key</span><br>
-Kasih nama: <span class="field">NANG_UPLOADER_KEY</span><br><br>
-
+<span class="label">1. Buka:</span> <a href="https://create.roblox.com/dashboard/credentials" target="_blank">create.roblox.com/dashboard/credentials</a><br><br>
+<span class="label">2. API Keys → Create API Key</span><br>
+Nama: <span class="field">NANG_UPLOADER_KEY</span><br><br>
 <span class="label">3. Access Permissions:</span><br>
-• Klik <span class="field">Select API System</span> → pilih <span class="field">Assets API</span><br>
-• Centang <span class="field">Write</span> ✅ (wajib)<br>
-• Centang <span class="field">Read</span> ✅ (disarankan)<br><br>
-
-<span class="label">4. Experience Restriction:</span><br>
-Biarkan <span class="field">nonaktif</span> biar bisa upload ke semua game<br><br>
-
-<span class="label">5. IP Restriction:</span><br>
-Biarkan <span class="field">nonaktif</span> biar bisa diakses dari server web<br><br>
-
-<span class="label">6. Save & Generate Key</span> → copy key<br>
-⚠️ Key cuma muncul <span class="field">sekali</span> — simpan dulu
+• Select API System → <span class="field">Assets API</span><br>
+• Centang <span class="field">Write</span> ✅<br>
+• Centang <span class="field">Read</span> ✅<br><br>
+<span class="label">4. Experience Restriction:</span> nonaktif<br>
+<span class="label">5. IP Restriction:</span> nonaktif<br>
+<span class="label">6. Save & Generate</span> → copy key<br>
+⚠️ Cuma muncul sekali
 </div>
 </div>
-
 <div class="card">
-<div class="card-title">📦 Format yang Bisa Diupload</div>
+<div class="card-title">📦 Format Support</div>
 <div class="fmt-box">
-<span class="label">Model:</span><br>
-• <span class="field">.rbxm</span> — Binary model<br>
-• <span class="field">.rbxmx</span> — XML model<br>
-Max 20 MB per file (Roblox API)<br><br>
-
-<span class="label">Audio:</span><br>
-• <span class="field">.mp3</span> · <span class="field">.ogg</span> · <span class="field">.wav</span> · <span class="field">.flac</span><br>
-Max 7 menit · max 20 MB<br>
-Limit: 10/bulan (belum ID-verified) · 100/bulan (verified)<br><br>
-
-<span class="label">Catatan limit web ini:</span><br>
-Max <span class="field">3 MB</span> per upload (Vercel limit).<br>
-Kalau file lebih besar, pakai Roblox Studio langsung.
+Model: <span class="field">.rbxm</span> / <span class="field">.rbxmx</span> — max 20 MB<br>
+Audio: <span class="field">.mp3 .ogg .wav .flac</span> — max 7 menit<br>
+Limit web ini: max <span class="field">3 MB</span>
 </div>
 </div>
-
-<div class="warn-box">
-<b>Butuh API Key Roblox.</b> Ikutin petunjuk di atas. Kalau salah setting permission, upload bakal gagal dengan error <b>Roblox: unauthorized</b>.
-</div>
-
+<div class="warn-box"><b>Butuh API Key.</b> Kalau salah permission → error <b>Roblox: unauthorized</b>.</div>
 <div class="card">
 <div class="card-title">Akun Roblox</div>
-<input type="text" class="inp" id="upUsername" placeholder="Username Roblox..." autocomplete="username">
-<input type="password" class="inp" id="upApiKey" placeholder="API Key Roblox (paste di sini)...">
+<input type="text" class="inp" id="upUsername" placeholder="Username Roblox...">
+<input type="password" class="inp" id="upApiKey" placeholder="API Key Roblox...">
 </div>
-
 <div class="card">
-<div class="card-title">File Model</div>
+<div class="card-title">File</div>
 <div class="drop" id="upDrop">
 <div class="drop-icon">📦</div>
-<div class="drop-text">Klik atau drop file di sini</div>
+<div class="drop-text">Klik atau drop file</div>
 <div class="drop-hint">.rbxm / .rbxmx — max 3 MB</div>
 </div>
 <input type="file" id="upFileInput" accept=".rbxm,.rbxmx" hidden>
@@ -937,7 +978,6 @@ Kalau file lebih besar, pakai Roblox Studio langsung.
 <button class="btn-cyan" id="upBtn" onclick="doUploadRbxm()">UPLOAD KE ROBLOX</button>
 <div class="result" id="upResult"></div>
 </div>
-
 </div>
 </div>
 
@@ -946,21 +986,45 @@ Kalau file lebih besar, pakai Roblox Studio langsung.
 <div class="card-title">Kuota Saya</div>
 <div class="stat-grid">
   <div class="stat"><div class="label">Kuota / hari</div><div class="value" id="mkQuota">—</div></div>
-  <div class="stat"><div class="label">Dipakai hari ini</div><div class="value" id="mkToday">—</div></div>
+  <div class="stat"><div class="label">Dipakai</div><div class="value" id="mkToday">—</div></div>
   <div class="stat"><div class="label">Sisa</div><div class="value" id="mkLeft">—</div></div>
-  <div class="stat"><div class="label">Total key</div><div class="value" id="mkTotal">—</div></div>
+  <div class="stat"><div class="label">Total</div><div class="value" id="mkTotal">—</div></div>
 </div>
 </div>
 <div class="card">
 <div class="card-title">Generate Key</div>
-<div class="fmt-box">Masukkan Roblox User ID target. Key valid 24 jam dari sekarang.</div>
-<input type="text" class="inp" id="mkUid" placeholder="Roblox User ID (angka)">
+<input type="text" class="inp" id="mkUid" placeholder="Roblox User ID">
 <button class="btn-cyan" id="mkGenBtn" onclick="doMyKeysGenerate()">GENERATE KEY</button>
 <div class="result" id="mkResult"></div>
 </div>
 <div class="card">
 <div class="card-title">Riwayat Key</div>
 <div id="mkHistory"><div style="color:var(--muted);font-size:.8rem">Belum ada key.</div></div>
+</div>
+</div>
+
+<div class="panel" id="tab4">
+<div class="card">
+<div class="card-title">🏪 Toko Saya</div>
+<div class="fmt-box">Atur nama toko, harga, dan nomor WA. Kalau diaktifkan, toko lu muncul di halaman Beli Key semua user.</div>
+<input type="text" class="inp" id="stName" placeholder="Nama toko (contoh: NANG Store)">
+<input type="text" class="inp" id="stPrice" placeholder="Harga per key (angka, contoh: 500)" inputmode="numeric">
+<input type="text" class="inp" id="stWa" placeholder="Nomor WA (contoh: 081234567890)" inputmode="tel">
+<div class="toggle">
+  <span>Aktifkan toko di halaman Beli Key</span>
+  <div class="switch" id="stActiveSw" onclick="toggleStoreActive()"></div>
+</div>
+<button class="btn-cyan" onclick="doSaveStore()">SIMPAN TOKO</button>
+<div class="result" id="stResult"></div>
+</div>
+<div class="card">
+<div class="card-title">Preview</div>
+<div class="fmt-box" id="stPreview">
+Nama: <span class="field">-</span><br>
+Harga: <span class="field">-</span><br>
+WA: <span class="field">-</span><br>
+Status: <span class="field">Nonaktif</span>
+</div>
 </div>
 </div>
 </div>
@@ -996,13 +1060,15 @@ let TOKEN = localStorage.getItem('nang_session') || null;
 let OWNER_TOKEN = localStorage.getItem('nang_owner') || null;
 let ME = null;
 let lastLookup={uid:null,name:null};
+let STORES = [];
+let MY_STORE = { price: 500, wa: "", name: "", active: false };
 
 function $(id){return document.getElementById(id);}
 function apiCall(url, opts){
   return fetch(url, opts).then(r=>{
     return r.text().then(t=>{
       try { return JSON.parse(t); }
-      catch(e) { return { error: 'Server tidak balikin JSON. Response: '+t.slice(0,120) }; }
+      catch(e) { return { error: 'Server tidak balikin JSON: '+t.slice(0,120) }; }
     });
   });
 }
@@ -1018,10 +1084,14 @@ function getCookie(name){
 }
 function delCookie(name){ setCookie(name, '', -1); }
 
+function fmtRp(n){ n = parseInt(n) || 0; return 'Rp' + n.toLocaleString('id-ID'); }
+
 function switchTab(i){
   document.querySelectorAll('.nav-btn').forEach((b,j)=>b.classList.toggle('active',i===j));
   document.querySelectorAll('.panel').forEach((p,j)=>p.classList.toggle('active',i===j));
   if(i===3) refreshMyKeys();
+  if(i===4) refreshStore();
+  if(i===0) loadStores();
 }
 
 async function checkSession(){
@@ -1049,6 +1119,7 @@ async function checkSession(){
     }
   }catch(e){ TOKEN=null; ME=null; }
   updateAuthUI();
+  if(ME && ME.role !== 'banned') loadStores();
 }
 
 function updateAuthUI(){
@@ -1071,6 +1142,9 @@ function updateAuthUI(){
 
   const canMyKeys = logged && (ME.role==='owner'||ME.role==='admin'||ME.role==='reseller');
   $('navMyKeys').classList.toggle('hidden', !canMyKeys);
+
+  const canStore = logged && (ME.role==='owner'||ME.role==='admin'||ME.role==='reseller');
+  $('navStore').classList.toggle('hidden', !canStore);
 }
 
 function lwSwitch(i){
@@ -1123,6 +1197,82 @@ async function doAuthLogout(){
   updateAuthUI();
 }
 
+async function loadStores(){
+  if(!TOKEN) return;
+  const d = await apiCall('/?api=stores/list&token='+encodeURIComponent(TOKEN));
+  if(!d.ok){ STORES = []; }
+  else STORES = d.stores || [];
+  const sel = $('buyStoreSel');
+  if(!STORES.length){
+    sel.innerHTML = '<option value="">Belum ada penjual aktif</option>';
+    $('buyStoreInfo').innerHTML = 'Belum ada penjual aktif. Owner belum setup toko atau belum aktif.';
+    return;
+  }
+  const prev = sel.value;
+  sel.innerHTML = STORES.map((s,i)=>(
+    '<option value="'+i+'">'+s.name+' ('+s.role+') — Rp'+(s.price||0).toLocaleString('id-ID')+'</option>'
+  )).join('');
+  if(prev && STORES[prev]) sel.value = prev;
+  onStoreChange();
+}
+
+function onStoreChange(){
+  const idx = parseInt($('buyStoreSel').value);
+  if(isNaN(idx) || !STORES[idx]){
+    $('buyStoreInfo').innerHTML = 'Pilih penjual di atas.';
+    return;
+  }
+  const s = STORES[idx];
+  const price = s.price || 500;
+  $('buyStoreInfo').innerHTML = 'Penjual: <span class="field">'+s.name+'</span><br>Harga: <span class="field">'+fmtRp(price)+'</span><br>WA: <span class="field">'+s.wa+'</span>';
+  $('buyPrice').textContent = fmtRp(price) + ' / Key';
+  $('buyPriceTransfer').textContent = fmtRp(price);
+  $('buyWaName').textContent = 'Beli Key ' + s.name;
+  $('buyWaBtnText').textContent = 'Chat WhatsApp ' + s.name;
+  updateWA();
+}
+
+function updateWA(){
+  const idx = parseInt($('buyStoreSel').value);
+  if(isNaN(idx) || !STORES[idx]){
+    $('waBtn').href = '#';
+    $('waBtn').removeAttribute('target');
+    return;
+  }
+  const s = STORES[idx];
+  const nama = lastLookup.name || '[isi di bawah]';
+  const uid = lastLookup.uid || '[isi di bawah]';
+  const text = 'Beli Key ' + s.name + '\\nNama: ' + nama + '\\nRoblox ID: ' + uid + '\\nBukti TF: [screenshot]';
+  $('waBtn').href = 'https://wa.me/' + s.wa + '?text=' + encodeURIComponent(text);
+  $('waBtn').setAttribute('target','_blank');
+  $('waNama').textContent = nama;
+  $('waUid').textContent = uid;
+}
+
+async function doLookup(){
+  const uid=$('lookupId').value.trim();
+  const box=$('lookupResult');
+  if(!uid)return;
+  box.style.display='block';box.className='result info';box.innerHTML='<span class="spinner"></span>Mencari...';
+  try{
+    const r=await fetch('/?lookup='+encodeURIComponent(uid));
+    const d=await r.json();
+    if(d.name){
+      lastLookup={uid:d.uid,name:d.name};
+      updateWA();
+      box.style.display='none';
+      const ex=$('userCard');if(ex)ex.remove();
+      const card=document.createElement('div');
+      card.id='userCard';card.className='user-card';
+      card.innerHTML='<div class="user-avatar">'+d.name.charAt(0).toUpperCase()+'</div><div class="user-info"><div class="user-name">'+d.name+'</div><div class="user-id">ID: '+d.uid+'</div></div>';
+      box.parentNode.insertBefore(card,box.nextSibling);
+    } else {
+      box.className='result err';box.innerHTML='User ID tidak ditemukan';
+    }
+  }catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}
+}
+let lookupT;$('lookupId').addEventListener('input',()=>{clearTimeout(lookupT);lookupT=setTimeout(doLookup,600);});
+
 async function refreshMyKeys(){
   if(!TOKEN) return;
   const d = await apiCall('/?api=reseller/me&token='+encodeURIComponent(TOKEN));
@@ -1133,32 +1283,26 @@ async function refreshMyKeys(){
   const today = ME.keysToday || 0;
   const left = isReseller ? Math.max(0, ME.quota - today) : '∞';
   const total = (ME.keys || []).length;
-
   $('mkQuota').textContent = quota;
   $('mkToday').textContent = today;
   $('mkLeft').textContent = left;
   $('mkTotal').textContent = total;
-
   const hist = $('mkHistory');
   if(!ME.keys || !ME.keys.length){
     hist.innerHTML = '<div style="color:var(--muted);font-size:.8rem">Belum ada key.</div>';
     return;
   }
   hist.innerHTML = ME.keys.map(k => (
-    '<div class="key-item">'+
-      '<div class="info"><div class="k">'+k.key+'</div>'+
-      '<div class="meta">UID: '+k.uid+' · '+(k.name||'?')+' · '+new Date(k.ts).toLocaleString('id-ID')+'</div></div>'+
-      '<button class="cp" onclick="copyKey(\\''+k.key+'\\',this)">COPY</button>'+
-    '</div>'
+    '<div class="key-item"><div class="info"><div class="k">'+k.key+'</div>'+
+    '<div class="meta">UID: '+k.uid+' · '+(k.name||'?')+' · '+new Date(k.ts).toLocaleString('id-ID')+'</div></div>'+
+    '<button class="cp" onclick="copyKey(\\''+k.key+'\\',this)">COPY</button></div>'
   )).join('');
 }
-
 function copyKey(k, btn){
   navigator.clipboard.writeText(k).then(()=>{
     if(btn){ btn.textContent = 'OK'; setTimeout(()=>{ btn.textContent = 'COPY'; }, 1200); }
   });
 }
-
 async function doMyKeysGenerate(){
   const uid = $('mkUid').value.trim();
   const box = $('mkResult');
@@ -1170,13 +1314,71 @@ async function doMyKeysGenerate(){
     const d = await apiCall('/?api=reseller/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN, uid})});
     if(d.error){ box.className='result err'; box.innerHTML=d.error; return; }
     box.className='result ok';
-    box.innerHTML = '<b>'+(d.username||'Unknown')+'</b><div class="key-line">'+d.key+'</div><div style="font-size:.75rem;color:var(--muted)">Berlaku: '+d.expires+' · Sisa kuota: '+d.remaining+'</div><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';
+    box.innerHTML = '<b>'+(d.username||'Unknown')+'</b><div class="key-line">'+d.key+'</div><div style="font-size:.75rem;color:var(--muted)">Berlaku: '+d.expires+' · Sisa: '+d.remaining+'</div><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';
     $('mkUid').value='';
     await refreshMyKeys();
   } catch(e) {
     box.className='result err'; box.innerHTML='Error: '+e.message;
   } finally {
     btn.disabled = false; btn.textContent = 'GENERATE KEY';
+  }
+}
+
+async function refreshStore(){
+  if(!TOKEN) return;
+  const d = await apiCall('/?api=reseller/store&token='+encodeURIComponent(TOKEN));
+  if(!d.ok) return;
+  MY_STORE = d.store || { price: 500, wa: "", name: "", active: false };
+  $('stName').value = MY_STORE.name || '';
+  $('stPrice').value = MY_STORE.price || 500;
+  $('stWa').value = MY_STORE.wa || '';
+  $('stActiveSw').classList.toggle('on', !!MY_STORE.active);
+  updateStorePreview();
+}
+
+function toggleStoreActive(){
+  $('stActiveSw').classList.toggle('on');
+  updateStorePreview();
+}
+
+function updateStorePreview(){
+  const name = $('stName').value.trim() || '-';
+  const price = parseInt($('stPrice').value) || 0;
+  const waRaw = $('stWa').value.trim();
+  let wa = waRaw.replace(/[^0-9]/g, '');
+  if(wa.startsWith('0')) wa = '62' + wa.slice(1);
+  wa = wa || '-';
+  const active = $('stActiveSw').classList.contains('on');
+  $('stPreview').innerHTML =
+    'Nama: <span class="field">'+name+'</span><br>'+
+    'Harga: <span class="field">'+fmtRp(price)+'</span><br>'+
+    'WA: <span class="field">'+wa+'</span><br>'+
+    'Status: <span class="field">'+(active ? 'Aktif' : 'Nonaktif')+'</span>';
+}
+
+$('stName').addEventListener('input', updateStorePreview);
+$('stPrice').addEventListener('input', updateStorePreview);
+$('stWa').addEventListener('input', updateStorePreview);
+
+async function doSaveStore(){
+  const name = $('stName').value.trim();
+  const price = parseInt($('stPrice').value) || 0;
+  let wa = $('stWa').value.trim().replace(/[^0-9]/g, '');
+  const active = $('stActiveSw').classList.contains('on');
+  const box = $('stResult');
+  if(price < 0){ box.className='result err'; box.innerHTML='Harga tidak valid'; return; }
+  if(active && wa.length < 8){ box.className='result err'; box.innerHTML='Kalau toko aktif, nomor WA wajib (min 8 digit)'; return; }
+  box.className='result info'; box.innerHTML='<span class="spinner"></span>Menyimpan...';
+  try {
+    const d = await apiCall('/?api=reseller/store',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN, name, price, wa, active})});
+    if(d.error){ box.className='result err'; box.innerHTML=d.error; return; }
+    MY_STORE = d.store;
+    box.className='result ok';
+    box.innerHTML = 'Toko tersimpan! ' + (d.store.active ? 'Toko aktif, muncul di halaman Beli Key.' : 'Toko nonaktif.');
+    await refreshStore();
+    await loadStores();
+  } catch(e) {
+    box.className='result err'; box.innerHTML='Error: '+e.message;
   }
 }
 
@@ -1217,7 +1419,6 @@ async function doOwnerLogin(){
     box.className='result err'; box.innerHTML='Error: '+e.message;
   }
 }
-
 function doOwnerLogout(){
   OWNER_TOKEN = null;
   localStorage.removeItem('nang_owner');
@@ -1240,37 +1441,24 @@ async function loadUsers(){
       const isOwner = u.role === 'owner';
       const isBanned = u.role === 'banned';
       const isMember = u.role === 'member';
-
       let actions = '';
 
-      if (!isReseller && !isAdmin && !isOwner) {
-        actions += '<button onclick="setUserRole(\\''+u.username+'\\',\\'reseller\\')">→ Reseller</button>';
-      }
-      if (!isAdmin && !isOwner) {
-        actions += '<button onclick="setUserRole(\\''+u.username+'\\',\\'admin\\')">→ Admin</button>';
-      }
-      if (!isOwner && !isMember) {
-        actions += '<button onclick="setUserRole(\\''+u.username+'\\',\\'member\\')">→ Member</button>';
-      }
+      if (!isReseller && !isAdmin && !isOwner) actions += '<button onclick="setUserRole(\\''+u.username+'\\',\\'reseller\\')">→ Reseller</button>';
+      if (!isAdmin && !isOwner) actions += '<button onclick="setUserRole(\\''+u.username+'\\',\\'admin\\')">→ Admin</button>';
+      if (!isOwner && !isMember) actions += '<button onclick="setUserRole(\\''+u.username+'\\',\\'member\\')">→ Member</button>';
       if (!isOwner) {
-        if (isBanned) {
-          actions += '<button onclick="setUserRole(\\''+u.username+'\\',\\'member\\')">Unban</button>';
-        } else {
-          actions += '<button onclick="setUserRole(\\''+u.username+'\\',\\'banned\\')">Ban</button>';
-        }
+        if (isBanned) actions += '<button onclick="setUserRole(\\''+u.username+'\\',\\'member\\')">Unban</button>';
+        else actions += '<button onclick="setUserRole(\\''+u.username+'\\',\\'banned\\')">Ban</button>';
       }
-      if (isReseller) {
-        actions += '<button onclick="editUserQuota(\\''+u.username+'\\','+u.quota+')">Q:'+u.quota+'</button>';
-      }
-      if (ME && ME.role === 'owner' && u.username !== ME.username) {
-        actions += '<button onclick="delUser(\\''+u.username+'\\')">Hapus</button>';
-      }
+      if (isReseller) actions += '<button onclick="editUserQuota(\\''+u.username+'\\','+u.quota+')">Q:'+u.quota+'</button>';
+      if ((isReseller || isAdmin || isOwner)) actions += '<button onclick="editUserStore(\\''+u.username+'\\')">🏪 Toko</button>';
+      if (ME && ME.role === 'owner' && u.username !== ME.username) actions += '<button onclick="delUser(\\''+u.username+'\\')">Hapus</button>';
 
-      return '<div class="user-row">'+
-        '<div><div class="name">'+u.username+' <span class="role-tag '+u.role+'">'+u.role+'</span></div>'+
-        '<div class="meta">'+(u.email ? u.email + ' · ' : '')+'q:'+u.quota+' t:'+u.keysToday+'</div></div>'+
-        '<div class="row-actions">'+actions+'</div>'+
-      '</div>';
+      const storeInfo = (u.store && u.store.active && u.store.wa) ? ' · 🏪 '+fmtRp(u.store.price||0) : '';
+
+      return '<div class="user-row"><div><div class="name">'+u.username+' <span class="role-tag '+u.role+'">'+u.role+'</span></div>'+
+        '<div class="meta">'+(u.email ? u.email + ' · ' : '')+'q:'+u.quota+' t:'+u.keysToday+storeInfo+'</div></div>'+
+        '<div class="row-actions">'+actions+'</div></div>';
     }).join('');
   }catch(e){
     box.innerHTML='<div style="color:var(--red);font-size:.8rem">Error: '+e.message+'</div>';
@@ -1295,6 +1483,23 @@ async function delUser(username){
   if(d.error) return alert(d.error);
   loadUsers();
 }
+async function editUserStore(username){
+  const all = await apiCall('/?api=owner/users&ot='+encodeURIComponent(OWNER_TOKEN));
+  if(!all.ok) return alert('Gagal load');
+  const u = (all.users || []).find(x => x.username === username);
+  if(!u) return alert('User gak ada');
+  const st = u.store || { price: 500, wa: '', name: username, active: false };
+  const name = prompt('Nama toko untuk '+username+':', st.name || username);
+  if(name === null) return;
+  const price = prompt('Harga per key (angka, Rp):', st.price || 500);
+  if(price === null) return;
+  const wa = prompt('Nomor WA (contoh 08123xxx / 628123xxx):', st.wa || '');
+  if(wa === null) return;
+  const active = confirm('Aktifkan toko di halaman Beli Key?\\n\\nOK = Aktifkan\\nCancel = Nonaktif');
+  const d = await apiCall('/?api=owner/setstore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ot:OWNER_TOKEN, username, name, price: parseInt(price)||0, wa, active})});
+  if(d.error) return alert(d.error);
+  loadUsers();
+}
 
 async function doOwnerGen(){
   const uid = $('oGenUid').value.trim();
@@ -1311,10 +1516,6 @@ async function doOwnerGen(){
     box.className='result err'; box.innerHTML='Error: '+e.message;
   }
 }
-
-function updateWA(){if(!lastLookup.name)return;const text="Beli Key NANG%0ANama: "+encodeURIComponent(lastLookup.name)+"%0ARoblox ID: "+lastLookup.uid+"%0ABukti TF: [screenshot]";$('waBtn').href="https://wa.me/"+WA_NUMBER+"?text="+text;$('waNama').textContent=lastLookup.name;$('waUid').textContent=lastLookup.uid;}
-async function doLookup(){const uid=$('lookupId').value.trim();const box=$('lookupResult');if(!uid)return;box.style.display='block';box.className='result info';box.innerHTML='<span class="spinner"></span>Mencari...';try{const r=await fetch('/?lookup='+encodeURIComponent(uid));const d=await r.json();if(d.name){lastLookup={uid:d.uid,name:d.name};updateWA();box.style.display='none';const ex=$('userCard');if(ex)ex.remove();const card=document.createElement('div');card.id='userCard';card.className='user-card';card.innerHTML='<div class="user-avatar">'+d.name.charAt(0).toUpperCase()+'</div><div class="user-info"><div class="user-name">'+d.name+'</div><div class="user-id">ID: '+d.uid+'</div></div>';box.parentNode.insertBefore(card,box.nextSibling);}else{box.className='result err';box.innerHTML='User ID tidak ditemukan';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
-let lookupT;$('lookupId').addEventListener('input',()=>{clearTimeout(lookupT);lookupT=setTimeout(doLookup,600);});
 
 async function doConvert(){
   const input=$('convFile');
