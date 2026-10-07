@@ -1,5 +1,5 @@
 const BUILD = "66.5";
-const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS"; // <-- GANTI
+const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 const LINK_PATTERNS = [
   { name: "LootLabs",     match: ["lootlabs","lootlinks","lootdest"],           auto: "low",    note: "Task-wall. Auto-bypass sering gagal." },
@@ -90,32 +90,57 @@ export default async function handler(req, res) {
 async function handle(req, res) {
   const SECRET = "NANG2024";
   const ADMIN_PW = "nangowner123";
-  const EXPIRE_S = 86400;
+  const EXPIRE_MS = 24 * 60 * 60 * 1000;
+  const KEY_CYCLE = 10000;
   const WA_NUMBER = "6281252425581";
   const BROWSERLESS_TOKEN = "2VO67VgLJTXNszJ47508df1abfc96345f97d220136688f6d6";
   const BROWSERLESS_URL = "https://production-sfo.browserless.io/function";
   const AUTH_DOMAIN = req.headers.host || "localhost";
 
   function simpleHash(str) { let h = 0; for (let i = 0; i < str.length; i++) h = ((h * 31) + str.charCodeAt(i)) % 1000000007; return h; }
-  function getWindow(ts) { return Math.floor((ts || Date.now() / 1000) / EXPIRE_S); }
-  function makeKey(uid, w) {
-    const h = simpleHash(SECRET + uid + w);
+  function minuteCode(ts) { return Math.floor(ts / 60000) % KEY_CYCLE; }
+
+  function makeKeyAt(uid, ts) {
+    const code = minuteCode(ts);
+    const h = simpleHash(SECRET + String(uid) + String(code));
     const p1 = String(uid).slice(0, 5).padEnd(5, "0");
     return "NANG-" + p1 + "-" + String(h % 10000).padStart(4, "0") + "-" + String(Math.floor(h / 10000) % 10000).padStart(4, "0");
   }
-  function isValid(uid, key) { const w = getWindow(); return makeKey(uid, w) === key || makeKey(uid, w - 1) === key; }
-  function expiryStr() {
-    const now = Date.now() / 1000;
-    const next = (getWindow() + 1) * EXPIRE_S;
-    const left = Math.round(next - now);
-    return Math.floor(left / 3600) + "j " + Math.floor((left % 3600) / 60) + "m";
+  function makeKey(uid) { return makeKeyAt(uid, Date.now()); }
+
+  function verifyKey(uid, key) {
+    const k = String(key || "").toUpperCase().replace(/\s+/g, "");
+    if (!k) return { valid: false, remainingMs: 0, issuedAt: 0 };
+    const now = Date.now();
+    for (let delta = 0; delta < 1440; delta++) {
+      const ts = now - delta * 60000;
+      if (makeKeyAt(uid, ts) === k) {
+        const expires = ts + EXPIRE_MS;
+        const remainingMs = Math.max(0, expires - now);
+        return { valid: remainingMs > 0, remainingMs, issuedAt: ts };
+      }
+    }
+    return { valid: false, remainingMs: 0, issuedAt: 0 };
   }
+  function isValid(uid, key) { return verifyKey(uid, key).valid; }
+
+  function fmtRemaining(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    return Math.floor(s / 3600) + "j " + Math.floor((s % 3600) / 60) + "m";
+  }
+  function expiryStr(uid, key) {
+    const r = verifyKey(uid, key);
+    return r.valid ? fmtRemaining(r.remainingMs) : null;
+  }
+
   function b64urlEncode(obj) { let b64 = Buffer.from(JSON.stringify(obj), "utf8").toString("base64"); return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
   function b64urlDecode(str) { let s = str.replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "="; return Buffer.from(s, "base64").toString("utf8"); }
+
   function makeAuthLink(uid, key, username) {
-    const payload = { u: String(uid), k: key, n: username || "", e: (getWindow() + 1) * EXPIRE_S };
+    const payload = { u: String(uid), k: key, n: username || "", e: Math.floor(Date.now() / 1000) + 86400 };
     return "https://" + AUTH_DOMAIN + "/auth?d=" + b64urlEncode(payload);
   }
+
   async function getRobloxUser(uid) {
     try { const r = await fetch("https://users.roblox.com/v1/users/" + uid); if (!r.ok) return null; return (await r.json()).name || null; }
     catch { return null; }
@@ -205,16 +230,17 @@ async function handle(req, res) {
       }
       const uid = String(parsed.uid || "").trim();
       if (!uid) { res.status(200).json({ error: "uid kosong" }); return; }
-      const key = makeKey(uid, getWindow());
+      const key = makeKey(uid);
       const name = await getRobloxUser(uid);
       sendWebhook([
         { name: "Event", value: "🔑 Key Generated", inline: false },
         { name: "Username", value: String(name || "Unknown"), inline: true },
         { name: "User ID", value: uid, inline: true },
         { name: "Key", value: key, inline: false },
+        { name: "Expires", value: expiryStr(uid, key), inline: true },
         { name: "IP", value: getClientIP(req), inline: true },
       ]);
-      res.status(200).json({ ok: true, uid, key, expires: expiryStr(), username: name, authLink: makeAuthLink(uid, key, name) });
+      res.status(200).json({ ok: true, uid, key, expires: expiryStr(uid, key), username: name, authLink: makeAuthLink(uid, key, name) });
       return;
     }
 
@@ -226,10 +252,11 @@ async function handle(req, res) {
         { name: "Event", value: "✅ Key Verified", inline: false },
         { name: "Username", value: String(username || "Unknown"), inline: true },
         { name: "User ID", value: String(parsed.uid), inline: true },
+        { name: "Remaining", value: expiryStr(parsed.uid, parsed.key), inline: true },
         { name: "IP", value: getClientIP(req), inline: true },
       ]);
     }
-    res.status(200).json({ valid, expires: valid ? expiryStr() : null, username });
+    res.status(200).json({ valid, expires: valid ? expiryStr(parsed.uid, parsed.key) : null, username });
     return;
   }
 
@@ -253,10 +280,12 @@ async function handle(req, res) {
   }
 
   if (params.has("uid") && params.has("key")) {
-    const valid = isValid(params.get("uid"), params.get("key"));
+    const uid = params.get("uid");
+    const key = params.get("key");
+    const valid = isValid(uid, key);
     let username = null;
-    if (valid) username = await getRobloxUser(params.get("uid"));
-    res.status(200).json({ valid, expires: valid ? expiryStr() : null, username });
+    if (valid) username = await getRobloxUser(uid);
+    res.status(200).json({ valid, expires: valid ? expiryStr(uid, key) : null, username });
     return;
   }
 
@@ -410,15 +439,26 @@ async function handle(req, res) {
       const q = encodeURIComponent(link);
       const tasks = [];
 
+      const inputHost = (() => { try { return new URL(link).hostname.toLowerCase(); } catch { return ""; } })();
+      const isCleanStrict = (u) => {
+        if (!isCleanUrl(u)) return false;
+        try {
+          const h = new URL(u).hostname.toLowerCase();
+          if (h === inputHost) return false;
+          for (const w of wrappedTokens) if (h.includes(w)) return false;
+        } catch { return false; }
+        return true;
+      };
+
       tasks.push((async () => {
         const r = await tryFetch("https://api.bypass.vip/", {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA, "Accept": ACCEPT, "Origin": "https://bypass.vip", "Referer": "https://bypass.vip/" },
           body: "url=" + q,
-        });
+        }, 5000);
         if (!r.ok) throw 0;
         const res = extract(await readJson(r));
-        if (!isCleanUrl(res)) throw 0;
+        if (!isCleanStrict(res)) throw 0;
         return { result: res, source: "bypass.vip" };
       })());
 
@@ -427,26 +467,23 @@ async function handle(req, res) {
           method: "POST",
           headers: { "Content-Type": "application/json", "User-Agent": UA, "Accept": ACCEPT, "Origin": "https://bypass.city", "Referer": "https://bypass.city/" },
           body: JSON.stringify({ url: link }),
-        });
+        }, 5000);
         if (!r.ok) throw 0;
         const res = extract(await readJson(r));
-        if (!isCleanUrl(res)) throw 0;
+        if (!isCleanStrict(res)) throw 0;
         return { result: res, source: "bypass.city" };
       })());
 
       const getProviders = [
         ["https://rip.linkvertise.lol/api/bypass?url=" + q, "rip-lv"],
-        ["https://rip.linkvertise.lol/bypass?url=" + q, "rip-lv-2"],
         ["https://api.linkvertise.lol/bypass?url=" + q, "lv-lol"],
         ["https://api.bypassall.lol/bypass?url=" + q, "bypassall"],
-        ["https://bypassall.lol/api/bypass?url=" + q, "bypassall-2"],
         ["https://bypass.bot.nu/bypass?url=" + q, "bypass.bot"],
         ["https://linklm.com/api/bypass?url=" + q, "linklm"],
         ["https://api.bypass-unlocked.workers.dev/?url=" + q, "unlocked"],
         ["https://bypass.tools/api/bypass?url=" + q, "bypass.tools"],
         ["https://bypass.pm/api/bypass?url=" + q, "bypass.pm"],
         ["https://api.bypasser.workers.dev/bypass?url=" + q, "bypasser-1"],
-        ["https://bypasser.workers.dev/bypass?url=" + q, "bypasser-2"],
         ["https://api.bypass.pro/bypass?url=" + q, "bypass.pro"],
         ["https://api.bypass.tf/api/bypass?url=" + q, "bypass.tf"],
         ["https://bypass.link/api/bypass?url=" + q, "bypass.link"],
@@ -456,21 +493,23 @@ async function handle(req, res) {
         ["https://api.shortlink-bypass.com/bypass?url=" + q, "shortlink-bypass"],
         ["https://api.bypasser.io/bypass?url=" + q, "bypasser-io"],
         ["https://api.bypass-v2.workers.dev/bypass?url=" + q, "bypass-v2"],
-        ["https://api.bypass-it.workers.dev/?url=" + q, "bypass-it"],
         ["https://bypass.nezuko.workers.dev/?url=" + q, "nezuko"],
         ["https://api.bypass-gate.workers.dev/?url=" + q, "bypass-gate"],
         ["https://api.bypass.rip/bypass?url=" + q, "bypass.rip"],
         ["https://api.link-bypass.com/bypass?url=" + q, "link-bypass"],
         ["https://api.free-bypass.workers.dev/?url=" + q, "free-bypass"],
         ["https://api.bypass.rev/bypass?url=" + q, "bypass.rev"],
+        ["https://api.bypass-my-links.workers.dev/?url=" + q, "bypass-my-links"],
+        ["https://bypass.api.mrfrank.workers.dev/?url=" + q, "mrfrank"],
+        ["https://bypass.justnobody.workers.dev/?url=" + q, "justnobody"],
       ];
 
       for (const [u, tag] of getProviders) {
         tasks.push((async () => {
-          const r = await tryFetch(u, { method: "GET", headers: { "User-Agent": UA, "Accept": ACCEPT } });
+          const r = await tryFetch(u, { method: "GET", headers: { "User-Agent": UA, "Accept": ACCEPT } }, 4500);
           if (!r.ok) throw 0;
           const res = extract(await readJson(r));
-          if (!isCleanUrl(res)) throw 0;
+          if (!isCleanStrict(res)) throw 0;
           return { result: res, source: tag };
         })());
       }
@@ -481,11 +520,11 @@ async function handle(req, res) {
           tasks.push((async () => {
             const r = await tryFetch("https://publisher.linkvertise.com/api/v1/redirect/link/static/" + lvId, {
               headers: { "User-Agent": UA, "Accept": ACCEPT, "Origin": "https://linkvertise.com" },
-            });
+            }, 4000);
             if (!r.ok) throw 0;
             const d = await readJson(r);
             const target = d?.data?.link?.target;
-            if (!target || !isCleanUrl(target)) throw 0;
+            if (!target || !isCleanStrict(target)) throw 0;
             return { result: target, source: "linkvertise-static" };
           })());
         }
@@ -495,20 +534,55 @@ async function handle(req, res) {
         const slug = link.match(/rekonise\.com\/([a-z0-9]+)/i)?.[1];
         if (slug) {
           tasks.push((async () => {
-            const r = await tryFetch("https://api.rekonise.com/socialunlocks/" + slug, { headers: { "User-Agent": UA, "Accept": ACCEPT } });
+            const r = await tryFetch("https://api.rekonise.com/socialunlocks/" + slug, { headers: { "User-Agent": UA, "Accept": ACCEPT } }, 4000);
             if (!r.ok) throw 0;
             const res = extract(await readJson(r));
-            if (!isCleanUrl(res)) throw 0;
+            if (!isCleanStrict(res)) throw 0;
             return { result: res, source: "rekonise-api" };
           })());
         }
       }
 
-      if (tasks.length > 0) {
-        try {
-          const winner = await Promise.any(tasks);
-          if (winner && sendOk(winner.result, winner.source)) return;
-        } catch (e) {}
+      const consensus = await new Promise((resolve) => {
+        const votes = {};
+        let firstValid = null;
+        let settledCount = 0;
+        let done = false;
+        const totalTasks = tasks.length;
+
+        const finish = () => {
+          if (done) return;
+          done = true;
+          clearTimeout(cap);
+          const ranked = Object.values(votes).sort((a, b) => b.sources.length - a.sources.length);
+          if (ranked.length > 0) resolve({ url: ranked[0].url, sources: ranked[0].sources });
+          else if (firstValid) resolve({ url: firstValid.result, sources: [firstValid.source] });
+          else resolve(null);
+        };
+
+        const cap = setTimeout(finish, 6000);
+
+        for (const p of tasks) {
+          p.then((r) => {
+            settledCount++;
+            if (r && r.result) {
+              const key = r.result.replace(/\/$/, "").toLowerCase();
+              if (!votes[key]) votes[key] = { url: r.result, sources: [] };
+              votes[key].sources.push(r.source);
+              if (!firstValid) firstValid = r;
+              if (votes[key].sources.length >= 2) { finish(); return; }
+            }
+            if (settledCount >= totalTasks) finish();
+          }).catch(() => {
+            settledCount++;
+            if (settledCount >= totalTasks) finish();
+          });
+        }
+        if (totalTasks === 0) finish();
+      });
+
+      if (consensus && consensus.url) {
+        if (sendOk(consensus.url, consensus.sources.join("+"))) return;
       }
     }
 
@@ -951,7 +1025,7 @@ function openGen(){document.getElementById('genPanel').classList.add('show');}
 function closeGen(){document.getElementById('genPanel').classList.remove('show');document.getElementById('genPw').value='';document.getElementById('genForm').style.display='none';document.getElementById('genResult').style.display='none';ownerPw=null;document.getElementById('genPw').disabled=false;}
 document.getElementById('genPanel').addEventListener('click',(e)=>{if(e.target.id==='genPanel')closeGen();});
 async function doLogin(){const pw=document.getElementById('genPw').value;if(!pw)return;try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:pw,uid:'1'})});const d=await r.json();if(d.error==='password salah'){document.getElementById('genPw').value='';document.getElementById('genPw').placeholder='password salah';}else if(d.ok){ownerPw=pw;document.getElementById('genForm').style.display='block';document.getElementById('genPw').disabled=true;}}catch(e){}}
-async function doGenerate(){const uid=document.getElementById('genUid').value.trim();const box=document.getElementById('genResult');if(!uid||!ownerPw)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Generating...';try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:ownerPw,uid:uid})});const d=await r.json();if(d.ok){box.className='result ok';box.innerHTML='<b>Username:</b> '+(d.username||'Unknown')+'<div class="key-line">'+d.key+'</div><b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b><a href="'+d.authLink+'" target="_blank" class="link-line">'+d.authLink+'</a><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';}else{box.className='result err';box.innerHTML=d.error||'Gagal';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
+async function doGenerate(){const uid=document.getElementById('genUid').value.trim();const box=document.getElementById('genResult');if(!uid||!ownerPw)return;box.style.display='block';box.className='result';box.innerHTML='<span class="spinner"></span>Generating...';try{const r=await fetch('/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate',pw:ownerPw,uid:uid})});const d=await r.json();if(d.ok){box.className='result ok';box.innerHTML='<b>Username:</b> '+(d.username||'Unknown')+'<div class="key-line">'+d.key+'</div><b style="color:#6b6b8a;font-size:.72rem">Expires:</b> '+d.expires+'<br><b style="color:#6b6b8a;font-size:.72rem">Auth Link:</b><a href="'+d.authLink+'" target="_blank" class="link-line">'+d.authLink+'</a><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';}else{box.className='result err';box.innerHTML=d.error||'Gagal';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 async function detectLinkNow(url){const box=document.getElementById('detectBox');const badge=document.getElementById('detectBadge');const text=document.getElementById('detectText');if(!url||url.length<8){box.classList.remove('show');lastDetect=null;return;}try{const r=await fetch('/?detect='+encodeURIComponent(url));const d=await r.json();const det=d.detection;if(!det){box.classList.remove('show');return;}lastDetect=det;box.className='detect show '+det.auto;const labels={high:'AUTO',medium:'COBA',low:'MANUAL',none:'INVALID'};badge.textContent=det.type+' · '+labels[det.auto];text.textContent=det.note;}catch(e){box.classList.remove('show');}}
 document.getElementById('bypassUrl').addEventListener('input',()=>{clearTimeout(detectTimer);detectTimer=setTimeout(()=>detectLinkNow(document.getElementById('bypassUrl').value.trim()),500);});
 async function doBypass(){
