@@ -1,4 +1,4 @@
-const BUILD = "68.1";
+const BUILD = "68.2";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -10,37 +10,57 @@ const _HAS_KV = !!(_KV_URL && _KV_TOKEN);
 async function _kvCmd(...args) {
   if (!_HAS_KV) return null;
   try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 3000);
     const r = await fetch(_KV_URL, {
       method: "POST",
       headers: { Authorization: "Bearer " + _KV_TOKEN, "Content-Type": "application/json" },
       body: JSON.stringify([args]),
+      signal: ctrl.signal,
     });
+    clearTimeout(t);
     const d = await r.json();
     return d && d[0] ? d[0].result : null;
   } catch { return null; }
 }
 
 const _memStore = (global.__nangMem = global.__nangMem || {});
+let _kvBrokenUntil = 0;
+
 async function storeGet(key) {
-  if (_HAS_KV) {
+  const now = Date.now();
+  if (_HAS_KV && now > _kvBrokenUntil) {
     const raw = await _kvCmd("GET", key);
-    if (raw == null) return null;
+    if (raw == null) return _memStore[key] ?? null;
     if (typeof raw === "string") { try { return JSON.parse(raw); } catch { return raw; } }
     return raw;
   }
   return _memStore[key] ?? null;
 }
+
 async function storeSet(key, val) {
   const raw = typeof val === "string" ? val : JSON.stringify(val);
-  if (_HAS_KV) { await _kvCmd("SET", key, raw); return true; }
+  const now = Date.now();
+  if (_HAS_KV && now > _kvBrokenUntil) {
+    const r = await _kvCmd("SET", key, raw);
+    if (r !== null) return true;
+    _kvBrokenUntil = now + 60000;
+  }
   _memStore[key] = val;
   return true;
 }
+
 async function storeDel(key) {
-  if (_HAS_KV) { await _kvCmd("DEL", key); return true; }
+  const now = Date.now();
+  if (_HAS_KV && now > _kvBrokenUntil) {
+    const r = await _kvCmd("DEL", key);
+    if (r !== null) return true;
+    _kvBrokenUntil = now + 60000;
+  }
   delete _memStore[key];
   return true;
 }
+
 function hashPw(pw, salt) { return createHash("sha256").update(salt + "::" + pw).digest("hex"); }
 function randomHex(n) { return randomBytes(n).toString("hex"); }
 
@@ -50,20 +70,23 @@ async function getUser(username) {
 }
 async function saveUser(user) {
   await storeSet("nang:user:" + user.username.toLowerCase(), user);
-  if (_HAS_KV) await _kvCmd("SADD", "nang:userlist", user.username);
+  if (_HAS_KV && Date.now() > _kvBrokenUntil) await _kvCmd("SADD", "nang:userlist", user.username);
   return true;
 }
 async function listUsers() {
-  if (_HAS_KV) {
+  if (_HAS_KV && Date.now() > _kvBrokenUntil) {
     const names = (await _kvCmd("SMEMBERS", "nang:userlist")) || [];
     const out = [];
     for (const n of names) {
       const u = await storeGet("nang:user:" + String(n).toLowerCase());
       if (u) out.push(u);
     }
-    return out;
+    if (out.length > 0) return out;
   }
-  return Object.values(_memStore).filter(v => v && v.username && v.passwordHash);
+  // fallback memory
+  const memUsers = Object.values(_memStore).filter(v => v && v.username && v.passwordHash);
+  // merge dengan yg dari KV kalau ada
+  return memUsers;
 }
 
 const _SECRET = "NANG2024";
@@ -221,11 +244,6 @@ async function handle(req, res) {
 
   if (path.startsWith("/api/")) {
     return await handleApi(req, res, path, method, params, { ADMIN_PW, AUTH_DOMAIN });
-  }
-  if (path === "/reseller" || path === "/reseller/") {
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.status(200).send(resellerPage());
-    return;
   }
 
   if (method === "POST") {
@@ -573,162 +591,6 @@ async function handle(req, res) {
       }
     }
 
-    if (BROWSERLESS_TOKEN && (isLootLink || isPlatorelay)) {
-      const runScript = `
-        export default async function ({ page, context }) {
-          const startUrl = context.url;
-          const wrapped = ${JSON.stringify(wrappedTokens)};
-          const social  = ${JSON.stringify(socialTokens)};
-          const cdnHosts = ${JSON.stringify(CDN_HOSTS)};
-          const badExt = /\\.(js|mjs|cjs|css|map|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|pdf|zip|wasm|json|xml)(\\?|#|$)/i;
-          function reject(u) {
-            if (!u || !/^https?:\\/\\//.test(u)) return true;
-            const L = u.toLowerCase();
-            for (const h of cdnHosts) if (L.includes(h)) return true;
-            if (badExt.test(L)) return true;
-            for (const w of wrapped) if (L.includes(w)) return true;
-            for (const s of social) if (L.includes(s)) return true;
-            return false;
-          }
-          function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-          const leaked = new Set();
-          const popups = [];
-          const apiCalls = [];
-          let destinationFromApi = null;
-          const KEY_RE = /\\b(FREE_[A-Fa-f0-9]{16,}|NANG_[A-Za-z0-9]{16,}|[A-Z][A-Z0-9]{1,8}_[A-Za-z0-9]{16,})\\b/;
-          function harvest(t) {
-            if (!t) return;
-            const re = /https?:\\/\\/[^"'\\s<>)]+/gi;
-            let m;
-            while ((m = re.exec(t)) !== null) if (!reject(m[0])) leaked.add(m[0]);
-          }
-          async function tryScrapeKey(pg) {
-            try {
-              const html = await pg.content();
-              const m = html.match(KEY_RE);
-              if (m) return m[1];
-              const txt = await pg.evaluate(() => document.body.innerText || "");
-              const m2 = txt.match(KEY_RE);
-              if (m2) return m2[1];
-            } catch {}
-            return null;
-          }
-          await page.addInitScript(() => {
-            window.__nangApi = [];
-            const origFetch = window.fetch;
-            window.fetch = async function(...args) {
-              const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url);
-              const opts = args[1] || {};
-              try {
-                const r = await origFetch.apply(this, args);
-                const clone = r.clone();
-                const text = await clone.text().catch(()=>"");
-                window.__nangApi.push({ method: opts.method || "GET", url, body: opts.body, resp: text.slice(0, 2000), ts: Date.now() });
-                return r;
-              } catch (e) {
-                window.__nangApi.push({ method: opts.method || "GET", url, body: opts.body, err: String(e), ts: Date.now() });
-                throw e;
-              }
-            };
-            const origOpen = XMLHttpRequest.prototype.open;
-            const origSend = XMLHttpRequest.prototype.send;
-            XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-              this.__nangMethod = method; this.__nangUrl = url;
-              return origOpen.apply(this, [method, url, ...rest]);
-            };
-            XMLHttpRequest.prototype.send = function(body) {
-              const self = this;
-              this.addEventListener("load", function() {
-                try {
-                  window.__nangApi.push({ method: self.__nangMethod, url: self.__nangUrl, body, resp: String(self.responseText || "").slice(0, 2000), ts: Date.now() });
-                } catch {}
-              });
-              return origSend.apply(this, [body]);
-            };
-          });
-          try {
-            await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
-            await page.setViewport({ width: 1366, height: 900 });
-            await page.setRequestInterception(true);
-            page.on("request", r => {
-              const u = r.url().toLowerCase();
-              if (["google-analytics","googletagmanager","doubleclick","googlesyndication","adsbygoogle","hotjar","facebook.com","twitter.com","tiktok.com"].some(p => u.includes(p))) { r.abort(); return; }
-              r.continue();
-            });
-            const ctx = page.browserContext ? page.browserContext() : page.context();
-            if (ctx && ctx.on) {
-              ctx.on("page", async (p) => {
-                try { await p.addInitScript(() => { window.__nangApi = window.__nangApi || []; }).catch(()=>{}); popups.push(p); } catch {}
-              });
-            }
-            page.on("dialog", async (d) => { try { await d.dismiss(); } catch {} });
-            await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 6000 });
-            await sleep(1200);
-            const initKey = await tryScrapeKey(page);
-            if (initKey) return { key: initKey, url: page.url(), status: "key-found" };
-            for (let r = 0; r < 10; r++) {
-              const c = await page.evaluate(() => {
-                const all = [...document.querySelectorAll("button, a, [role='button'], input[type='submit']")];
-                const prio = ["continue", "lanjut", "next", "proceed", "click here", "klik", "claim", "get link", "unlock", "verify", "start", "open", "get reward", "reward"];
-                for (const el of all) {
-                  const t = (el.textContent || el.value || "").toLowerCase().trim();
-                  if (!t || t.length > 100) continue;
-                  if (prio.some(p => t === p || t.startsWith(p))) {
-                    try { el.scrollIntoView({block:'center'}); el.click(); return 1; } catch {}
-                  }
-                }
-                return 0;
-              });
-              if (!c) { await sleep(700); }
-              await sleep(900);
-              const keyNow = await tryScrapeKey(page);
-              if (keyNow) return { key: keyNow, url: page.url(), status: "key-found" };
-              try { const html = await page.content(); harvest(html); } catch {}
-              const keyMid = await tryScrapeKey(page);
-              if (keyMid) return { key: keyMid, url: page.url(), status: "key-found" };
-              if (destinationFromApi) return { url: destinationFromApi, status: "api-intercept" };
-              if (leaked.size > 0) for (const u of leaked) return { url: u, status: "leak" };
-              const cur = page.url();
-              if (!reject(cur)) {
-                const ck = await tryScrapeKey(page);
-                if (ck) return { key: ck, url: cur, status: "key-found" };
-                return { url: cur, status: "resolved" };
-              }
-            }
-            const finalKey = await tryScrapeKey(page);
-            if (finalKey) return { key: finalKey, url: page.url(), status: "key-found" };
-            return { url: startUrl, status: "wrapped" };
-          } catch (e) {
-            return { url: startUrl, status: "err", error: String(e.message || e) };
-          }
-        }
-      `;
-
-      try {
-        const r = await tryFetch(BROWSERLESS_URL + "?token=" + BROWSERLESS_TOKEN + "&timeout=9000&stealth=true", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code: runScript, context: { url: link } }),
-        }, 9500);
-        if (r && r.ok) {
-          const d = await readJson(r);
-          if (d && d.key) {
-            sendWebhook([
-              { name: "Event", value: "Key Scraped", inline: false },
-              { name: "Shortlink", value: link.slice(0, 100), inline: false },
-              { name: "Key", value: d.key, inline: false },
-              { name: "IP", value: _getClientIP(req), inline: true },
-            ]);
-            res.status(200).json({ result: d.key, key: d.key, source: "key-scrape", detection });
-            return;
-          }
-          if (d && isCleanUrl(d.url)) {
-            if (sendOk(d.url, "browserless-" + (d.status || "?"))) return;
-          }
-        }
-      } catch (e) { console.error("Browserless:", e.message); }
-    }
-
     try {
       const r = await tryFetch(link, { method: "HEAD", redirect: "manual", headers: { "User-Agent": UA } }, 3000);
       const loc = r.headers.get("location");
@@ -754,9 +616,6 @@ async function handle(req, res) {
   res.status(200).send(mainPage(WA_NUMBER));
 }
 
-// ═══════════════════════════════════════
-// API HANDLER (reseller + uploader + owner)
-// ═══════════════════════════════════════
 async function handleApi(req, res, path, method, params, ctx) {
   const { ADMIN_PW } = ctx;
   const route = path.replace(/^\/api\//, "").replace(/\/$/, "");
@@ -773,6 +632,11 @@ async function handleApi(req, res, path, method, params, ctx) {
   async function authFromToken() {
     const token = (body && body.token) || params.get("token");
     if (!token) return null;
+    const mem = _memStore["nang:sess:" + token];
+    if (mem && mem.expiresAt > Date.now()) {
+      const u = await getUser(mem.username);
+      if (u && u.role !== "banned") return u;
+    }
     const sess = await storeGet("nang:sess:" + token);
     if (!sess) return null;
     if (!sess.expiresAt || sess.expiresAt < Date.now()) {
@@ -783,26 +647,57 @@ async function handleApi(req, res, path, method, params, ctx) {
     if (!u || u.role === "banned") return null;
     return u;
   }
-  async function requireOwner() {
-    const pw = (body && body.pw) || params.get("pw");
-    if (pw === ADMIN_PW) return { username: "OWNER", role: "owner" };
-    const u = await authFromToken();
-    if (u && u.role === "owner") return u;
-    return null;
+  function checkOwnerPw(pw, ot) {
+    if (pw === ADMIN_PW) return true;
+    if (ot) {
+      const memSess = _memStore["nang:owner_token:" + ot];
+      if (memSess && memSess.expiresAt > Date.now()) return true;
+    }
+    return false;
+  }
+  async function checkOwnerPwAsync(pw, ot) {
+    if (pw === ADMIN_PW) return true;
+    if (ot) {
+      const memSess = _memStore["nang:owner_token:" + ot];
+      if (memSess && memSess.expiresAt > Date.now()) return true;
+      const sess = await storeGet("nang:owner_token:" + ot);
+      if (sess && sess.expiresAt > Date.now()) return true;
+    }
+    return false;
   }
 
-  // owner verify (buat FAB)
+  // OWNER VERIFY — instant
   if (route === "owner/verify" && method === "POST") {
     const pw = body && body.pw;
     if (pw === ADMIN_PW) {
       const token = randomHex(24);
-      await storeSet("nang:owner_token:" + token, { expiresAt: Date.now() + 12 * 3600 * 1000 });
+      const expires = Date.now() + 12 * 3600 * 1000;
+      _memStore["nang:owner_token:" + token] = { expiresAt: expires };
+      storeSet("nang:owner_token:" + token, { expiresAt: expires }).catch(() => {});
       return res.status(200).json({ ok: true, token });
     }
     return res.status(200).json({ ok: false, error: "password salah" });
   }
 
-  // UPLOADER API
+  // OWNER GENERATE KEY
+  if (route === "owner/generate" && method === "POST") {
+    const ok = await checkOwnerPwAsync(body && body.pw, body && body.ot);
+    if (!ok) return res.status(200).json({ error: "forbidden" });
+    const uid = String((body && body.uid) || "").trim();
+    if (!uid || !/^\d+$/.test(uid)) return res.status(200).json({ error: "User ID tidak valid" });
+    const key = _makeKey(uid);
+    const name = await _getRobloxUser(uid);
+    sendWebhook([
+      { name: "Event", value: "Key Generated (Owner)", inline: false },
+      { name: "Target", value: String(name || "Unknown"), inline: true },
+      { name: "User ID", value: uid, inline: true },
+      { name: "Key", value: key, inline: false },
+      { name: "Expires", value: _expiryStr(uid, key), inline: true },
+    ]);
+    return res.status(200).json({ ok: true, key, expires: _expiryStr(uid, key), username: name });
+  }
+
+  // UPLOADER
   if (route === "lookup-username" && method === "POST") {
     const username = String((body && body.username) || "").trim();
     if (!username) return res.status(200).json({ ok: false, error: "username kosong" });
@@ -887,7 +782,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     }
   }
 
-  // RESELLER API
+  // RESELLER
   if (route === "reseller/register" && method === "POST") {
     const username = String((body && body.username) || "").trim();
     const email = String((body && body.email) || "").trim().toLowerCase();
@@ -942,7 +837,9 @@ async function handleApi(req, res, path, method, params, ctx) {
     if (user.passwordHash !== hashPw(password, user.salt)) return res.status(200).json({ error: "Password salah" });
 
     const token = randomHex(32);
-    await storeSet("nang:sess:" + token, { username: user.username, expiresAt: Date.now() + 7 * 24 * 3600 * 1000 });
+    const expires = Date.now() + 7 * 24 * 3600 * 1000;
+    _memStore["nang:sess:" + token] = { username: user.username, expiresAt: expires };
+    storeSet("nang:sess:" + token, { username: user.username, expiresAt: expires }).catch(() => {});
     sendWebhook([
       { name: "Event", value: "Reseller Login", inline: false },
       { name: "Username", value: user.username, inline: true },
@@ -973,7 +870,10 @@ async function handleApi(req, res, path, method, params, ctx) {
 
   if (route === "reseller/logout" && method === "POST") {
     const token = (body && body.token) || params.get("token");
-    if (token) await storeDel("nang:sess:" + token);
+    if (token) {
+      delete _memStore["nang:sess:" + token];
+      await storeDel("nang:sess:" + token);
+    }
     return res.status(200).json({ ok: true });
   }
 
@@ -1014,21 +914,13 @@ async function handleApi(req, res, path, method, params, ctx) {
     });
   }
 
-  // OWNER API
+  // OWNER LIST USERS
   if (route === "owner/users") {
-    const pw = params.get("pw") || (body && body.pw);
-    const ot = params.get("ot") || (body && body.ot);
-    let ok = false;
-    if (pw === ADMIN_PW) ok = true;
-    else if (ot) {
-      const sess = await storeGet("nang:owner_token:" + ot);
-      if (sess && sess.expiresAt > Date.now()) ok = true;
-    }
+    const ok = await checkOwnerPwAsync(params.get("pw") || (body && body.pw), params.get("ot") || (body && body.ot));
     if (!ok) {
       const u = await authFromToken();
-      if (u && u.role === "owner") ok = true;
+      if (!u || u.role !== "owner") return res.status(200).json({ error: "forbidden" });
     }
-    if (!ok) return res.status(200).json({ error: "forbidden" });
     const users = await listUsers();
     users.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     return res.status(200).json({
@@ -1042,13 +934,7 @@ async function handleApi(req, res, path, method, params, ctx) {
   }
 
   if (route === "owner/setrole" && method === "POST") {
-    const pw = body.pw, ot = body.ot;
-    let ok = false;
-    if (pw === ADMIN_PW) ok = true;
-    else if (ot) {
-      const sess = await storeGet("nang:owner_token:" + ot);
-      if (sess && sess.expiresAt > Date.now()) ok = true;
-    }
+    const ok = await checkOwnerPwAsync(body.pw, body.ot);
     if (!ok) return res.status(200).json({ error: "forbidden" });
     const target = String((body && body.username) || "").trim();
     const role = String((body && body.role) || "");
@@ -1063,13 +949,7 @@ async function handleApi(req, res, path, method, params, ctx) {
   }
 
   if (route === "owner/setquota" && method === "POST") {
-    const pw = body.pw, ot = body.ot;
-    let ok = false;
-    if (pw === ADMIN_PW) ok = true;
-    else if (ot) {
-      const sess = await storeGet("nang:owner_token:" + ot);
-      if (sess && sess.expiresAt > Date.now()) ok = true;
-    }
+    const ok = await checkOwnerPwAsync(body.pw, body.ot);
     if (!ok) return res.status(200).json({ error: "forbidden" });
     const target = String((body && body.username) || "").trim();
     const quota = Math.max(0, Math.min(9999, parseInt(body && body.quota) || 0));
@@ -1081,19 +961,13 @@ async function handleApi(req, res, path, method, params, ctx) {
   }
 
   if (route === "owner/delete" && method === "POST") {
-    const pw = body.pw, ot = body.ot;
-    let ok = false;
-    if (pw === ADMIN_PW) ok = true;
-    else if (ot) {
-      const sess = await storeGet("nang:owner_token:" + ot);
-      if (sess && sess.expiresAt > Date.now()) ok = true;
-    }
+    const ok = await checkOwnerPwAsync(body.pw, body.ot);
     if (!ok) return res.status(200).json({ error: "forbidden" });
     const target = String((body && body.username) || "").trim();
     const u = await getUser(target);
     if (u && u.email) await storeDel("nang:email:" + u.email.toLowerCase());
     await storeDel("nang:user:" + target.toLowerCase());
-    if (_HAS_KV) await _kvCmd("SREM", "nang:userlist", target);
+    if (_HAS_KV && Date.now() > _kvBrokenUntil) await _kvCmd("SREM", "nang:userlist", target);
     return res.status(200).json({ ok: true });
   }
 
@@ -1296,7 +1170,7 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
       <button class="btn-main" onclick="loadUsers()">Refresh Users</button>
       <div id="usersList" style="margin-top:12px"></div>
       <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
-        <div style="font-size:.72rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px">Owner Actions</div>
+        <div style="font-size:.72rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px">Generate Key</div>
         <input class="inp" id="oGenUid" placeholder="Roblox User ID">
         <button class="btn-main" onclick="doOwnerGen()">Generate Key</button>
         <div class="result" id="oGenResult"></div>
@@ -1480,7 +1354,6 @@ async function doAuthLogout(){
   updateAuthUI();
 }
 
-// === OWNER FAB ===
 function openOwnerModal(){
   $('ownerModal').classList.add('show');
   if(OWNER_TOKEN){
@@ -1500,16 +1373,21 @@ async function doOwnerLogin(){
   const box = $('oResult');
   if(!pw){ box.className='result err'; box.innerHTML='Isi password'; return; }
   box.className='result info'; box.innerHTML='<span class="spinner"></span>Cek...';
-  const d = await apiCall('/api/owner/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pw})});
-  if(!d.ok){ box.className='result err'; box.innerHTML=d.error||'Gagal'; return; }
-  OWNER_TOKEN = d.token;
-  localStorage.setItem('nang_owner', OWNER_TOKEN);
-  $('oPw').value='';
-  box.className='result'; box.innerHTML='';
-  $('ownerLoginForm').classList.add('hidden');
-  $('ownerPanel').classList.remove('hidden');
-  $('ownerFab').classList.add('active');
-  loadUsers();
+  try {
+    const r = await fetch('/api/owner/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pw})});
+    const d = await r.json();
+    if(!d.ok){ box.className='result err'; box.innerHTML=d.error||'Gagal'; return; }
+    OWNER_TOKEN = d.token;
+    localStorage.setItem('nang_owner', OWNER_TOKEN);
+    $('oPw').value='';
+    box.className='result'; box.innerHTML='';
+    $('ownerLoginForm').classList.add('hidden');
+    $('ownerPanel').classList.remove('hidden');
+    $('ownerFab').classList.add('active');
+    loadUsers();
+  } catch(e) {
+    box.className='result err'; box.innerHTML='Error: '+e.message;
+  }
 }
 
 function doOwnerLogout(){
@@ -1570,16 +1448,17 @@ async function doOwnerGen(){
   const box = $('oGenResult');
   if(!uid) { box.className='result err'; box.innerHTML='Isi User ID'; return; }
   box.className='result info'; box.innerHTML='<span class="spinner"></span>Generate...';
-  // pakai endpoint reseller/generate tapi lewat owner token? kita pake admin pw
-  // endpoint generate butuh pw / token session. Owner token bukan session.
-  // pakai endpoint khusus
-  const d = await apiCall('/api/owner/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ot:OWNER_TOKEN, uid})});
-  if(d.error){ box.className='result err'; box.innerHTML=d.error; return; }
-  box.className='result ok';
-  box.innerHTML = '<b>'+(d.username||'Unknown')+'</b><div class="key-line">'+d.key+'</div><div style="font-size:.75rem;color:var(--muted)">Expires: '+d.expires+'</div>';
+  try {
+    const r = await fetch('/api/owner/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ot:OWNER_TOKEN, uid})});
+    const d = await r.json();
+    if(d.error){ box.className='result err'; box.innerHTML=d.error; return; }
+    box.className='result ok';
+    box.innerHTML = '<b>'+(d.username||'Unknown')+'</b><div class="key-line">'+d.key+'</div><div style="font-size:.75rem;color:var(--muted)">Expires: '+d.expires+'</div>';
+  } catch(e) {
+    box.className='result err'; box.innerHTML='Error: '+e.message;
+  }
 }
 
-// === LOOKUP, BYPASS, CONVERT, UPLOAD ===
 function updateWA(){if(!lastLookup.name)return;const text="Beli Key NANG%0ANama: "+encodeURIComponent(lastLookup.name)+"%0ARoblox ID: "+lastLookup.uid+"%0ABukti TF: [screenshot]";$('waBtn').href="https://wa.me/"+WA_NUMBER+"?text="+text;$('waNama').textContent=lastLookup.name;$('waUid').textContent=lastLookup.uid;}
 async function doLookup(){const uid=$('lookupId').value.trim();const box=$('lookupResult');if(!uid)return;box.style.display='block';box.className='result info';box.innerHTML='<span class="spinner"></span>Mencari...';try{const r=await fetch('/?lookup='+encodeURIComponent(uid));const d=await r.json();if(d.name){lastLookup={uid:d.uid,name:d.name};updateWA();box.style.display='none';const ex=$('userCard');if(ex)ex.remove();const card=document.createElement('div');card.id='userCard';card.className='user-card';card.innerHTML='<div class="user-avatar">'+d.name.charAt(0).toUpperCase()+'</div><div class="user-info"><div class="user-name">'+d.name+'</div><div class="user-id">ID: '+d.uid+'</div></div>';box.parentNode.insertBefore(card,box.nextSibling);}else{box.className='result err';box.innerHTML='User ID tidak ditemukan';}}catch(e){box.className='result err';box.innerHTML='Error: '+e.message;}}
 let lookupT;$('lookupId').addEventListener('input',()=>{clearTimeout(lookupT);lookupT=setTimeout(doLookup,600);});
