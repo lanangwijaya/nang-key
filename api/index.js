@@ -1,4 +1,4 @@
-const BUILD = "68.3";
+const BUILD = "68.4";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -186,12 +186,10 @@ async function handle(req, res) {
 
   if (params.has("version")) { res.status(200).json({ version: BUILD, ts: Date.now() }); return; }
 
-  // API routing — pakai ?api=xxx biar cuma 1 file handler
   if (params.has("api")) {
     const apiPath = "/api/" + String(params.get("api") || "");
     return await handleApi(req, res, apiPath, method, params, { ADMIN_PW, AUTH_DOMAIN });
   }
-  // fallback /api/xxx
   if (path.startsWith("/api/")) {
     return await handleApi(req, res, path, method, params, { ADMIN_PW, AUTH_DOMAIN });
   }
@@ -341,23 +339,37 @@ async function handleApi(req, res, path, method, params, ctx) {
     return false;
   }
 
+  async function getOwnerRole(pw, ot) {
+    if (pw === ADMIN_PW) return "owner";
+    if (ot) {
+      const memSess = _memStore["nang:owner_token:" + ot];
+      if (memSess && memSess.expiresAt > Date.now()) return memSess.role || "owner";
+      const sess = await storeGet("nang:owner_token:" + ot);
+      if (sess && sess.expiresAt > Date.now()) return sess.role || "owner";
+    }
+    return null;
+  }
+
   // OWNER VERIFY
   if (route === "owner/verify" && method === "POST") {
     const pw = body && body.pw;
     if (pw === ADMIN_PW) {
       const token = randomHex(24);
       const expires = Date.now() + 12 * 3600 * 1000;
-      _memStore["nang:owner_token:" + token] = { expiresAt: expires };
-      storeSet("nang:owner_token:" + token, { expiresAt: expires }).catch(() => {});
-      return res.status(200).json({ ok: true, token });
+      const payload = { expiresAt: expires, role: "owner" };
+      _memStore["nang:owner_token:" + token] = payload;
+      storeSet("nang:owner_token:" + token, payload).catch(() => {});
+      return res.status(200).json({ ok: true, token, role: "owner" });
     }
     return res.status(200).json({ ok: false, error: "password salah" });
   }
 
   // OWNER GENERATE KEY
   if (route === "owner/generate" && method === "POST") {
-    const ok = await checkOwnerPwAsync(body && body.pw, body && body.ot);
-    if (!ok) return res.status(200).json({ error: "forbidden" });
+    const reqRole = await getOwnerRole(body && body.pw, body && body.ot);
+    if (!reqRole || (reqRole !== "owner" && reqRole !== "admin")) {
+      return res.status(200).json({ error: "forbidden" });
+    }
     const uid = String((body && body.uid) || "").trim();
     if (!uid || !/^\d+$/.test(uid)) return res.status(200).json({ error: "User ID tidak valid" });
     const key = _makeKey(uid);
@@ -457,7 +469,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     }
   }
 
-  // RESELLER
+  // RESELLER — register
   if (route === "reseller/register" && method === "POST") {
     const username = String((body && body.username) || "").trim();
     const email = String((body && body.email) || "").trim().toLowerCase();
@@ -480,20 +492,20 @@ async function handleApi(req, res, path, method, params, ctx) {
     const user = {
       username, email,
       passwordHash: hashPw(password, salt), salt,
-      role: "pending", quota: 20, keysToday: 0, lastReset: Date.now(),
+      role: "member", quota: 20, keysToday: 0, lastReset: Date.now(),
       createdAt: Date.now(), keys: [],
     };
     await saveUser(user);
     await storeSet(emailKey, username);
 
     sendWebhook([
-      { name: "Event", value: "Reseller Registered", inline: false },
+      { name: "Event", value: "New Member Registered", inline: false },
       { name: "Username", value: username, inline: true },
       { name: "Email", value: email, inline: true },
-      { name: "Status", value: "pending", inline: true },
+      { name: "Status", value: "member", inline: true },
       { name: "IP", value: _getClientIP(req), inline: true },
     ]);
-    return res.status(200).json({ ok: true, message: "Terdaftar. Tunggu approve owner." });
+    return res.status(200).json({ ok: true, message: "Terdaftar sebagai member." });
   }
 
   if (route === "reseller/login" && method === "POST") {
@@ -516,7 +528,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     _memStore["nang:sess:" + token] = { username: user.username, expiresAt: expires };
     storeSet("nang:sess:" + token, { username: user.username, expiresAt: expires }).catch(() => {});
     sendWebhook([
-      { name: "Event", value: "Reseller Login", inline: false },
+      { name: "Event", value: "Login", inline: false },
       { name: "Username", value: user.username, inline: true },
       { name: "Role", value: user.role, inline: true },
       { name: "IP", value: _getClientIP(req), inline: true },
@@ -555,8 +567,9 @@ async function handleApi(req, res, path, method, params, ctx) {
   if (route === "reseller/generate" && method === "POST") {
     const u = await authFromToken();
     if (!u) return res.status(200).json({ error: "not logged in" });
-    if (u.role !== "reseller" && u.role !== "admin" && u.role !== "owner") {
-      return res.status(200).json({ error: "Akun belum di-approve owner" });
+    const canGenerate = u.role === "reseller" || u.role === "admin" || u.role === "owner";
+    if (!canGenerate) {
+      return res.status(200).json({ error: "Role '" + u.role + "' belum bisa generate. Tunggu approve jadi reseller." });
     }
     if (Date.now() - u.lastReset > 24 * 3600 * 1000) { u.keysToday = 0; u.lastReset = Date.now(); }
     if (u.role === "reseller" && u.keysToday >= u.quota) {
@@ -574,8 +587,9 @@ async function handleApi(req, res, path, method, params, ctx) {
     await saveUser(u);
 
     sendWebhook([
-      { name: "Event", value: "Key Generated (Reseller)", inline: false },
-      { name: "Reseller", value: u.username, inline: true },
+      { name: "Event", value: "Key Generated", inline: false },
+      { name: "By", value: u.username, inline: true },
+      { name: "Role", value: u.role, inline: true },
       { name: "Target", value: String(name || "Unknown"), inline: true },
       { name: "User ID", value: uid, inline: true },
       { name: "Key", value: key, inline: false },
@@ -589,12 +603,12 @@ async function handleApi(req, res, path, method, params, ctx) {
     });
   }
 
-  // OWNER ENDPOINTS
+  // OWNER / ADMIN endpoints
   if (route === "owner/users") {
-    const ok = await checkOwnerPwAsync(params.get("pw") || (body && body.pw), params.get("ot") || (body && body.ot));
-    if (!ok) {
+    const reqRole = await getOwnerRole(params.get("pw") || (body && body.pw), params.get("ot") || (body && body.ot));
+    if (!reqRole) {
       const u = await authFromToken();
-      if (!u || u.role !== "owner") return res.status(200).json({ error: "forbidden" });
+      if (!u || (u.role !== "owner" && u.role !== "admin")) return res.status(200).json({ error: "forbidden" });
     }
     const users = await listUsers();
     users.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
@@ -609,23 +623,44 @@ async function handleApi(req, res, path, method, params, ctx) {
   }
 
   if (route === "owner/setrole" && method === "POST") {
-    const ok = await checkOwnerPwAsync(body.pw, body.ot);
-    if (!ok) return res.status(200).json({ error: "forbidden" });
+    const reqRole = await getOwnerRole(body.pw, body.ot);
+    if (!reqRole) return res.status(200).json({ error: "forbidden" });
+
     const target = String((body && body.username) || "").trim();
     const role = String((body && body.role) || "");
-    if (!["pending", "reseller", "admin", "owner", "banned"].includes(role)) {
+    const validRoles = ["member", "reseller", "admin", "owner", "banned"];
+    if (!validRoles.includes(role)) {
       return res.status(200).json({ error: "role invalid" });
     }
+
     const u = await getUser(target);
     if (!u) return res.status(200).json({ error: "user tidak ditemukan" });
+
+    if (reqRole === "admin") {
+      if (u.role === "admin" || u.role === "owner") {
+        return res.status(200).json({ error: "admin tidak bisa ubah " + u.role });
+      }
+      if (role === "admin" || role === "owner") {
+        return res.status(200).json({ error: "admin tidak bisa promote ke " + role });
+      }
+    }
+
     u.role = role;
     await saveUser(u);
+    sendWebhook([
+      { name: "Event", value: "Role Changed", inline: false },
+      { name: "Target", value: u.username, inline: true },
+      { name: "New Role", value: role, inline: true },
+      { name: "By", value: reqRole, inline: true },
+    ]);
     return res.status(200).json({ ok: true });
   }
 
   if (route === "owner/setquota" && method === "POST") {
-    const ok = await checkOwnerPwAsync(body.pw, body.ot);
-    if (!ok) return res.status(200).json({ error: "forbidden" });
+    const reqRole = await getOwnerRole(body.pw, body.ot);
+    if (!reqRole || (reqRole !== "owner" && reqRole !== "admin")) {
+      return res.status(200).json({ error: "forbidden" });
+    }
     const target = String((body && body.username) || "").trim();
     const quota = Math.max(0, Math.min(9999, parseInt(body && body.quota) || 0));
     const u = await getUser(target);
@@ -636,8 +671,8 @@ async function handleApi(req, res, path, method, params, ctx) {
   }
 
   if (route === "owner/delete" && method === "POST") {
-    const ok = await checkOwnerPwAsync(body.pw, body.ot);
-    if (!ok) return res.status(200).json({ error: "forbidden" });
+    const reqRole = await getOwnerRole(body.pw, body.ot);
+    if (reqRole !== "owner") return res.status(200).json({ error: "cuma owner yang bisa hapus user" });
     const target = String((body && body.username) || "").trim();
     const u = await getUser(target);
     if (u && u.email) await storeDel("nang:email:" + u.email.toLowerCase());
@@ -761,16 +796,16 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 .role-tag.owner{background:rgba(224,60,138,.2);color:var(--pink)}
 .role-tag.admin{background:rgba(155,77,224,.2);color:#c899ff}
 .role-tag.reseller{background:rgba(0,212,255,.15);color:var(--cyan)}
-.role-tag.pending{background:rgba(255,200,50,.15);color:var(--yellow)}
+.role-tag.member{background:rgba(150,150,170,.15);color:var(--muted)}
 .role-tag.banned{background:rgba(255,80,80,.15);color:var(--red)}
+.modal-tabs{display:flex;gap:4px;background:var(--bg3);border-radius:9px;padding:3px;margin-bottom:14px}
+.modal-tabs button{flex:1;padding:8px;border:none;border-radius:7px;background:transparent;color:var(--muted);font-family:inherit;font-weight:600;font-size:.8rem;cursor:pointer}
+.modal-tabs button.on{background:linear-gradient(135deg,rgba(224,60,138,.2),rgba(155,77,224,.2));color:#fff}
 .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.75);display:none;align-items:center;justify-content:center;z-index:100;padding:20px}
 .modal-bg.show{display:flex}
 .modal-box{background:var(--bg2);border:1px solid var(--pink);border-radius:16px;padding:24px;max-width:400px;width:100%;position:relative;max-height:90vh;overflow-y:auto}
 .modal-box h3{color:var(--pink);font-size:1rem;margin-bottom:14px}
 .modal-box .x{position:absolute;top:12px;right:16px;cursor:pointer;color:var(--muted);font-size:22px;line-height:1}
-.modal-tabs{display:flex;gap:4px;background:var(--bg3);border-radius:9px;padding:3px;margin-bottom:14px}
-.modal-tabs button{flex:1;padding:8px;border:none;border-radius:7px;background:transparent;color:var(--muted);font-family:inherit;font-weight:600;font-size:.8rem;cursor:pointer}
-.modal-tabs button.on{background:linear-gradient(135deg,rgba(224,60,138,.2),rgba(155,77,224,.2));color:#fff}
 .user-row{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg3);border-radius:9px;margin-bottom:6px;gap:8px;flex-wrap:wrap}
 .user-row .name{font-weight:700;font-size:.9rem;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .user-row .meta{font-size:.7rem;color:var(--muted);margin-top:3px}
@@ -787,66 +822,42 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 .fab.active{background:linear-gradient(135deg,#00b866,var(--green))}
 </style></head><body>
 
-<div class="auth-bar" id="authBar">
-  <button class="auth-btn" onclick="openAuthModal()">Login</button>
-</div>
+<div class="auth-bar" id="authBar"></div>
 
-<button class="fab" id="ownerFab" onclick="openOwnerModal()" title="Owner">🔒</button>
-
-<div class="modal-bg" id="authModal">
-  <div class="modal-box">
-    <span class="x" onclick="closeAuthModal()">&times;</span>
-    <div class="modal-tabs">
-      <button id="mtLogin" class="on" onclick="switchAuthTab(0)">Masuk</button>
-      <button id="mtRegister" onclick="switchAuthTab(1)">Daftar</button>
-    </div>
-    <div id="authFormLogin">
-      <input class="inp" id="aLoginUser" placeholder="Username atau Email" autocomplete="username">
-      <input class="inp" id="aLoginPass" type="password" placeholder="Password" autocomplete="current-password">
-      <button class="btn-main" onclick="doAuthLogin()">Masuk</button>
-      <div class="result" id="aLoginResult"></div>
-    </div>
-    <div id="authFormRegister" class="hidden">
-      <input class="inp" id="aRegUser" placeholder="Username (huruf/angka/_)" autocomplete="username">
-      <input class="inp" id="aRegEmail" type="email" placeholder="Email aktif" autocomplete="email">
-      <input class="inp" id="aRegPass" type="password" placeholder="Password min 5 karakter" autocomplete="new-password">
-      <input class="inp" id="aRegPass2" type="password" placeholder="Konfirmasi password" autocomplete="new-password">
-      <button class="btn-main" onclick="doAuthRegister()">Daftar</button>
-      <div class="result" id="aRegResult"></div>
-      <div style="font-size:.7rem;color:var(--muted);margin-top:8px;text-align:center">Setelah daftar, tunggu owner approve jadi reseller.</div>
-    </div>
-  </div>
-</div>
-
-<div class="modal-bg" id="ownerModal">
-  <div class="modal-box">
-    <span class="x" onclick="closeOwnerModal()">&times;</span>
-    <h3>Owner Panel</h3>
-    <div id="ownerLoginForm">
-      <input class="inp" id="oPw" type="password" placeholder="Password owner...">
-      <button class="btn-main" onclick="doOwnerLogin()">Masuk</button>
-      <div class="result" id="oResult"></div>
-    </div>
-    <div id="ownerPanel" class="hidden">
-      <button class="btn-main" onclick="loadUsers()">Refresh Users</button>
-      <div id="usersList" style="margin-top:12px"></div>
-      <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
-        <div style="font-size:.72rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px">Generate Key</div>
-        <input class="inp" id="oGenUid" placeholder="Roblox User ID">
-        <button class="btn-main" onclick="doOwnerGen()">Generate Key</button>
-        <div class="result" id="oGenResult"></div>
-        <button class="btn-main" style="background:var(--bg3);color:var(--text);border:1px solid var(--border)" onclick="doOwnerLogout()">Logout Owner</button>
-      </div>
-    </div>
-  </div>
-</div>
+<button class="fab hidden" id="ownerFab" onclick="openOwnerModal()" title="Owner">🔒</button>
 
 <div class="hero"><div class="logo">NANG<span class="logo-badge">KEY</span></div><div class="sub">Roblox Script Key System</div></div>
+
+<div id="loginWall">
+  <div class="card" style="max-width:420px;width:100%">
+    <div class="card-title">Masuk / Daftar</div>
+    <div class="modal-tabs" style="margin-bottom:14px">
+      <button id="lwTabLogin" class="on" onclick="lwSwitch(0)">Masuk</button>
+      <button id="lwTabRegister" onclick="lwSwitch(1)">Daftar</button>
+    </div>
+    <div id="lwLogin">
+      <input class="inp" id="lwUser" placeholder="Username atau Email" autocomplete="username">
+      <input class="inp" id="lwPass" type="password" placeholder="Password" autocomplete="current-password">
+      <button class="btn-main" onclick="lwDoLogin()">Masuk</button>
+      <div class="result" id="lwLoginResult"></div>
+    </div>
+    <div id="lwRegister" class="hidden">
+      <input class="inp" id="lwRegUser" placeholder="Username (huruf/angka/_)" autocomplete="username">
+      <input class="inp" id="lwRegEmail" type="email" placeholder="Email aktif" autocomplete="email">
+      <input class="inp" id="lwRegPass" type="password" placeholder="Password min 5 karakter" autocomplete="new-password">
+      <input class="inp" id="lwRegPass2" type="password" placeholder="Konfirmasi password" autocomplete="new-password">
+      <button class="btn-main" onclick="lwDoRegister()">Daftar</button>
+      <div class="result" id="lwRegResult"></div>
+      <div style="font-size:.7rem;color:var(--muted);margin-top:8px;text-align:center">Setelah daftar, login buat akses tools.</div>
+    </div>
+  </div>
+</div>
+
+<div id="appContent" class="hidden">
 <div class="nav">
   <button class="nav-btn active" onclick="switchTab(0)">Beli Key</button>
-  <button class="nav-btn" onclick="switchTab(1)">Bypass</button>
-  <button class="nav-btn" onclick="switchTab(2)">Convert</button>
-  <button class="nav-btn" id="navUpload" onclick="switchTab(3)">Upload</button>
+  <button class="nav-btn" onclick="switchTab(1)">Convert</button>
+  <button class="nav-btn" id="navUpload" onclick="switchTab(2)">Upload</button>
 </div>
 
 <div class="panel active" id="tab0">
@@ -864,13 +875,6 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 
 <div class="panel" id="tab1">
 <div class="card">
-<div class="card-title">Bypass Shortlink</div>
-<div class="fmt-box">Fitur bypass sedang tidak tersedia. Pakai tool lain.</div>
-</div>
-</div>
-
-<div class="panel" id="tab2">
-<div class="card">
 <div class="card-title">RBXL / RBXM → RBXLX</div>
 <div class="fmt-box">Upload file <span class="field">.rbxl</span> / <span class="field">.rbxm</span> (biner) atau <span class="field">.rbxlx</span> / <span class="field">.rbxmx</span> (XML). Hasil: <span class="field">.rbxlx</span> siap insert.</div>
 <input type="file" id="convFile" accept=".rbxl,.rbxm,.rbxlx,.rbxmx" style="display:none" onchange="doConvert()">
@@ -879,12 +883,12 @@ footer{margin-top:28px;color:var(--muted);font-size:0.7rem;text-align:center;opa
 </div>
 </div>
 
-<div class="panel" id="tab3">
+<div class="panel" id="tab2">
 <div id="uploadLocked" class="card">
 <div class="locked">
-🔒 Login dulu untuk akses upload<br>
-<div style="font-size:.75rem;margin-top:6px">Role minimal: reseller — di-approve owner</div>
-<button class="btn-main" onclick="openAuthModal()">Login / Daftar</button>
+🔒 Role lu belum bisa upload<br>
+<div style="font-size:.75rem;margin-top:6px">Butuh role minimal: <b>reseller</b></div>
+<div style="font-size:.7rem;margin-top:4px;color:var(--muted)">Hubungi owner buat naikin role.</div>
 </div>
 </div>
 <div id="uploadContent" class="hidden">
@@ -913,8 +917,32 @@ Aktifkan <b>Assets API: Read & Write</b>. IP: Unrestricted.
 </div>
 </div>
 </div>
+</div>
 
 <footer>NANG RBXM Tool &copy; 2025 &middot; v${BUILD}</footer>
+
+<div class="modal-bg" id="ownerModal">
+  <div class="modal-box">
+    <span class="x" onclick="closeOwnerModal()">&times;</span>
+    <h3>Owner Panel</h3>
+    <div id="ownerLoginForm">
+      <input class="inp" id="oPw" type="password" placeholder="Password owner...">
+      <button class="btn-main" onclick="doOwnerLogin()">Masuk</button>
+      <div class="result" id="oResult"></div>
+    </div>
+    <div id="ownerPanel" class="hidden">
+      <button class="btn-main" onclick="loadUsers()">Refresh Users</button>
+      <div id="usersList" style="margin-top:12px"></div>
+      <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+        <div style="font-size:.72rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px">Generate Key</div>
+        <input class="inp" id="oGenUid" placeholder="Roblox User ID">
+        <button class="btn-main" onclick="doOwnerGen()">Generate Key</button>
+        <div class="result" id="oGenResult"></div>
+        <button class="btn-main" style="background:var(--bg3);color:var(--text);border:1px solid var(--border)" onclick="doOwnerLogout()">Logout Owner</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script>
 const WA_NUMBER="${wa}";
@@ -925,9 +953,7 @@ let lastLookup={uid:null,name:null};
 
 function $(id){return document.getElementById(id);}
 function apiCall(url, opts){
-  const sep = url.indexOf('?') === -1 ? '?' : '&';
-  const finalUrl = url.replace(/^\\/\\?api=/, '/?api=') ;
-  return fetch(finalUrl, opts).then(r=>{
+  return fetch(url, opts).then(r=>{
     return r.text().then(t=>{
       try { return JSON.parse(t); }
       catch(e) { return { error: 'Server tidak balikin JSON. Response: '+t.slice(0,120) }; }
@@ -940,18 +966,8 @@ function switchTab(i){
   document.querySelectorAll('.panel').forEach((p,j)=>p.classList.toggle('active',i===j));
 }
 
-function openAuthModal(){ $('authModal').classList.add('show'); }
-function closeAuthModal(){ $('authModal').classList.remove('show'); }
-$('authModal').addEventListener('click',e=>{ if(e.target.id==='authModal') closeAuthModal(); });
-function switchAuthTab(i){
-  $('mtLogin').classList.toggle('on', i===0);
-  $('mtRegister').classList.toggle('on', i===1);
-  $('authFormLogin').classList.toggle('hidden', i!==0);
-  $('authFormRegister').classList.toggle('hidden', i!==1);
-}
-
 async function checkSession(){
-  if(!TOKEN){ updateAuthUI(); return; }
+  if(!TOKEN){ ME=null; updateAuthUI(); return; }
   try{
     const d = await apiCall('/?api=reseller/me&token='+encodeURIComponent(TOKEN));
     if(d.ok){ ME = d.user; }
@@ -962,51 +978,60 @@ async function checkSession(){
 
 function updateAuthUI(){
   const bar = $('authBar');
-  if(ME && ME.role !== 'banned'){
+  const logged = !!ME && ME.role !== 'banned';
+
+  if(logged){
+    $('loginWall').classList.add('hidden');
+    $('appContent').classList.remove('hidden');
     bar.innerHTML = '<div class="auth-pill"><span class="uname">'+ME.username+'</span><span class="role-tag '+ME.role+'">'+ME.role+'</span></div><button class="auth-btn gray" onclick="doAuthLogout()">Logout</button>';
   } else {
-    bar.innerHTML = '<button class="auth-btn" onclick="openAuthModal()">Login</button>';
+    $('loginWall').classList.remove('hidden');
+    $('appContent').classList.add('hidden');
+    bar.innerHTML = '';
   }
-  const isLogged = !!ME && ME.role !== 'banned';
-  const canUpload = isLogged && (ME.role==='owner'||ME.role==='admin'||ME.role==='reseller');
+
+  const canUpload = logged && (ME.role==='owner'||ME.role==='admin'||ME.role==='reseller');
   $('uploadLocked').classList.toggle('hidden', canUpload);
   $('uploadContent').classList.toggle('hidden', !canUpload);
 }
 
-async function doAuthLogin(){
-  const identifier = $('aLoginUser').value.trim();
-  const password = $('aLoginPass').value;
-  const box = $('aLoginResult');
+function lwSwitch(i){
+  $('lwTabLogin').classList.toggle('on', i===0);
+  $('lwTabRegister').classList.toggle('on', i===1);
+  $('lwLogin').classList.toggle('hidden', i!==0);
+  $('lwRegister').classList.toggle('hidden', i!==1);
+}
+
+async function lwDoLogin(){
+  const identifier = $('lwUser').value.trim();
+  const password = $('lwPass').value;
+  const box = $('lwLoginResult');
   if(!identifier||!password){ box.className='result err'; box.innerHTML='Isi username/email & password'; return; }
   box.className='result info'; box.innerHTML='<span class="spinner"></span>Masuk...';
   const d = await apiCall('/?api=reseller/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({identifier,password})});
   if(d.error){ box.className='result err'; box.innerHTML=d.error; return; }
   TOKEN = d.token;
   localStorage.setItem('nang_session', TOKEN);
-  $('aLoginPass').value='';
   box.className='result ok'; box.innerHTML='Berhasil masuk';
   await checkSession();
-  setTimeout(()=>{ closeAuthModal(); box.className='result'; box.innerHTML=''; }, 600);
 }
 
-async function doAuthRegister(){
-  const username = $('aRegUser').value.trim();
-  const email = $('aRegEmail').value.trim();
-  const password = $('aRegPass').value;
-  const pass2 = $('aRegPass2').value;
-  const box = $('aRegResult');
+async function lwDoRegister(){
+  const username = $('lwRegUser').value.trim();
+  const email = $('lwRegEmail').value.trim();
+  const password = $('lwRegPass').value;
+  const pass2 = $('lwRegPass2').value;
+  const box = $('lwRegResult');
   if(!username){ box.className='result err'; box.innerHTML='Username kosong'; return; }
   if(!email){ box.className='result err'; box.innerHTML='Email kosong'; return; }
   if(!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)){ box.className='result err'; box.innerHTML='Format email tidak valid'; return; }
   if(password!==pass2){ box.className='result err'; box.innerHTML='Password tidak sama'; return; }
   box.className='result info'; box.innerHTML='<span class="spinner"></span>Mendaftar...';
-  const d = await apiCall('/?api=reseller/register',{
-    method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({username,email,password})
-  });
+  const d = await apiCall('/?api=reseller/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,email,password})});
   if(d.error){ box.className='result err'; box.innerHTML=d.error; return; }
-  box.className='result ok'; box.innerHTML = d.message || 'Terdaftar. Tunggu approve owner.';
-  $('aRegUser').value=''; $('aRegEmail').value=''; $('aRegPass').value=''; $('aRegPass2').value='';
+  box.className='result ok'; box.innerHTML = (d.message || 'Terdaftar.') + ' Silakan login.';
+  $('lwRegUser').value=''; $('lwRegEmail').value=''; $('lwRegPass').value=''; $('lwRegPass2').value='';
+  setTimeout(()=>{ lwSwitch(0); $('lwUser').value = username; }, 800);
 }
 
 async function doAuthLogout(){
@@ -1072,19 +1097,44 @@ async function loadUsers(){
     const d = await apiCall('/?api=owner/users&ot='+encodeURIComponent(OWNER_TOKEN));
     if(d.error){ box.innerHTML='<div style="color:var(--red);font-size:.8rem">'+d.error+'</div>'; return; }
     if(!d.users || !d.users.length){ box.innerHTML='<div style="color:var(--muted);font-size:.8rem">Belum ada user</div>'; return; }
-    box.innerHTML = d.users.map(u => (
-      '<div class="user-row">'+
+    box.innerHTML = d.users.map(u => {
+      const isReseller = u.role === 'reseller';
+      const isAdmin = u.role === 'admin';
+      const isOwner = u.role === 'owner';
+      const isBanned = u.role === 'banned';
+      const isMember = u.role === 'member';
+
+      let actions = '';
+
+      if (!isReseller && !isAdmin && !isOwner) {
+        actions += '<button onclick="setUserRole(\\''+u.username+'\\',\\'reseller\\')">→ Reseller</button>';
+      }
+      if (!isAdmin && !isOwner) {
+        actions += '<button onclick="setUserRole(\\''+u.username+'\\',\\'admin\\')">→ Admin</button>';
+      }
+      if (!isOwner && !isMember) {
+        actions += '<button onclick="setUserRole(\\''+u.username+'\\',\\'member\\')">→ Member</button>';
+      }
+      if (!isOwner) {
+        if (isBanned) {
+          actions += '<button onclick="setUserRole(\\''+u.username+'\\',\\'member\\')">Unban</button>';
+        } else {
+          actions += '<button onclick="setUserRole(\\''+u.username+'\\',\\'banned\\')">Ban</button>';
+        }
+      }
+      if (isReseller) {
+        actions += '<button onclick="editUserQuota(\\''+u.username+'\\','+u.quota+')">Q:'+u.quota+'</button>';
+      }
+      if (ME && ME.role === 'owner' && u.username !== ME.username) {
+        actions += '<button onclick="delUser(\\''+u.username+'\\')">Hapus</button>';
+      }
+
+      return '<div class="user-row">'+
         '<div><div class="name">'+u.username+' <span class="role-tag '+u.role+'">'+u.role+'</span></div>'+
         '<div class="meta">'+(u.email ? u.email + ' · ' : '')+'q:'+u.quota+' t:'+u.keysToday+'</div></div>'+
-        '<div class="row-actions">'+
-          (u.role!=='reseller'?'<button onclick="setUserRole(\\''+u.username+'\\',\\'reseller\\')">Approve</button>':'')+
-          (u.role!=='admin'?'<button onclick="setUserRole(\\''+u.username+'\\',\\'admin\\')">Admin</button>':'')+
-          (u.role!=='banned'?'<button onclick="setUserRole(\\''+u.username+'\\',\\'banned\\')">Ban</button>':'<button onclick="setUserRole(\\''+u.username+'\\',\\'pending\\')">Unban</button>')+
-          '<button onclick="editUserQuota(\\''+u.username+'\\','+u.quota+')">Q</button>'+
-          '<button onclick="delUser(\\''+u.username+'\\')">Hapus</button>'+
-        '</div>'+
-      '</div>'
-    )).join('');
+        '<div class="row-actions">'+actions+'</div>'+
+      '</div>';
+    }).join('');
   }catch(e){
     box.innerHTML='<div style="color:var(--red);font-size:.8rem">Error: '+e.message+'</div>';
   }
@@ -1205,9 +1255,9 @@ async function doUploadRbxm(){
 
 document.addEventListener('DOMContentLoaded',()=>{
   checkSession();
-  if(OWNER_TOKEN) $('ownerFab').classList.add('active');
-  ['aLoginUser','aLoginPass'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doAuthLogin();}));
-  ['aRegUser','aRegEmail','aRegPass','aRegPass2'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doAuthRegister();}));
+  if(OWNER_TOKEN) $('ownerFab').classList.remove('hidden');
+  ['lwUser','lwPass'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')lwDoLogin();}));
+  ['lwRegUser','lwRegEmail','lwRegPass','lwRegPass2'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')lwDoRegister();}));
   ['oPw'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doOwnerLogin();}));
   ['oGenUid'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doOwnerGen();}));
 });
