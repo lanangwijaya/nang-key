@@ -449,6 +449,11 @@ async function handleApi(req, res, path, method, params, ctx) {
   }
 
   if (route === "upload-commit" && method === "POST") {
+    let raw = "";
+    await new Promise(r => { req.on("data", c => raw += c); req.on("end", r); });
+    let body = null;
+    try { body = JSON.parse(raw); } catch { body = null; }
+
     const sid = String((body && body.sid) || "").trim();
     const apiKey = String((body && body.apiKey) || "").trim();
     const userId = String((body && body.userId) || "").trim();
@@ -1334,6 +1339,10 @@ Limit web ini: max <span class="field">15 MB</span> per upload
 <div class="hint" id="upUserHint"></div>
 <input type="password" class="inp" id="upApiKey" placeholder="API Key Roblox..." autocomplete="off">
 <div class="hint" id="upKeyHint"></div>
+<button class="btn-main" style="background:var(--bg3);color:var(--red);border:1px solid var(--border);margin-top:6px"
+        onclick="if(confirm('Hapus username & API key tersimpan untuk akun ini?')){const b=_LS_BASE;localStorage.removeItem(_lsKey(b.user));localStorage.removeItem(_lsKey(b.key));localStorage.removeItem(_lsKey(b.name));localStorage.removeItem(_lsKey(b.desc));localStorage.removeItem(_lsKey(b.type));_upClearFieldsUI();}">
+  🗑 Hapus Data Tersimpan
+</button>
 </div>
 <div class="card">
 <div class="card-title">File</div>
@@ -1557,6 +1566,8 @@ function updateAuthUI(){
   $('navMyKeys').classList.toggle('hidden', !canMyKeys);
   const canStore = logged && (ME.role==='owner'||ME.role==='admin'||ME.role==='reseller');
   $('navStore').classList.toggle('hidden', !canStore);
+  // reload field upload sesuai akun yang aktif
+  try { _upLoadFields(); } catch(e) {}
 }
 
 function lwSwitch(i){
@@ -1612,6 +1623,7 @@ async function doAuthLogout(){
   localStorage.removeItem('nang_last_refresh');
   _lastRefreshAt = 0;
   delCookie('nang_session');
+  _upClearFieldsUI();
   updateAuthUI();
 }
 
@@ -2045,6 +2057,60 @@ const upDrop=$('upDrop');
 const upFileInput=$('upFileInput');
 const upBigResult=$('upBigResult');
 
+// === Persist per-akun (username & API key & nama/desc/tipe) ===
+const _LS_BASE = {
+  user: 'nang_up_username',
+  key:  'nang_up_apikey',
+  name: 'nang_up_name',
+  desc: 'nang_up_desc',
+  type: 'nang_up_type',
+};
+function _lsKey(k){
+  const who = (ME && ME.username) ? ME.username.toLowerCase() : '_guest';
+  return k + ':' + who;
+}
+function _upSaveFields(){
+  try{
+    localStorage.setItem(_lsKey(_LS_BASE.user), $('upUsername').value.trim());
+    localStorage.setItem(_lsKey(_LS_BASE.key),  $('upApiKey').value.trim());
+    localStorage.setItem(_lsKey(_LS_BASE.name), $('upName').value.trim());
+    localStorage.setItem(_lsKey(_LS_BASE.desc), $('upDesc').value.trim());
+    localStorage.setItem(_lsKey(_LS_BASE.type), _upAssetType);
+  }catch(e){}
+}
+function _upClearFieldsUI(){
+  try{
+    $('upUsername').value = '';
+    $('upApiKey').value   = '';
+    $('upName').value     = '';
+    $('upDesc').value     = '';
+    const uh = $('upUserHint'); if(uh){ uh.className='hint'; uh.textContent=''; }
+    const kh = $('upKeyHint');  if(kh){ kh.className='hint'; kh.textContent=''; }
+  }catch(e){}
+}
+function _upLoadFields(){
+  try{
+    const u = localStorage.getItem(_lsKey(_LS_BASE.user));
+    const k = localStorage.getItem(_lsKey(_LS_BASE.key));
+    const n = localStorage.getItem(_lsKey(_LS_BASE.name));
+    const d = localStorage.getItem(_lsKey(_LS_BASE.desc));
+    const t = localStorage.getItem(_lsKey(_LS_BASE.type));
+
+    if(u) $('upUsername').value = u; else $('upUsername').value = '';
+    if(k) $('upApiKey').value   = k; else $('upApiKey').value   = '';
+    if(n) $('upName').value     = n; else $('upName').value     = '';
+    if(d) $('upDesc').value     = d; else $('upDesc').value     = '';
+    if(t === 'Audio' || t === 'Model') upSetType(t);
+    else upSetType('Model');
+
+    // trigger auto-lookup hint kalau ada username tersimpan
+    if(u){
+      try { $('upUsername').dispatchEvent(new Event('input', { bubbles:true })); } catch(e){}
+      try { $('upApiKey').dispatchEvent(new Event('blur', { bubbles:true })); } catch(e){}
+    }
+  }catch(e){}
+}
+
 upDrop.addEventListener('click',()=>upFileInput.click());
 upDrop.addEventListener('dragover',e=>{e.preventDefault();upDrop.classList.add('over');});
 upDrop.addEventListener('dragleave',()=>upDrop.classList.remove('over'));
@@ -2052,6 +2118,7 @@ upDrop.addEventListener('drop',e=>{e.preventDefault();upDrop.classList.remove('o
 upFileInput.addEventListener('change',e=>{if(e.target.files.length)_upHandleFile(e.target.files[0]);});
 
 function upSetType(t){
+  try{ localStorage.setItem(_lsKey(_LS_BASE.type), t); }catch(e){}
   _upAssetType = t;
   $('upTypeModel').classList.toggle('on', t === 'Model');
   $('upTypeAudio').classList.toggle('on', t === 'Audio');
@@ -2145,6 +2212,8 @@ async function doUploadRbxm(){
   if(!username) return _upBigShowFail('Username / User ID Roblox kosong', 'Isi kolom "Akun Roblox" dulu.');
   if(!apiKey) return _upBigShowFail('API Key Roblox kosong', 'Bikin key di create.roblox.com → Credentials.');
   if(!_upFile) return _upBigShowFail('Belum ada file dipilih', 'Klik/drop file dulu.');
+
+  _upSaveFields();
 
   const btn=$('upBtn');
   btn.disabled=true; btn.textContent='⏳ PROSES...';
@@ -2297,6 +2366,14 @@ document.addEventListener('DOMContentLoaded',()=>{
     if(ck){ TOKEN = ck; localStorage.setItem('nang_session', ck); }
   }
   checkSession();
+
+  // === Persist field upload (per-akun) ===
+  _upLoadFields();
+  ['upUsername','upApiKey','upName','upDesc'].forEach(id=>{
+    $(id).addEventListener('input', _upSaveFields);
+    $(id).addEventListener('change', _upSaveFields);
+  });
+
   ['lwUser','lwPass'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')lwDoLogin();}));
   ['lwRegUser','lwRegEmail','lwRegPass','lwRegPass2'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')lwDoRegister();}));
   ['oPw'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doOwnerLogin();}));
