@@ -1,4 +1,4 @@
-const BUILD = "69.5";
+const BUILD = "69.8";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -70,13 +70,14 @@ async function storeDel(key) {
 function hashPw(pw, salt) { return createHash("sha256").update(salt + "::" + pw).digest("hex"); }
 function randomHex(n) { return randomBytes(n).toString("hex"); }
 
-const DEFAULT_STORE = { price: 500, wa: "", name: "", active: false, qr: "" };
+const DEFAULT_STORE = { price: 500, wa: "", dana: "", name: "", active: false, qr: "" };
 
 function ensureStore(u) {
   if (!u) return u;
   if (!u.store) u.store = { ...DEFAULT_STORE };
   if (typeof u.store.price !== "number") u.store.price = 500;
   if (typeof u.store.wa !== "string") u.store.wa = "";
+  if (typeof u.store.dana !== "string") u.store.dana = "";
   if (typeof u.store.name !== "string") u.store.name = "";
   if (typeof u.store.active !== "boolean") u.store.active = false;
   if (typeof u.store.qr !== "string") u.store.qr = "";
@@ -324,11 +325,59 @@ function _flatRobloxErrors(data) {
   return parts.length ? parts.join(" · ") : JSON.stringify(data).slice(0, 300);
 }
 
-// ============================================================
-// RAW BINARY UPLOAD — support Model & Audio
-//   Model : .rbxm / .rbxmx  → MIME "model/x-rbxm"      → assetType "Model"
-//   Audio : .mp3 / .ogg / .wav / .flac → MIME sesuai    → assetType "Audio"
-// ============================================================
+function _readRawBody(req) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    req.on("data", c => chunks.push(c));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", () => resolve(null));
+  });
+}
+
+async function _robloxUploadDirect({ apiKey, userId, buffer, fileName, assetType, displayName, description }) {
+  const ext = fileName.toLowerCase().split(".").pop();
+  const MIME_MAP = {
+    rbxm: "model/x-rbxm", rbxmx: "model/x-rbxm",
+    mp3: "audio/mpeg", ogg: "audio/ogg", wav: "audio/wav", flac: "audio/flac"
+  };
+  const mime = MIME_MAP[ext] || "application/octet-stream";
+
+  const form = new FormData();
+  form.append("request", JSON.stringify({
+    assetType: assetType || "Model",
+    displayName: String(displayName).slice(0, 50),
+    description: String(description).slice(0, 1000),
+    creationContext: { creator: { userId: Number(userId) } }
+  }));
+  const blob = new Blob([new Uint8Array(buffer)], { type: mime });
+  form.append("fileContent", blob, fileName);
+
+  const r = await fetch("https://apis.roblox.com/assets/v1/assets", {
+    method: "POST",
+    headers: { "x-api-key": apiKey },
+    body: form,
+  });
+
+  const text = await r.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+  if (!r.ok) {
+    let msg;
+    if (r.status === 401) msg = "API key tidak valid / expired";
+    else if (r.status === 403) msg = "Forbidden — cek permission/key/userId/creator status";
+    else if (r.status === 429) msg = "Rate limit Roblox";
+    else if (r.status === 413) msg = "File terlalu besar untuk Roblox";
+    else if (r.status === 400 || r.status === 415 || r.status === 422) msg = "Data ditolak Roblox: " + _flatRobloxErrors(data);
+    else msg = data.message || data.error || _flatRobloxErrors(data) || ("HTTP " + r.status);
+    return { ok: false, error: "[" + r.status + "] " + msg, status: r.status };
+  }
+
+  const operationId = data.operationId || (data.path && String(data.path).split("/").pop());
+  if (!operationId) return { ok: false, error: "Tidak dapat operationId" };
+  return { ok: true, operationId };
+}
+
 async function handleRawUpload(req, res) {
   res.setHeader("Content-Type", "application/json");
 
@@ -341,100 +390,28 @@ async function handleRawUpload(req, res) {
 
   if (!apiKey) return res.status(200).json({ ok: false, error: "API key kosong" });
   if (!userId || !/^\d+$/.test(userId)) return res.status(200).json({ ok: false, error: "userId invalid" });
-  if (assetType !== "Model" && assetType !== "Audio") {
-    return res.status(200).json({ ok: false, error: "assetType harus Model atau Audio" });
-  }
 
-  let buffer;
-  try {
-    const chunks = [];
-    await new Promise((resolve, reject) => {
-      req.on("data", c => chunks.push(c));
-      req.on("end", resolve);
-      req.on("error", reject);
-    });
-    buffer = Buffer.concat(chunks);
-  } catch (e) {
-    return res.status(200).json({ ok: false, error: "Gagal baca body: " + String(e.message || e) });
-  }
-
+  const buffer = await _readRawBody(req);
+  if (!buffer) return res.status(200).json({ ok: false, error: "Gagal baca body" });
   if (!buffer.length) return res.status(200).json({ ok: false, error: "File kosong" });
 
   const ext = fileName.toLowerCase().split(".").pop();
-  const MODEL_EXT = ["rbxm", "rbxmx"];
-  const AUDIO_EXT = ["mp3", "ogg", "wav", "flac"];
-  const MIME_MAP = {
-    rbxm: "model/x-rbxm",
-    rbxmx: "model/x-rbxm",
-    mp3: "audio/mpeg",
-    ogg: "audio/ogg",
-    wav: "audio/wav",
-    flac: "audio/flac"
-  };
-
-  const allowed = assetType === "Audio" ? AUDIO_EXT : MODEL_EXT;
+  const allowed = assetType === "Audio" ? ["mp3","ogg","wav","flac"] : ["rbxm","rbxmx"];
   if (!allowed.includes(ext)) {
     return res.status(200).json({
       ok: false,
-      error: assetType === "Audio"
-        ? "Audio harus .mp3 / .ogg / .wav / .flac (file lu: ." + ext + ")"
-        : "Model harus .rbxm / .rbxmx (file lu: ." + ext + ")"
+      error: assetType === "Audio" ? "Audio harus .mp3/.ogg/.wav/.flac" : "Model harus .rbxm/.rbxmx"
     });
   }
 
-  const mime = MIME_MAP[ext] || "application/octet-stream";
-
-  try {
-    const form = new FormData();
-
-    // Part "request" — metadata JSON
-    form.append("request", JSON.stringify({
-      assetType: assetType,
-      displayName: displayName,
-      description: description,
-      creationContext: {
-        creator: { userId: Number(userId) }
-      }
-    }));
-
-    // Part "fileContent" — binary
-    const blob = new Blob([new Uint8Array(buffer)], { type: mime });
-    form.append("fileContent", blob, fileName);
-
-    const r = await fetch("https://apis.roblox.com/assets/v1/assets", {
-      method: "POST",
-      headers: { "x-api-key": apiKey },
-      body: form,
+  const result = await _robloxUploadDirect({ apiKey, userId, buffer, fileName, assetType, displayName, description });
+  if (!result.ok) {
+    return res.status(200).json({
+      ok: false, error: result.error,
+      debug: { fileName, size: buffer.length, userId, status: result.status, assetType }
     });
-
-    const text = await r.text();
-    let data;
-    try { data = JSON.parse(text); } catch { data = { raw: text }; }
-
-    if (!r.ok) {
-      let msg;
-      if (r.status === 401) msg = "API key tidak valid / expired";
-      else if (r.status === 403) msg = "Forbidden — cek: (1) API key punya permission Assets API Write? (2) userId ini pemilik API key? (3) IP restriction OFF di dashboard Roblox? (4) Untuk Audio: akun harus verified creator";
-      else if (r.status === 429) msg = "Rate limit Roblox — tunggu ~10 detik";
-      else if (r.status === 413) msg = "File terlalu besar untuk Roblox (max ~20 MB)";
-      else if (r.status === 400 || r.status === 415 || r.status === 422) {
-        msg = "Data ditolak Roblox: " + _flatRobloxErrors(data);
-      } else {
-        msg = data.message || data.error || _flatRobloxErrors(data) || ("HTTP " + r.status);
-      }
-      return res.status(200).json({
-        ok: false,
-        error: "[" + r.status + "] " + msg,
-        debug: { fileName, size: buffer.length, userId, status: r.status, assetType }
-      });
-    }
-
-    const operationId = data.operationId || (data.path && String(data.path).split("/").pop());
-    if (!operationId) return res.status(200).json({ ok: false, error: "Roblox tidak kasih operationId", raw: data });
-    return res.status(200).json({ ok: true, operationId });
-  } catch (e) {
-    return res.status(200).json({ ok: false, error: "Upload error: " + String(e.message || e) });
   }
+  return res.status(200).json({ ok: true, operationId: result.operationId });
 }
 
 async function handleApi(req, res, path, method, params, ctx) {
@@ -443,6 +420,75 @@ async function handleApi(req, res, path, method, params, ctx) {
 
   if (route === "upload-rbxm-raw" && method === "POST") {
     return await handleRawUpload(req, res);
+  }
+
+  if (route === "upload-chunk" && method === "POST") {
+    res.setHeader("Content-Type", "application/json");
+
+    const sid = String(params.get("sid") || "").trim();
+    const idx = parseInt(params.get("idx") || "-1", 10);
+    const total = parseInt(params.get("total") || "0", 10);
+    const fileName = String(params.get("fn") || "file.bin").slice(0, 128);
+    const assetType = String(params.get("at") || "Model");
+
+    if (!sid || sid.length > 64 || !/^[a-f0-9]+$/i.test(sid)) {
+      return res.status(200).json({ ok: false, error: "sid invalid" });
+    }
+    if (isNaN(idx) || idx < 0 || idx >= 200) return res.status(200).json({ ok: false, error: "idx invalid" });
+    if (isNaN(total) || total < 1 || total > 200) return res.status(200).json({ ok: false, error: "total invalid" });
+
+    const buffer = await _readRawBody(req);
+    if (!buffer || !buffer.length) return res.status(200).json({ ok: false, error: "chunk kosong" });
+
+    const b64 = buffer.toString("base64");
+    const ok1 = await storeSet("nang:up:" + sid + ":" + String(idx).padStart(4, "0"), b64, 900);
+    if (idx === 0) {
+      await storeSet("nang:up:" + sid + ":meta", { total, fileName, assetType, ts: Date.now() }, 900);
+    }
+    return res.status(200).json({ ok: ok1, idx, bytes: buffer.length });
+  }
+
+  if (route === "upload-commit" && method === "POST") {
+    const sid = String((body && body.sid) || "").trim();
+    const apiKey = String((body && body.apiKey) || "").trim();
+    const userId = String((body && body.userId) || "").trim();
+    const displayName = String((body && body.displayName) || "Asset").slice(0, 50);
+    const description = String((body && body.description) || "").slice(0, 1000);
+
+    if (!sid || !apiKey || !userId) return res.status(200).json({ ok: false, error: "data kurang" });
+    if (!/^\d+$/.test(userId)) return res.status(200).json({ ok: false, error: "userId invalid" });
+
+    const meta = await storeGet("nang:up:" + sid + ":meta");
+    if (!meta || !meta.total) return res.status(200).json({ ok: false, error: "Session tidak ditemukan / kadaluarsa" });
+
+    const buffers = [];
+    for (let i = 0; i < meta.total; i++) {
+      const key = "nang:up:" + sid + ":" + String(i).padStart(4, "0");
+      const b64 = await storeGet(key);
+      if (typeof b64 !== "string" || !b64.length) {
+        return res.status(200).json({ ok: false, error: "Bagian " + (i + 1) + " dari " + meta.total + " hilang — coba upload ulang" });
+      }
+      buffers.push(Buffer.from(b64, "base64"));
+    }
+    const fullBuffer = Buffer.concat(buffers);
+
+    for (let i = 0; i < meta.total; i++) {
+      storeDel("nang:up:" + sid + ":" + String(i).padStart(4, "0")).catch(() => {});
+    }
+    storeDel("nang:up:" + sid + ":meta").catch(() => {});
+
+    const result = await _robloxUploadDirect({
+      apiKey, userId, buffer: fullBuffer,
+      fileName: meta.fileName, assetType: meta.assetType,
+      displayName, description
+    });
+    if (!result.ok) {
+      return res.status(200).json({
+        ok: false, error: result.error,
+        debug: { fileName: meta.fileName, size: fullBuffer.length, userId, status: result.status, assetType: meta.assetType }
+      });
+    }
+    return res.status(200).json({ ok: true, operationId: result.operationId, size: fullBuffer.length });
   }
 
   let body = null;
@@ -573,38 +619,9 @@ async function handleApi(req, res, path, method, params, ctx) {
     if (!apiKey || !userId || !fileBase64) return res.status(200).json({ ok: false, error: "data kurang" });
     try {
       const buffer = Buffer.from(fileBase64, "base64");
-      const ext = fileName.toLowerCase().split(".").pop();
-      const MIME_MAP = { rbxm: "model/x-rbxm", rbxmx: "model/x-rbxm", mp3: "audio/mpeg", ogg: "audio/ogg", wav: "audio/wav", flac: "audio/flac" };
-      const mime = MIME_MAP[ext] || "application/octet-stream";
-      const form = new FormData();
-      form.append("request", JSON.stringify({
-        assetType: assetType,
-        displayName: String(displayName).slice(0, 50),
-        description: String(description).slice(0, 1000),
-        creationContext: { creator: { userId: Number(userId) } }
-      }));
-      const blob = new Blob([buffer], { type: mime });
-      form.append("fileContent", blob, fileName);
-      const r = await fetch("https://apis.roblox.com/assets/v1/assets", {
-        method: "POST",
-        headers: { "x-api-key": apiKey },
-        body: form,
-      });
-      const text = await r.text();
-      let data;
-      try { data = JSON.parse(text); } catch { data = { raw: text }; }
-      if (!r.ok) {
-        let msg;
-        if (r.status === 401) msg = "API key tidak valid / expired";
-        else if (r.status === 403) msg = "API key tidak punya permission Assets API (Write), atau creator tidak sesuai pemilik key";
-        else if (r.status === 429) msg = "Rate limit Roblox — tunggu beberapa detik lalu coba lagi";
-        else if (r.status === 400 || r.status === 415 || r.status === 422) msg = "Data ditolak Roblox: " + _flatRobloxErrors(data);
-        else msg = data.message || data.error || _flatRobloxErrors(data) || ("HTTP " + r.status);
-        return res.status(200).json({ ok: false, error: "[" + r.status + "] " + msg });
-      }
-      const operationId = data.operationId || (data.path && data.path.split("/").pop());
-      if (!operationId) return res.status(200).json({ ok: false, error: "Tidak dapat operationId", raw: data });
-      return res.status(200).json({ ok: true, operationId });
+      const result = await _robloxUploadDirect({ apiKey, userId, buffer, fileName, assetType, displayName, description });
+      if (!result.ok) return res.status(200).json({ ok: false, error: result.error });
+      return res.status(200).json({ ok: true, operationId: result.operationId });
     } catch (e) {
       return res.status(200).json({ ok: false, error: String(e.message || e) });
     }
@@ -651,7 +668,7 @@ async function handleApi(req, res, path, method, params, ctx) {
       passwordHash: hashPw(password, salt), salt,
       role: "member", quota: DEFAULT_QUOTA, keysToday: 0, lastReset: Date.now(),
       createdAt: Date.now(), keys: [],
-      store: { price: 500, wa: "", name: username, active: false, qr: "" },
+      store: { price: 500, wa: "", dana: "", name: username, active: false, qr: "" },
     };
     await saveUser(user);
     await storeSet(emailKey, username);
@@ -773,17 +790,21 @@ async function handleApi(req, res, path, method, params, ctx) {
     if (!can) return res.status(200).json({ error: "role belum bisa punya toko" });
     const price = Math.max(0, Math.min(99999999, parseInt(body.price) || 500));
     let wa = String(body.wa || "").trim().replace(/[^0-9]/g, "");
+    let dana = String(body.dana || "").trim().replace(/[^0-9]/g, "");
     const name = String(body.name || "").trim().slice(0, 40);
     const active = !!body.active;
     let qr = String(body.qr || "").trim();
     if (qr && !qr.startsWith("data:image/")) return res.status(200).json({ error: "Format QR tidak valid" });
     if (qr.length > 700000) return res.status(200).json({ error: "QR terlalu besar (max ~500 KB)" });
     if (wa && wa.length < 8) return res.status(200).json({ error: "Nomor WA minimal 8 digit" });
+    if (dana && dana.length < 8) return res.status(200).json({ error: "Nomor DANA minimal 8 digit" });
     if (wa.startsWith("0")) wa = "62" + wa.slice(1);
+    const hasPay = qr.length > 0 || dana.length >= 8;
+    const canActive = active && wa.length >= 8 && hasPay;
     u.store = {
-      price, wa,
+      price, wa, dana,
       name: name || u.username,
-      active: (active && wa.length >= 8) ? true : false,
+      active: canActive,
       qr: qr,
     };
     await saveUser(u);
@@ -792,8 +813,9 @@ async function handleApi(req, res, path, method, params, ctx) {
       { name: "Username", value: u.username, inline: true },
       { name: "Price", value: "Rp" + price, inline: true },
       { name: "WA", value: wa || "-", inline: true },
+      { name: "DANA", value: dana || "-", inline: true },
       { name: "Active", value: u.store.active ? "Ya" : "Tidak", inline: true },
-      { name: "QR", value: qr ? "Ada" : "Tidak", inline: true },
+      { name: "QR", value: qr ? "Ada" : "Tidak" , inline: true },
     ]);
     return res.status(200).json({ ok: true, store: u.store });
   }
@@ -809,6 +831,7 @@ async function handleApi(req, res, path, method, params, ctx) {
         name: x.store.name || x.username,
         price: x.store.price || 500,
         wa: x.store.wa,
+        dana: x.store.dana || "",
         hasQr: !!(x.store.qr && x.store.qr.length > 0),
         role: x.role,
       }));
@@ -817,14 +840,16 @@ async function handleApi(req, res, path, method, params, ctx) {
     return res.status(200).json({ ok: true, stores });
   }
 
-  if (route === "stores/qr" && method === "GET") {
+  if ((route === "stores/qr" || route === "stores/pay") && method === "GET") {
     const u = await authFromToken();
     if (!u) return res.status(200).json({ error: "not logged in" });
     const target = String(params.get("username") || "").trim();
     if (!target) return res.status(200).json({ error: "username kosong" });
     const t = await getUser(target);
-    if (!t || !t.store || !t.store.active || !t.store.wa) return res.status(200).json({ ok: true, qr: "" });
-    return res.status(200).json({ ok: true, qr: t.store.qr || "" });
+    if (!t || !t.store || !t.store.active || !t.store.wa) {
+      return res.status(200).json({ ok: true, qr: "", dana: "" });
+    }
+    return res.status(200).json({ ok: true, qr: t.store.qr || "", dana: t.store.dana || "" });
   }
 
   if (route === "owner/setstore" && method === "POST") {
@@ -839,17 +864,23 @@ async function handleApi(req, res, path, method, params, ctx) {
     if (!can) return res.status(200).json({ error: "role target belum bisa punya toko" });
     const price = Math.max(0, Math.min(99999999, parseInt(body.price) || 500));
     let wa = String(body.wa || "").trim().replace(/[^0-9]/g, "");
+    let dana = String(body.dana || "").trim().replace(/[^0-9]/g, "");
     const name = String(body.name || "").trim().slice(0, 40);
     const active = !!body.active;
     if (wa.startsWith("0")) wa = "62" + wa.slice(1);
+    if (dana.startsWith("0")) dana = "62" + dana.slice(1);
     let qr = String(body.qr || "").trim();
     if (qr && !qr.startsWith("data:image/")) qr = "";
     if (qr.length > 700000) qr = "";
+    const finalQr = qr || (u.store && u.store.qr) || "";
+    const finalDana = dana || (u.store && u.store.dana) || "";
+    const hasPay = finalQr.length > 0 || finalDana.length >= 8;
+    const canActive = active && wa.length >= 8 && hasPay;
     u.store = {
-      price, wa,
+      price, wa, dana: finalDana,
       name: name || u.username,
-      active: (active && wa.length >= 8) ? true : false,
-      qr: qr || (u.store && u.store.qr) || "",
+      active: canActive,
+      qr: finalQr,
     };
     await saveUser(u);
     return res.status(200).json({ ok: true, store: u.store });
@@ -1221,14 +1252,23 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 <div class="card-title">Pembayaran</div>
 <div class="qr-wrap">
 <img id="buyQrImg" class="qr-img" style="display:none;background:#fff;padding:4px" alt="QRIS">
-<div id="buyQrPlaceholder" class="qr-img-placeholder">QR<br>belum<br>tersedia</div>
+<div id="buyDanaBox" class="qr-img-placeholder" style="display:none;flex-direction:column;gap:4px;border-color:rgba(0,232,122,.4);background:linear-gradient(135deg,rgba(0,232,122,.08),rgba(0,212,255,.04));color:var(--green)">
+  <div style="font-size:1.8rem">💳</div>
+  <div style="font-size:.6rem;letter-spacing:1px;font-weight:700">DANA</div>
+</div>
+<div id="buyQrPlaceholder" class="qr-img-placeholder">QR /<br>DANA<br>kosong</div>
 <div class="qr-info">
   <div class="price-badge" id="buyPrice">Rp500 / Key</div>
   <div class="qr-steps">
     Transfer <span id="buyPriceTransfer">Rp500</span><br>
-    <span style="font-size:.7rem;color:var(--muted)">Scan QR atau klik nomor WA di bawah</span>
+    <span id="buyPayHint" style="font-size:.7rem;color:var(--muted)">Scan QR atau klik nomor WA di bawah</span>
   </div>
 </div>
+</div>
+<div id="buyDanaDetail" style="display:none;margin-top:10px;padding:12px;background:rgba(0,232,122,.05);border:1px solid rgba(0,232,122,.25);border-radius:10px;text-align:center">
+  <div style="font-size:.65rem;color:var(--muted);letter-spacing:1.5px;font-weight:800;text-transform:uppercase;margin-bottom:6px">Nomor DANA</div>
+  <div style="font-family:'JetBrains Mono',monospace;font-size:1.3rem;font-weight:900;color:var(--green);letter-spacing:1px" id="buyDanaNum">-</div>
+  <button class="btn-green" style="margin-top:8px" onclick="copyDana(event)">📋 COPY NOMOR DANA</button>
 </div>
 <div class="fmt-box"><span class="label">Format pesan WA:</span><br><span class="field" id="buyWaName">Beli Key NANG</span><br>Nama: <span class="field" id="waNama">[isi di bawah]</span><br>Roblox ID: <span class="field" id="waUid">[isi di bawah]</span><br>Bukti TF: <span class="field">[screenshot]</span><br><br><span class="label">Nomor WA penjual:</span><br><a href="#" id="buyWaNumLink" target="_blank" style="color:var(--green);font-family:'JetBrains Mono',monospace;font-weight:700;font-size:.9rem;text-decoration:none">-</a></div>
 <a href="#" class="wa-btn" id="waBtn" target="_blank"><svg class="wa-icon" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347"/></svg><span id="buyWaBtnText">Chat WhatsApp Penjual</span></a>
@@ -1249,8 +1289,8 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 <div class="panel" id="tab2">
 <div id="uploadLocked" class="card">
 <div class="locked">
-🔒 Role lu belum bisa upload<br>
-<div style="font-size:.75rem;margin-top:6px">Butuh role minimal: <b>reseller</b></div>
+🔒 Login dulu buat upload<br>
+<div style="font-size:.75rem;margin-top:6px">Semua role bisa upload</div>
 </div>
 </div>
 <div id="uploadContent" class="hidden">
@@ -1275,7 +1315,7 @@ Nama: <span class="field">NANG_UPLOADER_KEY</span><br><br>
 <div class="fmt-box">
 <b style="color:var(--pink)">📦 Model</b> — <span class="field">.rbxm</span> / <span class="field">.rbxmx</span> — max 20 MB<br>
 <b style="color:var(--cyan)">🎵 Audio</b> — <span class="field">.mp3 .ogg .wav .flac</span> — max 7 menit<br>
-Limit web ini: max <span class="field">4 MB</span> per upload
+Limit web ini: max <span class="field">15 MB</span> per upload
 </div>
 </div>
 <div class="warn-box"><b>Penting:</b> Username di bawah HARUS <b>pemilik API Key</b> yang sama. Untuk <b>Audio</b>, akun Roblox harus sudah <b>verified creator</b>.</div>
@@ -1300,7 +1340,7 @@ Limit web ini: max <span class="field">4 MB</span> per upload
 <div class="drop" id="upDrop">
 <div class="drop-icon">📦</div>
 <div class="drop-text">Klik atau drop file</div>
-<div class="drop-hint">.rbxm / .rbxmx — max 4 MB</div>
+<div class="drop-hint">.rbxm / .rbxmx — max 15 MB</div>
 </div>
 <input type="file" id="upFileInput" accept=".rbxm,.rbxmx" hidden>
 <input type="text" class="inp" id="upName" placeholder="Nama asset (opsional)">
@@ -1347,14 +1387,15 @@ Limit web ini: max <span class="field">4 MB</span> per upload
 <input type="text" class="inp" id="stName" placeholder="Nama toko (contoh: NANG Store)">
 <input type="text" class="inp" id="stPrice" placeholder="Harga per key (angka, contoh: 500)" inputmode="numeric">
 <input type="text" class="inp" id="stWa" placeholder="Nomor WA (contoh: 081234567890)" inputmode="tel">
+<input type="text" class="inp" id="stDana" placeholder="Nomor DANA (kalau gak upload QR)" inputmode="tel">
 <div class="toggle">
   <span>Aktifkan toko di halaman Beli Key</span>
   <div class="switch" id="stActiveSw" onclick="toggleStoreActive()"></div>
 </div>
 </div>
 <div class="card">
-<div class="card-title">📷 QRIS (opsional)</div>
-<div class="fmt-box">Upload gambar QRIS. Kalau ada, user bisa scan. Kalau kosong, user cuma bisa chat WA.</div>
+<div class="card-title">📷 QRIS / Metode Bayar</div>
+<div class="fmt-box">Upload QRIS kalau ada. Kalau <b style="color:var(--pink)">gak upload QR</b>, buyer bakal lihat <b style="color:var(--green)">nomor DANA</b> lu dari kolom di atas.<br><br>Minimal harus ada salah satu: <b>QR</b> atau <b>nomor DANA</b>.</div>
 <input type="file" id="stQrFile" accept="image/*" style="display:none" onchange="onQrFileChange(event)">
 <div id="stQrPreviewWrap" class="hidden" style="text-align:center;margin-bottom:12px">
   <img id="stQrPreview" style="max-width:200px;max-height:200px;border-radius:12px;border:1px solid var(--border);background:#fff;padding:6px">
@@ -1376,6 +1417,8 @@ Limit web ini: max <span class="field">4 MB</span> per upload
 Nama: <span class="field">-</span><br>
 Harga: <span class="field">-</span><br>
 WA: <span class="field">-</span><br>
+DANA: <span class="field">-</span><br>
+QR: <span class="field">-</span><br>
 Status: <span class="field">Nonaktif</span>
 </div>
 </div>
@@ -1394,6 +1437,7 @@ Status: <span class="field">Nonaktif</span>
       <div class="result" id="oResult"></div>
     </div>
     <div id="ownerPanel" class="hidden">
+      <button class="btn-main" style="background:linear-gradient(135deg,#00b866,var(--green));color:#000" onclick="closeOwnerModal();switchTab(4)">🏪 Atur Toko Saya</button>
       <button class="btn-main" onclick="loadUsers()">Refresh Users</button>
       <div id="usersList" style="margin-top:12px"></div>
       <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
@@ -1414,7 +1458,7 @@ let OWNER_TOKEN = localStorage.getItem('nang_owner') || null;
 let ME = null;
 let lastLookup={uid:null,name:null};
 let STORES = [];
-let MY_STORE = { price: 500, wa: "", name: "", active: false, qr: "" };
+let MY_STORE = { price: 500, wa: "", dana: "", name: "", active: false, qr: "" };
 let _qrData = "";
 let _upAssetType = "Model";
 
@@ -1439,6 +1483,11 @@ function getCookie(name){
 function delCookie(name){ setCookie(name, '', -1); }
 function fmtRp(n){ n = parseInt(n) || 0; return 'Rp' + n.toLocaleString('id-ID'); }
 function esc(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function _randHex(n){
+  const a = new Uint8Array(n);
+  crypto.getRandomValues(a);
+  return Array.from(a).map(x => x.toString(16).padStart(2,'0')).join('');
+}
 
 function switchTab(i){
   document.querySelectorAll('.nav-btn').forEach((b,j)=>b.classList.toggle('active',i===j));
@@ -1501,7 +1550,7 @@ function updateAuthUI(){
     $('appContent').classList.add('hidden');
     bar.innerHTML = '';
   }
-  const canUpload = logged && (ME.role==='owner'||ME.role==='admin'||ME.role==='reseller');
+  const canUpload = logged;
   $('uploadLocked').classList.toggle('hidden', canUpload);
   $('uploadContent').classList.toggle('hidden', !canUpload);
   const canMyKeys = logged && (ME.role==='owner'||ME.role==='admin'||ME.role==='reseller');
@@ -1588,14 +1637,20 @@ function onStoreChange(){
   if(isNaN(idx) || !STORES[idx]){
     $('buyStoreInfo').innerHTML = 'Pilih penjual di atas.';
     $('buyQrImg').style.display = 'none';
+    $('buyDanaBox').style.display = 'none';
     $('buyQrPlaceholder').style.display = 'flex';
+    $('buyDanaDetail').style.display = 'none';
     $('buyWaNumLink').textContent = '-';
     $('buyWaNumLink').href = '#';
     return;
   }
   const s = STORES[idx];
   const price = s.price || 500;
-  $('buyStoreInfo').innerHTML = 'Penjual: <span class="field">'+esc(s.name)+'</span><br>Harga: <span class="field">'+fmtRp(price)+'</span><br>WA: <span class="field">+'+esc(s.wa)+'</span>';
+  $('buyStoreInfo').innerHTML =
+    'Penjual: <span class="field">'+esc(s.name)+'</span><br>'+
+    'Harga: <span class="field">'+fmtRp(price)+'</span><br>'+
+    'WA: <span class="field">+'+esc(s.wa)+'</span>'+
+    (s.dana ? '<br>DANA: <span class="field">+'+esc(s.dana)+'</span>' : '');
   $('buyPrice').textContent = fmtRp(price) + ' / Key';
   $('buyPriceTransfer').textContent = fmtRp(price);
   $('buyWaName').textContent = 'Beli Key ' + s.name;
@@ -1603,20 +1658,56 @@ function onStoreChange(){
   $('buyWaNumLink').textContent = '+' + s.wa;
   $('buyWaNumLink').href = 'https://wa.me/' + s.wa;
   updateWA();
+
+  $('buyQrImg').style.display = 'none';
+  $('buyDanaBox').style.display = 'none';
+  $('buyQrPlaceholder').style.display = 'none';
+  $('buyDanaDetail').style.display = 'none';
+
   if(s.hasQr){
     $('buyQrImg').style.display = 'block';
-    $('buyQrPlaceholder').style.display = 'none';
     $('buyQrImg').src = "";
-    apiCall('/?api=stores/qr&username='+encodeURIComponent(s.username)+'&token='+encodeURIComponent(TOKEN))
+    $('buyPayHint').textContent = 'Scan QR di samping untuk bayar';
+    apiCall('/?api=stores/pay&username='+encodeURIComponent(s.username)+'&token='+encodeURIComponent(TOKEN))
       .then(r => {
-        if(r.ok && r.qr) $('buyQrImg').src = r.qr;
-        else { $('buyQrImg').style.display = 'none'; $('buyQrPlaceholder').style.display = 'flex'; }
+        if(r.ok && r.qr) {
+          $('buyQrImg').src = r.qr;
+        } else if(s.dana) {
+          $('buyQrImg').style.display = 'none';
+          _showDana(s);
+        } else {
+          $('buyQrImg').style.display = 'none';
+          $('buyQrPlaceholder').style.display = 'flex';
+        }
       })
-      .catch(() => { $('buyQrImg').style.display = 'none'; $('buyQrPlaceholder').style.display = 'flex'; });
+      .catch(() => {
+        if(s.dana) { $('buyQrImg').style.display = 'none'; _showDana(s); }
+        else { $('buyQrImg').style.display = 'none'; $('buyQrPlaceholder').style.display = 'flex'; }
+      });
+  } else if (s.dana && s.dana.length >= 8) {
+    _showDana(s);
   } else {
-    $('buyQrImg').style.display = 'none';
     $('buyQrPlaceholder').style.display = 'flex';
+    $('buyPayHint').textContent = 'Penjual belum pasang QR / DANA';
   }
+}
+function _showDana(s){
+  $('buyDanaBox').style.display = 'flex';
+  $('buyPayHint').textContent = 'Bayar via DANA ke nomor di bawah';
+  $('buyDanaDetail').style.display = 'block';
+  $('buyDanaNum').textContent = '+' + s.dana;
+  $('buyDanaDetail').dataset.dana = s.dana;
+}
+function copyDana(ev){
+  const d = $('buyDanaDetail').dataset.dana || '';
+  if(!d) return;
+  navigator.clipboard.writeText('+' + d).then(() => {
+    const b = (ev && ev.target) || null;
+    if(!b) return;
+    const orig = b.textContent;
+    b.textContent = '✓ COPIED!';
+    setTimeout(() => { b.textContent = orig; }, 1500);
+  });
 }
 function updateWA(){
   const idx = parseInt($('buyStoreSel').value);
@@ -1705,10 +1796,11 @@ async function refreshStore(){
   if(!TOKEN) return;
   const d = await apiCall('/?api=reseller/store&token='+encodeURIComponent(TOKEN));
   if(!d.ok) return;
-  MY_STORE = d.store || { price: 500, wa: "", name: "", active: false, qr: "" };
+  MY_STORE = d.store || { price: 500, wa: "", dana: "", name: "", active: false, qr: "" };
   $('stName').value = MY_STORE.name || '';
   $('stPrice').value = MY_STORE.price || 500;
   $('stWa').value = MY_STORE.wa || '';
+  $('stDana').value = MY_STORE.dana || '';
   $('stActiveSw').classList.toggle('on', !!MY_STORE.active);
   _qrData = MY_STORE.qr || "";
   if(_qrData){
@@ -1737,6 +1829,7 @@ function onQrFileChange(e){
     $('stQrPreviewWrap').classList.remove('hidden');
     $('stQrEmpty').classList.add('hidden');
     $('stQrDelBtn').style.display = 'block';
+    updateStorePreview();
   };
   r.readAsDataURL(f);
   e.target.value = "";
@@ -1747,6 +1840,7 @@ function delQr(){
   $('stQrPreviewWrap').classList.add('hidden');
   $('stQrEmpty').classList.remove('hidden');
   $('stQrDelBtn').style.display = 'none';
+  updateStorePreview();
 }
 function updateStorePreview(){
   const name = $('stName').value.trim() || '-';
@@ -1755,28 +1849,38 @@ function updateStorePreview(){
   let wa = waRaw.replace(/[^0-9]/g, '');
   if(wa.startsWith('0')) wa = '62' + wa.slice(1);
   wa = wa || '-';
+  const danaRaw = $('stDana').value.trim();
+  let dana = danaRaw.replace(/[^0-9]/g, '');
+  if(dana.startsWith('0')) dana = '62' + dana.slice(1);
+  dana = dana || '-';
+  const hasQr = !!_qrData;
   const active = $('stActiveSw').classList.contains('on');
   $('stPreview').innerHTML =
     'Nama: <span class="field">'+esc(name)+'</span><br>'+
     'Harga: <span class="field">'+fmtRp(price)+'</span><br>'+
     'WA: <span class="field">'+esc(wa)+'</span><br>'+
+    'DANA: <span class="field">'+esc(dana)+'</span><br>'+
+    'QR: <span class="field">'+(hasQr ? 'Ada ✅' : 'Tidak ada — pakai DANA')+'</span><br>'+
     'Status: <span class="field">'+(active ? 'Aktif' : 'Nonaktif')+'</span>';
 }
 $('stName').addEventListener('input', updateStorePreview);
 $('stPrice').addEventListener('input', updateStorePreview);
 $('stWa').addEventListener('input', updateStorePreview);
+$('stDana').addEventListener('input', updateStorePreview);
 
 async function doSaveStore(){
   const name = $('stName').value.trim();
   const price = parseInt($('stPrice').value) || 0;
   let wa = $('stWa').value.trim().replace(/[^0-9]/g, '');
+  let dana = $('stDana').value.trim().replace(/[^0-9]/g, '');
   const active = $('stActiveSw').classList.contains('on');
   const box = $('stResult');
   if(price < 0){ box.className='result err'; box.innerHTML='Harga tidak valid'; return; }
   if(active && wa.length < 8){ box.className='result err'; box.innerHTML='Kalau toko aktif, nomor WA wajib (min 8 digit)'; return; }
+  if(active && !_qrData && dana.length < 8){ box.className='result err'; box.innerHTML='Kalau toko aktif, wajib ada QR atau nomor DANA (min 8 digit)'; return; }
   box.className='result info'; box.innerHTML='<span class="spinner"></span>Menyimpan...';
   try {
-    const d = await apiCall('/?api=reseller/store',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN, name, price, wa, active, qr: _qrData || ""})});
+    const d = await apiCall('/?api=reseller/store',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN, name, price, wa, dana, active, qr: _qrData || ""})});
     if(d.error){ box.className='result err'; box.innerHTML=esc(d.error); return; }
     MY_STORE = d.store;
     box.className='result ok';
@@ -1883,15 +1987,17 @@ async function editUserStore(username){
   if(!all.ok) return alert('Gagal load');
   const u = (all.users || []).find(x => x.username === username);
   if(!u) return alert('User gak ada');
-  const st = u.store || { price: 500, wa: '', name: username, active: false };
+  const st = u.store || { price: 500, wa: '', dana: '', name: username, active: false };
   const name = prompt('Nama toko untuk '+username+':', st.name || username);
   if(name === null) return;
   const price = prompt('Harga per key (angka, Rp):', st.price || 500);
   if(price === null) return;
   const wa = prompt('Nomor WA (contoh 08123xxx / 628123xxx):', st.wa || '');
   if(wa === null) return;
+  const dana = prompt('Nomor DANA (kosongkan kalau sudah ada QR):', st.dana || '');
+  if(dana === null) return;
   const active = confirm('Aktifkan toko di halaman Beli Key?\\n\\nOK = Aktifkan\\nCancel = Nonaktif');
-  const d = await apiCall('/?api=owner/setstore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ot:OWNER_TOKEN, username, name, price: parseInt(price)||0, wa, active})});
+  const d = await apiCall('/?api=owner/setstore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ot:OWNER_TOKEN, username, name, price: parseInt(price)||0, wa, dana, active})});
   if(d.error) return alert(d.error);
   loadUsers();
 }
@@ -1932,7 +2038,7 @@ async function doConvert(){
 }
 
 // ============================================================
-// UPLOAD — Model + Audio
+// UPLOAD — Model + Audio + Chunked (max 15 MB)
 // ============================================================
 let _upFile=null;
 const upDrop=$('upDrop');
@@ -1951,12 +2057,11 @@ function upSetType(t){
   $('upTypeAudio').classList.toggle('on', t === 'Audio');
   const isAudio = t === 'Audio';
   const accept = isAudio ? '.mp3,.ogg,.wav,.flac' : '.rbxm,.rbxmx';
-  const hint = isAudio ? '.mp3 / .ogg / .wav / .flac — max 4 MB' : '.rbxm / .rbxmx — max 4 MB';
+  const hint = isAudio ? '.mp3 / .ogg / .wav / .flac — max 15 MB' : '.rbxm / .rbxmx — max 15 MB';
   const icon = isAudio ? '🎵' : '📦';
   upFileInput.setAttribute('accept', accept);
   upDrop.querySelector('.drop-hint').textContent = hint;
 
-  // Reset file kalau ekstensi gak match tipe baru
   if (_upFile) {
     const n = _upFile.name.toLowerCase();
     const ok = isAudio ? /\.(mp3|ogg|wav|flac)$/.test(n) : /\.(rbxm|rbxmx)$/.test(n);
@@ -1983,8 +2088,8 @@ function _upHandleFile(f){
       'Ekstensi file lu: .' + f.name.split('.').pop()
     );
   }
-  if(f.size>4*1024*1024){
-    return _upBigShowFail('File > 4 MB', 'Ukuran: ' + (f.size/1024/1024).toFixed(2) + ' MB.');
+  if(f.size>15*1024*1024){
+    return _upBigShowFail('File > 15 MB', 'Ukuran: ' + (f.size/1024/1024).toFixed(2) + ' MB. Split dulu.');
   }
   _upFile=f;
   upDrop.classList.add('done');
@@ -2015,7 +2120,7 @@ function _upBigShowSuccess(assetId, assetName, assetType){
     '<button class="cp-btn" onclick="navigator.clipboard.writeText(\\''+assetId+'\\');this.textContent=\\'✓ COPIED\\';setTimeout(()=>this.textContent=\\'📋 COPY ASSET ID\\',1500)">📋 COPY ASSET ID</button>'+
     '<div style="font-size:.74rem;margin-top:12px;color:rgba(255,255,255,.6);line-height:1.7">'+
       (assetType === 'Audio'
-        ? 'Audio perlu <b>moderation Roblox</b> dulu — bisa 5-30 menit sebelum approved. Cek di <b>Creator Dashboard → Audio</b>.'
+        ? 'Audio perlu <b>moderation Roblox</b> dulu — bisa 5-30 menit sebelum approved.'
         : 'Asset perlu <b>beberapa menit</b> buat muncul di Roblox Studio. Cek di <b>Toolbox → Inventory → Models</b>.')+
     '</div>';
   try { window.scrollTo({top: upBigResult.offsetTop - 100, behavior:'smooth'}); } catch(e){}
@@ -2025,6 +2130,10 @@ function _upStep(n, state){
   if(!el) return;
   el.classList.remove('active','done','err');
   if(state) el.classList.add(state);
+}
+function _upShowStep3(text){
+  const el = $('step3');
+  if (el) el.querySelector('span').innerHTML = '<span class="spinner"></span>' + esc(text);
 }
 
 async function doUploadRbxm(){
@@ -2066,40 +2175,96 @@ async function doUploadRbxm(){
     _upStep(2,'done');
 
     _upStep(3,'active');
-    const r = await fetch('/?api=upload-rbxm-raw', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        'x-nang-apikey': apiKey,
-        'x-nang-userid': String(lk.userId),
-        'x-nang-filename': _upFile.name,
-        'x-nang-display': (name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac)$/i,'')).slice(0,50),
-        'x-nang-desc': (desc || 'Upload via NANG web').slice(0,1000),
-        'x-nang-assettype': _upAssetType
-      },
-      body: _upFile
-    });
+    const CHUNK_SIZE = 500 * 1024;
+    const totalChunks = Math.max(1, Math.ceil(_upFile.size / CHUNK_SIZE));
 
-    const upText = await r.text();
-    let up;
-    try { up = JSON.parse(upText); }
-    catch(e){
-      _upStep(3,'err');
-      throw new Error('Server tidak balikin JSON. Response: ' + upText.slice(0, 200));
+    let operationId = null;
+
+    if (totalChunks <= 1) {
+      _upShowStep3('Mengirim file ('+(_upFile.size/1024).toFixed(1)+' KB)...');
+      const r = await fetch('/?api=upload-rbxm-raw', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'x-nang-apikey': apiKey,
+          'x-nang-userid': String(lk.userId),
+          'x-nang-filename': _upFile.name,
+          'x-nang-display': (name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac)$/i,'')).slice(0,50),
+          'x-nang-desc': (desc || 'Upload via NANG web').slice(0,1000),
+          'x-nang-assettype': _upAssetType
+        },
+        body: _upFile
+      });
+      const upText = await r.text();
+      let up;
+      try { up = JSON.parse(upText); }
+      catch(e){ _upStep(3,'err'); throw new Error('Server tidak balikin JSON: ' + upText.slice(0,200)); }
+      if(!up.ok){
+        _upStep(3,'err');
+        let em = up.error || 'Upload gagal';
+        if(up.debug) em += ' · ['+up.debug.size+' bytes · userId '+up.debug.userId+' · type '+up.debug.assetType+']';
+        throw new Error(em);
+      }
+      operationId = up.operationId;
+
+    } else {
+      const sid = _randHex(16);
+      const displayName = (name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac)$/i,'')).slice(0,50);
+
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, _upFile.size);
+        const chunk = _upFile.slice(start, end);
+        const pct = Math.round((end / _upFile.size) * 100);
+
+        _upShowStep3('Kirim bagian '+(i+1)+'/'+totalChunks+' ('+pct+'%) · '+((end-start)/1024).toFixed(0)+' KB...');
+
+        const url = '/?api=upload-chunk'
+          + '&sid=' + encodeURIComponent(sid)
+          + '&idx=' + i
+          + '&total=' + totalChunks
+          + '&fn=' + encodeURIComponent(_upFile.name)
+          + '&at=' + encodeURIComponent(_upAssetType);
+
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: chunk
+        });
+        const d = await r.json();
+        if (!d.ok) {
+          _upStep(3,'err');
+          throw new Error('Gagal kirim bagian '+(i+1)+'/'+totalChunks+': '+(d.error||'unknown'));
+        }
+      }
+
+      _upShowStep3('Gabung & upload ke Roblox...');
+      const commit = await apiCall('/?api=upload-commit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sid, apiKey,
+          userId: lk.userId,
+          displayName,
+          description: desc || 'Upload via NANG web'
+        })
+      });
+      if (!commit.ok) {
+        _upStep(3,'err');
+        let em = commit.error || 'Commit gagal';
+        if (commit.debug) em += ' · ['+commit.debug.size+' bytes · userId '+commit.debug.userId+' · type '+commit.debug.assetType+']';
+        throw new Error(em);
+      }
+      operationId = commit.operationId;
     }
-    if(!up.ok){
-      _upStep(3,'err');
-      let em = up.error || 'Upload gagal';
-      if(up.debug) em += ' · ['+up.debug.size+' bytes · userId '+up.debug.userId+' · type '+up.debug.assetType+' · HTTP '+up.debug.status+']';
-      throw new Error(em);
-    }
+
     _upStep(3,'done');
 
     _upStep(4,'active');
     let assetId=null, lastErr=null;
     for(let i=0;i<80;i++){
       await new Promise(res=>setTimeout(res,1500));
-      const st=await apiCall('/?api=upload-status&id='+encodeURIComponent(up.operationId)+'&k='+encodeURIComponent(apiKey));
+      const st=await apiCall('/?api=upload-status&id='+encodeURIComponent(operationId)+'&k='+encodeURIComponent(apiKey));
       if(!st.ok){ lastErr = st.error; continue; }
       if(st.done){
         if(st.error){
@@ -2138,7 +2303,6 @@ document.addEventListener('DOMContentLoaded',()=>{
   ['oGenUid'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doOwnerGen();}));
   ['mkUid'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doMyKeysGenerate();}));
 
-  // Auto-detect akun Roblox
   let _upUserT;
   $('upUsername').addEventListener('input',()=>{
     clearTimeout(_upUserT);
@@ -2162,7 +2326,6 @@ document.addEventListener('DOMContentLoaded',()=>{
     },500);
   });
 
-  // Auto-verify API key
   $('upApiKey').addEventListener('blur',async()=>{
     const k=$('upApiKey').value.trim();
     const h=$('upKeyHint');
