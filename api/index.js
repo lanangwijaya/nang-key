@@ -11,17 +11,24 @@ async function _kvCmd(...args) {
   if (!_HAS_KV) return null;
   try {
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 3000);
-    const r = await fetch(_KV_URL, {
+    const t = setTimeout(() => ctrl.abort(), 5000);
+    // Upstash REST: POST /<cmd>/<arg1>/<arg2>/... atau pipeline
+    // Pakai endpoint pipeline: POST /pipeline dengan body [[cmd,arg1,arg2,...]]
+    const r = await fetch(_KV_URL + "/pipeline", {
       method: "POST",
       headers: { Authorization: "Bearer " + _KV_TOKEN, "Content-Type": "application/json" },
       body: JSON.stringify([args]),
       signal: ctrl.signal,
     });
     clearTimeout(t);
+    if (!r.ok) { console.error("[NANG KV] HTTP", r.status); return null; }
     const d = await r.json();
-    return d && d[0] ? d[0].result : null;
-  } catch { return null; }
+    // Pipeline response: [{result: ...}, ...]
+    if (Array.isArray(d) && d[0] !== undefined) return d[0].result ?? null;
+    // Single response fallback
+    if (d && d.result !== undefined) return d.result;
+    return null;
+  } catch (e) { console.error("[NANG KV] error:", e.message); return null; }
 }
 
 const _memStore = (global.__nangMem = global.__nangMem || {});
@@ -203,7 +210,21 @@ async function handle(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (method === "OPTIONS") { res.status(200).end(); return; }
 
-  if (params.has("version")) { res.status(200).json({ version: BUILD, ts: Date.now() }); return; }
+  if (params.has("version")) { res.status(200).json({ version: BUILD, ts: Date.now(), hasKv: _HAS_KV }); return; }
+
+  // Debug KV — akses: /?kvtest=1
+  if (params.has("kvtest")) {
+    if (!_HAS_KV) return res.status(200).json({ ok: false, error: "KV env vars tidak ada", hasKv: false });
+    try {
+      const testKey = "nang:kvtest:" + Date.now();
+      const writeRes = await _kvCmd("SET", testKey, "ok", "EX", 60);
+      const readRes = await _kvCmd("GET", testKey);
+      await _kvCmd("DEL", testKey);
+      return res.status(200).json({ ok: true, hasKv: true, write: writeRes, read: readRes, kvUrl: _KV_URL.slice(0, 40) + "..." });
+    } catch (e) {
+      return res.status(200).json({ ok: false, error: String(e.message), hasKv: true });
+    }
+  }
 
   if (params.has("api")) {
     const apiPath = "/api/" + String(params.get("api") || "");
