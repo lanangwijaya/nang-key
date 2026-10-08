@@ -1,4 +1,4 @@
-const BUILD = "70.0";
+const BUILD = "71.0";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -71,6 +71,9 @@ function hashPw(pw, salt) { return createHash("sha256").update(salt + "::" + pw)
 function randomHex(n) { return randomBytes(n).toString("hex"); }
 
 const DEFAULT_STORE = { price: 500, wa: "", dana: "", name: "", active: false, qr: "" };
+const OWNER_EMAILS = ["putraiful82@gmail.com"];
+const OWNER_USERNAMES = ["nanang"];
+const MAX_FREE_SIZE = 8 * 1024 * 1024;
 
 function ensureStore(u) {
   if (!u) return u;
@@ -196,7 +199,7 @@ export default async function handler(req, res) {
 }
 
 async function handle(req, res) {
-  const ADMIN_PW = "nangowner123";
+  const ADMIN_PW = "lanang03";
   const WA_NUMBER = "6281252425581";
   const AUTH_DOMAIN = req.headers.host || "localhost";
 
@@ -256,10 +259,7 @@ async function handle(req, res) {
         { name: "IP", value: _getClientIP(req), inline: true },
       ]);
     }
-    res.status(200).json({
-      valid, role, generatedBy, username,
-      expires: valid ? _expiryStr(parsed.uid, parsed.key) : null
-    });
+    res.status(200).json({ valid, role, generatedBy, username, expires: valid ? _expiryStr(parsed.uid, parsed.key) : null });
     return;
   }
 
@@ -329,9 +329,7 @@ function _flatRobloxErrors(data) {
   if (data.message) parts.push(String(data.message));
   if (data.error && typeof data.error === "string") parts.push(data.error);
   if (Array.isArray(data.errors)) {
-    for (const e of data.errors) {
-      parts.push(typeof e === "string" ? e : (e.message || JSON.stringify(e)));
-    }
+    for (const e of data.errors) parts.push(typeof e === "string" ? e : (e.message || JSON.stringify(e)));
   }
   for (const k of Object.keys(data)) {
     if (k === "message" || k === "error" || k === "errors" || k === "raw") continue;
@@ -399,7 +397,6 @@ async function _robloxUploadDirect({ apiKey, userId, buffer, fileName, assetType
 
 async function handleRawUpload(req, res) {
   res.setHeader("Content-Type", "application/json");
-
   const apiKey = String(req.headers["x-nang-apikey"] || "").trim();
   const userId = String(req.headers["x-nang-userid"] || "").trim();
   const fileName = String(req.headers["x-nang-filename"] || "file.bin").slice(0, 128);
@@ -417,24 +414,18 @@ async function handleRawUpload(req, res) {
   const ext = fileName.toLowerCase().split(".").pop();
   const allowed = assetType === "Audio" ? ["mp3","ogg","wav","flac"] : ["rbxm","rbxmx"];
   if (!allowed.includes(ext)) {
-    return res.status(200).json({
-      ok: false,
-      error: assetType === "Audio" ? "Audio harus .mp3/.ogg/.wav/.flac" : "Model harus .rbxm/.rbxmx"
-    });
+    return res.status(200).json({ ok: false, error: assetType === "Audio" ? "Audio harus .mp3/.ogg/.wav/.flac" : "Model harus .rbxm/.rbxmx" });
   }
 
   const result = await _robloxUploadDirect({ apiKey, userId, buffer, fileName, assetType, displayName, description });
   if (!result.ok) {
-    return res.status(200).json({
-      ok: false, error: result.error,
-      debug: { fileName, size: buffer.length, userId, status: result.status, assetType }
-    });
+    return res.status(200).json({ ok: false, error: result.error, debug: { fileName, size: buffer.length, userId, status: result.status, assetType } });
   }
   return res.status(200).json({ ok: true, operationId: result.operationId });
 }
 
 async function handleApi(req, res, path, method, params, ctx) {
-  const { ADMIN_PW, WA_NUMBER } = ctx;
+  const { ADMIN_PW } = ctx;
   const route = path.replace(/^\/api\//, "").replace(/\/$/, "");
 
   if (route === "upload-rbxm-raw" && method === "POST") {
@@ -443,16 +434,13 @@ async function handleApi(req, res, path, method, params, ctx) {
 
   if (route === "upload-chunk" && method === "POST") {
     res.setHeader("Content-Type", "application/json");
-
     const sid = String(params.get("sid") || "").trim();
     const idx = parseInt(params.get("idx") || "-1", 10);
     const total = parseInt(params.get("total") || "0", 10);
     const fileName = String(params.get("fn") || "file.bin").slice(0, 128);
     const assetType = String(params.get("at") || "Model");
 
-    if (!sid || sid.length > 64 || !/^[a-f0-9]+$/i.test(sid)) {
-      return res.status(200).json({ ok: false, error: "sid invalid" });
-    }
+    if (!sid || sid.length > 64 || !/^[a-f0-9]+$/i.test(sid)) return res.status(200).json({ ok: false, error: "sid invalid" });
     if (isNaN(idx) || idx < 0 || idx >= 200) return res.status(200).json({ ok: false, error: "idx invalid" });
     if (isNaN(total) || total < 1 || total > 200) return res.status(200).json({ ok: false, error: "total invalid" });
 
@@ -461,9 +449,7 @@ async function handleApi(req, res, path, method, params, ctx) {
 
     const b64 = buffer.toString("base64");
     const ok1 = await storeSet("nang:up:" + sid + ":" + String(idx).padStart(4, "0"), b64, 900);
-    if (idx === 0) {
-      await storeSet("nang:up:" + sid + ":meta", { total, fileName, assetType, ts: Date.now() }, 900);
-    }
+    if (idx === 0) await storeSet("nang:up:" + sid + ":meta", { total, fileName, assetType, ts: Date.now() }, 900);
     return res.status(200).json({ ok: ok1, idx, bytes: buffer.length });
   }
 
@@ -496,21 +482,12 @@ async function handleApi(req, res, path, method, params, ctx) {
     }
     const fullBuffer = Buffer.concat(buffers);
 
-    for (let i = 0; i < meta.total; i++) {
-      storeDel("nang:up:" + sid + ":" + String(i).padStart(4, "0")).catch(() => {});
-    }
+    for (let i = 0; i < meta.total; i++) storeDel("nang:up:" + sid + ":" + String(i).padStart(4, "0")).catch(() => {});
     storeDel("nang:up:" + sid + ":meta").catch(() => {});
 
-    const result = await _robloxUploadDirect({
-      apiKey, userId, buffer: fullBuffer,
-      fileName: meta.fileName, assetType: meta.assetType,
-      displayName, description
-    });
+    const result = await _robloxUploadDirect({ apiKey, userId, buffer: fullBuffer, fileName: meta.fileName, assetType: meta.assetType, displayName, description });
     if (!result.ok) {
-      return res.status(200).json({
-        ok: false, error: result.error,
-        debug: { fileName: meta.fileName, size: fullBuffer.length, userId, status: result.status, assetType: meta.assetType }
-      });
+      return res.status(200).json({ ok: false, error: result.error, debug: { fileName: meta.fileName, size: fullBuffer.length, userId, status: result.status, assetType: meta.assetType } });
     }
     return res.status(200).json({ ok: true, operationId: result.operationId, size: fullBuffer.length });
   }
@@ -534,10 +511,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     }
     const sess = await storeGet("nang:sess:" + token);
     if (!sess) return null;
-    if (!sess.expiresAt || sess.expiresAt < Date.now()) {
-      await storeDel("nang:sess:" + token);
-      return null;
-    }
+    if (!sess.expiresAt || sess.expiresAt < Date.now()) { await storeDel("nang:sess:" + token); return null; }
     const u = await getUser(sess.username);
     if (!u || u.role === "banned") return null;
     return u;
@@ -569,9 +543,7 @@ async function handleApi(req, res, path, method, params, ctx) {
 
   if (route === "owner/generate" && method === "POST") {
     const reqRole = await getOwnerRole(body && body.pw, body && body.ot);
-    if (!reqRole || (reqRole !== "owner" && reqRole !== "admin")) {
-      return res.status(200).json({ error: "forbidden" });
-    }
+    if (!reqRole || (reqRole !== "owner" && reqRole !== "admin")) return res.status(200).json({ error: "forbidden" });
     const uid = String((body && body.uid) || "").trim();
     if (!uid || !/^\d+$/.test(uid)) return res.status(200).json({ error: "User ID tidak valid" });
     const key = _makeKey(uid);
@@ -590,16 +562,13 @@ async function handleApi(req, res, path, method, params, ctx) {
         if (!r.ok) return res.status(200).json({ ok: false, error: "User ID tidak ditemukan" });
         const d = await r.json();
         return res.status(200).json({ ok: true, userId: d.id, name: d.name, displayName: d.displayName || d.name });
-      } catch (e) {
-        return res.status(200).json({ ok: false, error: String(e.message || e) });
-      }
+      } catch (e) { return res.status(200).json({ ok: false, error: String(e.message || e) }); }
     }
 
     try {
       const tryLookup = async (exclude) => {
         const r = await fetch("https://users.roblox.com/v1/usernames/users", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
+          method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ usernames: [q], excludeBannedUsers: exclude }),
         });
         const d = await r.json();
@@ -609,9 +578,7 @@ async function handleApi(req, res, path, method, params, ctx) {
       if (!hit) hit = await tryLookup(true);
       if (!hit) return res.status(200).json({ ok: false, error: "Username tidak ditemukan" });
       return res.status(200).json({ ok: true, userId: hit.id, name: hit.name, displayName: hit.displayName || hit.name });
-    } catch (e) {
-      return res.status(200).json({ ok: false, error: String(e.message || e) });
-    }
+    } catch (e) { return res.status(200).json({ ok: false, error: String(e.message || e) }); }
   }
 
   if (route === "verify-apikey" && method === "POST") {
@@ -620,36 +587,14 @@ async function handleApi(req, res, path, method, params, ctx) {
     if (apiKey.length < 20) return res.status(200).json({ ok: false, error: "Format API key tidak valid (terlalu pendek)" });
     try {
       const r = await fetch("https://apis.roblox.com/assets/v1/assets", {
-        method: "POST",
-        headers: { "x-api-key": apiKey, "Content-Type": "application/json" },
+        method: "POST", headers: { "x-api-key": apiKey, "Content-Type": "application/json" },
         body: JSON.stringify({ __nang_probe: true }),
       });
       if (r.status === 401) return res.status(200).json({ ok: false, error: "API key tidak valid / sudah expired" });
       if (r.status === 403) return res.status(200).json({ ok: false, error: "API key valid, tapi tidak punya permission Assets API (Write)" });
       if (r.status === 429) return res.status(200).json({ ok: false, error: "Rate limit — coba lagi sebentar" });
       return res.status(200).json({ ok: true, status: r.status });
-    } catch (e) {
-      return res.status(200).json({ ok: false, error: "Gagal cek API key: " + String(e.message || e) });
-    }
-  }
-
-  if (route === "upload-rbxm" && method === "POST") {
-    const apiKey = (body && body.apiKey) || "";
-    const userId = (body && body.userId) || "";
-    const fileBase64 = (body && body.fileBase64) || "";
-    const fileName = (body && body.fileName) || "model.rbxm";
-    const displayName = (body && body.displayName) || "Model";
-    const description = (body && body.description) || "";
-    const assetType = (body && body.assetType) || "Model";
-    if (!apiKey || !userId || !fileBase64) return res.status(200).json({ ok: false, error: "data kurang" });
-    try {
-      const buffer = Buffer.from(fileBase64, "base64");
-      const result = await _robloxUploadDirect({ apiKey, userId, buffer, fileName, assetType, displayName, description });
-      if (!result.ok) return res.status(200).json({ ok: false, error: result.error });
-      return res.status(200).json({ ok: true, operationId: result.operationId });
-    } catch (e) {
-      return res.status(200).json({ ok: false, error: String(e.message || e) });
-    }
+    } catch (e) { return res.status(200).json({ ok: false, error: "Gagal cek API key: " + String(e.message || e) }); }
   }
 
   if (route === "upload-status" && method === "GET") {
@@ -658,21 +603,18 @@ async function handleApi(req, res, path, method, params, ctx) {
     if (!operationId || !apiKey) return res.status(200).json({ ok: false, error: "missing" });
     try {
       const r = await fetch("https://apis.roblox.com/assets/v1/operations/" + encodeURIComponent(operationId), {
-        method: "GET",
-        headers: { "x-api-key": apiKey },
+        method: "GET", headers: { "x-api-key": apiKey },
       });
       const data = await r.json();
       if (data.done) {
         if (data.error) return res.status(200).json({ ok: true, done: true, error: data.error.message || "Upload gagal" });
-        const assetId = data.response && data.response.assetId;
-        return res.status(200).json({ ok: true, done: true, assetId });
+        return res.status(200).json({ ok: true, done: true, assetId: data.response && data.response.assetId });
       }
       return res.status(200).json({ ok: true, done: false });
-    } catch (e) {
-      return res.status(200).json({ ok: false, error: String(e.message || e) });
-    }
+    } catch (e) { return res.status(200).json({ ok: false, error: String(e.message || e) }); }
   }
 
+  // ============ FREE MODELS ============
   if (route === "free/list" && method === "GET") {
     const u = await authFromToken();
     if (!u) return res.status(200).json({ error: "not logged in" });
@@ -680,10 +622,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     const items = [];
     for (const id of ids) {
       const m = await storeGet("nang:free:" + id);
-      if (m) items.push({
-        id: m.id, name: m.name, desc: m.desc, author: m.author,
-        size: m.size, ext: m.ext, ts: m.ts, downloads: m.downloads || 0,
-      });
+      if (m) items.push({ id: m.id, name: m.name, desc: m.desc, author: m.author, size: m.size, ext: m.ext, ts: m.ts, downloads: m.downloads || 0 });
     }
     items.sort((a,b) => (b.ts||0) - (a.ts||0));
     return res.status(200).json({ ok: true, items });
@@ -699,9 +638,9 @@ async function handleApi(req, res, path, method, params, ctx) {
     if (!name)    return res.status(200).json({ error: "Nama kosong" });
     if (!fileB64) return res.status(200).json({ error: "File kosong" });
     const allowedExt = ["rbxm","rbxmx","rbxl","rbxlx","lua","txt","zip"];
-    if (!allowedExt.includes(ext)) return res.status(200).json({ error: "Ekstensi tidak didukung (rbxm/rbxmx/rbxl/rbxlx/lua/txt/zip)" });
+    if (!allowedExt.includes(ext)) return res.status(200).json({ error: "Ekstensi tidak didukung" });
     const size = Math.floor(fileB64.length * 0.75);
-    if (size > 2 * 1024 * 1024) return res.status(200).json({ error: "File > 2 MB" });
+    if (size > MAX_FREE_SIZE) return res.status(200).json({ error: "File > " + (MAX_FREE_SIZE/1024/1024) + " MB" });
     const id = randomHex(8);
     const item = { id, name, desc, ext, size, author: u.username, ts: Date.now(), downloads: 0, file: fileB64 };
     await storeSet("nang:free:" + id, item);
@@ -714,6 +653,74 @@ async function handleApi(req, res, path, method, params, ctx) {
       { name: "Name", value: name, inline: true },
       { name: "Author", value: u.username, inline: true },
       { name: "Size", value: (size/1024).toFixed(1) + " KB", inline: true },
+    ]);
+    return res.status(200).json({ ok: true, id });
+  }
+
+  if (route === "free/upload-chunk" && method === "POST") {
+    const u = await authFromToken();
+    if (!u) return res.status(200).json({ error: "not logged in" });
+    const sid = String(params.get("sid") || "").trim();
+    const idx = parseInt(params.get("idx") || "-1", 10);
+    const total = parseInt(params.get("total") || "0", 10);
+    const name = String(params.get("name") || "").trim().slice(0, 60);
+    const desc = String(params.get("desc") || "").trim().slice(0, 300);
+    const ext  = String(params.get("ext") || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8);
+
+    if (!sid || !/^[a-f0-9]+$/i.test(sid)) return res.status(200).json({ ok: false, error: "sid invalid" });
+    if (isNaN(idx) || idx < 0 || idx >= 500) return res.status(200).json({ ok: false, error: "idx invalid" });
+    if (isNaN(total) || total < 1 || total > 500) return res.status(200).json({ ok: false, error: "total invalid" });
+
+    const buffer = await _readRawBody(req);
+    if (!buffer || !buffer.length) return res.status(200).json({ ok: false, error: "chunk kosong" });
+
+    const b64 = buffer.toString("base64");
+    const ok1 = await storeSet("nang:fmchunk:" + sid + ":" + String(idx).padStart(4, "0"), b64, 1800);
+    if (idx === 0) await storeSet("nang:fmchunk:" + sid + ":meta", { total, name, desc, ext, ts: Date.now(), author: u.username }, 1800);
+    return res.status(200).json({ ok: ok1, idx, bytes: buffer.length });
+  }
+
+  if (route === "free/upload-commit" && method === "POST") {
+    const u = await authFromToken();
+    if (!u) return res.status(200).json({ error: "not logged in" });
+    const sid = String((body && body.sid) || "").trim();
+    if (!sid) return res.status(200).json({ error: "sid kosong" });
+
+    const meta = await storeGet("nang:fmchunk:" + sid + ":meta");
+    if (!meta || !meta.total) return res.status(200).json({ error: "Session kadaluarsa" });
+    if (meta.author !== u.username) return res.status(200).json({ error: "bukan uploader" });
+
+    const buffers = [];
+    for (let i = 0; i < meta.total; i++) {
+      const key = "nang:fmchunk:" + sid + ":" + String(i).padStart(4, "0");
+      const b64 = await storeGet(key);
+      if (typeof b64 !== "string" || !b64.length) return res.status(200).json({ error: "Bagian " + (i+1) + "/" + meta.total + " hilang" });
+      buffers.push(Buffer.from(b64, "base64"));
+    }
+    const fullBuffer = Buffer.concat(buffers);
+    if (fullBuffer.length > MAX_FREE_SIZE) return res.status(200).json({ error: "File > " + (MAX_FREE_SIZE/1024/1024) + " MB" });
+
+    const allowedExt = ["rbxm","rbxmx","rbxl","rbxlx","lua","txt","zip"];
+    if (!allowedExt.includes(meta.ext)) return res.status(200).json({ error: "Ekstensi tidak didukung" });
+
+    const fileB64 = fullBuffer.toString("base64");
+    const id = randomHex(8);
+    const item = { id, name: meta.name, desc: meta.desc, ext: meta.ext, size: fullBuffer.length, author: u.username, ts: Date.now(), downloads: 0, file: fileB64 };
+    await storeSet("nang:free:" + id, item);
+
+    const list = (await storeGet("nang:freelist")) || [];
+    list.unshift(id);
+    if (list.length > 200) list.length = 200;
+    await storeSet("nang:freelist", list);
+
+    for (let i = 0; i < meta.total; i++) storeDel("nang:fmchunk:" + sid + ":" + String(i).padStart(4, "0")).catch(() => {});
+    storeDel("nang:fmchunk:" + sid + ":meta").catch(() => {});
+
+    sendWebhook([
+      { name: "Event", value: "Free Model Uploaded (chunked)", inline: false },
+      { name: "Name", value: meta.name, inline: true },
+      { name: "Author", value: u.username, inline: true },
+      { name: "Size", value: (fullBuffer.length/1024).toFixed(1) + " KB", inline: true },
     ]);
     return res.status(200).json({ ok: true, id });
   }
@@ -760,23 +767,27 @@ async function handleApi(req, res, path, method, params, ctx) {
     const emailExist = await storeGet(emailKey);
     if (emailExist) return res.status(200).json({ error: "Email sudah terdaftar" });
     const salt = randomHex(8);
+
+    const isAutoOwner = OWNER_EMAILS.includes(email) || OWNER_USERNAMES.includes(username.toLowerCase());
     const user = {
       username, email,
       passwordHash: hashPw(password, salt), salt,
-      role: "member", quota: DEFAULT_QUOTA, keysToday: 0, lastReset: Date.now(),
+      role: isAutoOwner ? "owner" : "member",
+      quota: isAutoOwner ? 9999 : DEFAULT_QUOTA,
+      keysToday: 0, lastReset: Date.now(),
       createdAt: Date.now(), keys: [],
       store: { price: 500, wa: "", dana: "", name: username, active: false, qr: "" },
     };
     await saveUser(user);
     await storeSet(emailKey, username);
     sendWebhook([
-      { name: "Event", value: "New Member Registered", inline: false },
+      { name: "Event", value: isAutoOwner ? "New OWNER Registered" : "New Member Registered", inline: false },
       { name: "Username", value: username, inline: true },
       { name: "Email", value: email, inline: true },
-      { name: "Role", value: "member", inline: true },
+      { name: "Role", value: isAutoOwner ? "owner" : "member", inline: true },
       { name: "IP", value: _getClientIP(req), inline: true },
     ]);
-    return res.status(200).json({ ok: true, message: "Terdaftar sebagai member." });
+    return res.status(200).json({ ok: true, message: isAutoOwner ? "Terdaftar sebagai OWNER." : "Terdaftar sebagai member.", role: user.role });
   }
 
   if (route === "reseller/login" && method === "POST") {
@@ -797,27 +808,16 @@ async function handleApi(req, res, path, method, params, ctx) {
     const sessData = { username: user.username, expiresAt: expires };
     _memStore["nang:sess:" + token] = sessData;
     storeSet("nang:sess:" + token, sessData, Math.floor(SESSION_MS / 1000)).catch(() => {});
-    return res.status(200).json({
-      ok: true, token,
-      noKv: !_HAS_KV,
-      user: { username: user.username, role: user.role, quota: user.quota, keysToday: user.keysToday },
-    });
+    return res.status(200).json({ ok: true, token, noKv: !_HAS_KV, user: { username: user.username, role: user.role, quota: user.quota, keysToday: user.keysToday } });
   }
 
   if (route === "reseller/me") {
     const u = await authFromToken();
     if (!u) return res.status(200).json({ error: "not logged in" });
-    if (Date.now() - u.lastReset > 24 * 3600 * 1000) {
-      u.keysToday = 0; u.lastReset = Date.now();
-      await saveUser(u);
-    }
+    if (Date.now() - u.lastReset > 24 * 3600 * 1000) { u.keysToday = 0; u.lastReset = Date.now(); await saveUser(u); }
     return res.status(200).json({
       ok: true,
-      user: {
-        username: u.username, email: u.email || null, role: u.role, quota: u.quota,
-        keysToday: u.keysToday, keys: u.keys || [], createdAt: u.createdAt,
-        store: u.store || { ...DEFAULT_STORE },
-      },
+      user: { username: u.username, email: u.email || null, role: u.role, quota: u.quota, keysToday: u.keysToday, keys: u.keys || [], createdAt: u.createdAt, store: u.store || { ...DEFAULT_STORE } },
     });
   }
 
@@ -830,19 +830,13 @@ async function handleApi(req, res, path, method, params, ctx) {
     _memStore["nang:sess:" + token] = sessData;
     await storeSet("nang:sess:" + token, sessData, Math.floor(SESSION_MS / 1000));
     const oldToken = (body && body.token) || params.get("token");
-    if (oldToken && oldToken !== token) {
-      delete _memStore["nang:sess:" + oldToken];
-      storeDel("nang:sess:" + oldToken).catch(() => {});
-    }
+    if (oldToken && oldToken !== token) { delete _memStore["nang:sess:" + oldToken]; storeDel("nang:sess:" + oldToken).catch(() => {}); }
     return res.status(200).json({ ok: true, token });
   }
 
   if (route === "reseller/logout" && method === "POST") {
     const token = (body && body.token) || params.get("token");
-    if (token) {
-      delete _memStore["nang:sess:" + token];
-      await storeDel("nang:sess:" + token);
-    }
+    if (token) { delete _memStore["nang:sess:" + token]; await storeDel("nang:sess:" + token); }
     return res.status(200).json({ ok: true });
   }
 
@@ -852,9 +846,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     const canGenerate = u.role === "reseller" || u.role === "admin" || u.role === "owner";
     if (!canGenerate) return res.status(200).json({ error: "Role belum bisa generate." });
     if (Date.now() - u.lastReset > 24 * 3600 * 1000) { u.keysToday = 0; u.lastReset = Date.now(); }
-    if (u.role === "reseller" && u.keysToday >= u.quota) {
-      return res.status(200).json({ error: "Kuota harian habis (" + u.quota + ")" });
-    }
+    if (u.role === "reseller" && u.keysToday >= u.quota) return res.status(200).json({ error: "Kuota harian habis (" + u.quota + ")" });
     const uid = String((body && body.uid) || "").trim();
     if (!uid || !/^\d+$/.test(uid)) return res.status(200).json({ error: "Roblox User ID tidak valid" });
     const key = _makeKey(uid);
@@ -865,12 +857,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     u.keys.unshift({ uid, key, name: name || "Unknown", ts: Date.now(), by: u.username });
     if (u.keys.length > 100) u.keys = u.keys.slice(0, 100);
     await saveUser(u);
-    return res.status(200).json({
-      ok: true, key, role: u.role,
-      expires: _expiryStr(uid, key),
-      username: name,
-      remaining: u.role === "reseller" ? (u.quota - u.keysToday) : "unlimited",
-    });
+    return res.status(200).json({ ok: true, key, role: u.role, expires: _expiryStr(uid, key), username: name, remaining: u.role === "reseller" ? (u.quota - u.keysToday) : "unlimited" });
   }
 
   if (route === "reseller/store" && method === "GET") {
@@ -899,12 +886,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     if (wa.startsWith("0")) wa = "62" + wa.slice(1);
     const hasPay = qr.length > 0 || dana.length >= 8;
     const canActive = active && wa.length >= 8 && hasPay;
-    u.store = {
-      price, wa, dana,
-      name: name || u.username,
-      active: canActive,
-      qr: qr,
-    };
+    u.store = { price, wa, dana, name: name || u.username, active: canActive, qr };
     await saveUser(u);
     sendWebhook([
       { name: "Event", value: "Store Updated", inline: false },
@@ -924,15 +906,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     const all = await listUsers();
     const stores = all
       .filter(x => x.store && x.store.active && x.store.wa && x.role !== "banned" && x.role !== "member")
-      .map(x => ({
-        username: x.username,
-        name: x.store.name || x.username,
-        price: x.store.price || 500,
-        wa: x.store.wa,
-        dana: x.store.dana || "",
-        hasQr: !!(x.store.qr && x.store.qr.length > 0),
-        role: x.role,
-      }));
+      .map(x => ({ username: x.username, name: x.store.name || x.username, price: x.store.price || 500, wa: x.store.wa, dana: x.store.dana || "", hasQr: !!(x.store.qr && x.store.qr.length > 0), role: x.role }));
     const order = { owner: 0, admin: 1, reseller: 2 };
     stores.sort((a, b) => (order[a.role] || 9) - (order[b.role] || 9) || a.name.localeCompare(b.name));
     return res.status(200).json({ ok: true, stores });
@@ -944,17 +918,13 @@ async function handleApi(req, res, path, method, params, ctx) {
     const target = String(params.get("username") || "").trim();
     if (!target) return res.status(200).json({ error: "username kosong" });
     const t = await getUser(target);
-    if (!t || !t.store || !t.store.active || !t.store.wa) {
-      return res.status(200).json({ ok: true, qr: "", dana: "" });
-    }
+    if (!t || !t.store || !t.store.active || !t.store.wa) return res.status(200).json({ ok: true, qr: "", dana: "" });
     return res.status(200).json({ ok: true, qr: t.store.qr || "", dana: t.store.dana || "" });
   }
 
   if (route === "owner/setstore" && method === "POST") {
     const reqRole = await getOwnerRole(body.pw, body.ot);
-    if (!reqRole || (reqRole !== "owner" && reqRole !== "admin")) {
-      return res.status(200).json({ error: "forbidden" });
-    }
+    if (!reqRole || (reqRole !== "owner" && reqRole !== "admin")) return res.status(200).json({ error: "forbidden" });
     const target = String(body.username || "").trim();
     const u = await getUser(target);
     if (!u) return res.status(200).json({ error: "user tidak ditemukan" });
@@ -974,12 +944,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     const finalDana = dana || (u.store && u.store.dana) || "";
     const hasPay = finalQr.length > 0 || finalDana.length >= 8;
     const canActive = active && wa.length >= 8 && hasPay;
-    u.store = {
-      price, wa, dana: finalDana,
-      name: name || u.username,
-      active: canActive,
-      qr: finalQr,
-    };
+    u.store = { price, wa, dana: finalDana, name: name || u.username, active: canActive, qr: finalQr };
     await saveUser(u);
     return res.status(200).json({ ok: true, store: u.store });
   }
@@ -994,12 +959,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     users.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     return res.status(200).json({
       ok: true,
-      users: users.map(u => ({
-        username: u.username, email: u.email || null, role: u.role, quota: u.quota,
-        keysToday: u.keysToday, totalKeys: (u.keys || []).length,
-        createdAt: u.createdAt,
-        store: u.store || null,
-      })),
+      users: users.map(u => ({ username: u.username, email: u.email || null, role: u.role, quota: u.quota, keysToday: u.keysToday, totalKeys: (u.keys || []).length, createdAt: u.createdAt, store: u.store || null })),
     });
   }
 
@@ -1072,10 +1032,8 @@ body{background:#050510;color:#e8e8f0;font-family:'Inter',sans-serif;min-height:
 .logo{font-size:2rem;font-weight:900;background:linear-gradient(135deg,#ff6eb4,#c084fc,#67e8f9);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;letter-spacing:-1px}
 .logo-sub{font-size:.65rem;color:rgba(255,255,255,.3);letter-spacing:4px;text-transform:uppercase;margin-top:4px;font-weight:600}
 .badge{display:inline-flex;align-items:center;gap:6px;font-size:.7rem;font-weight:700;padding:5px 14px;border-radius:20px;margin-top:10px;letter-spacing:.5px}
-.badge.ok{background:rgba(0,232,122,0.1);color:#4ade80;border:1px solid rgba(74,222,128,0.25);box-shadow:0 0 20px rgba(74,222,128,0.1)}
-.badge.ok::before{content:'';width:6px;height:6px;border-radius:50%;background:#4ade80;box-shadow:0 0 8px #4ade80;animation:pulse 1.5s infinite}
+.badge.ok{background:rgba(0,232,122,0.1);color:#4ade80;border:1px solid rgba(74,222,128,0.25)}
 .badge.err{background:rgba(255,80,80,0.1);color:#f87171;border:1px solid rgba(248,113,113,0.25)}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 .divider{height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,0.06),transparent);margin:4px 0}
 .info-row{display:flex;justify-content:space-between;align-items:center;padding:11px 0;font-size:.84rem}
 .info-label{color:rgba(255,255,255,.35);font-weight:500}
@@ -1085,15 +1043,11 @@ body{background:#050510;color:#e8e8f0;font-family:'Inter',sans-serif;min-height:
 .timer-num{font-size:1.5rem;font-weight:900;color:#c084fc;font-family:'JetBrains Mono',monospace;line-height:1}
 .timer-label{font-size:.6rem;color:rgba(255,255,255,.3);text-transform:uppercase;letter-spacing:1px;margin-top:4px;font-weight:600}
 .timer-sep{font-size:1.4rem;font-weight:900;color:rgba(255,255,255,.2);align-self:center;margin-bottom:8px}
-.key-section{background:rgba(0,0,0,0.3);border:1px solid rgba(224,60,138,0.2);border-radius:16px;padding:20px;margin-top:16px;position:relative;overflow:hidden}
-.key-section::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(224,60,138,0.03),rgba(155,77,224,0.03));pointer-events:none}
-.key-label{font-size:.6rem;color:rgba(255,255,255,.3);font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:6px}
-.key-label::before,.key-label::after{content:'';flex:1;height:1px;background:rgba(255,255,255,.06)}
-.key-value{font-family:'JetBrains Mono',monospace;font-size:1.05rem;font-weight:700;color:#4ade80;letter-spacing:.5px;word-break:break-all;line-height:1.7;text-align:center;text-shadow:0 0 20px rgba(74,222,128,0.3)}
-.copy-btn{width:100%;margin-top:16px;padding:13px;background:linear-gradient(135deg,#e03c8a,#9b4de0);color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.9rem;cursor:pointer;font-family:inherit;position:relative;overflow:hidden;transition:transform .15s,box-shadow .15s;box-shadow:0 8px 24px rgba(224,60,138,0.3)}
-.copy-btn:hover{transform:translateY(-1px);box-shadow:0 12px 32px rgba(224,60,138,0.4)}
-.copy-btn:active{transform:translateY(0)}
-.copy-btn.copied{background:linear-gradient(135deg,#059669,#0891b2);box-shadow:0 8px 24px rgba(5,150,105,0.3)}
+.key-section{background:rgba(0,0,0,0.3);border:1px solid rgba(224,60,138,0.2);border-radius:16px;padding:20px;margin-top:16px}
+.key-label{font-size:.6rem;color:rgba(255,255,255,.3);font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-bottom:12px;text-align:center}
+.key-value{font-family:'JetBrains Mono',monospace;font-size:1.05rem;font-weight:700;color:#4ade80;letter-spacing:.5px;word-break:break-all;line-height:1.7;text-align:center}
+.copy-btn{width:100%;margin-top:16px;padding:13px;background:linear-gradient(135deg,#e03c8a,#9b4de0);color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.9rem;cursor:pointer;font-family:inherit;box-shadow:0 8px 24px rgba(224,60,138,0.3)}
+.copy-btn.copied{background:linear-gradient(135deg,#059669,#0891b2)}
 .notice{margin-top:16px;padding:12px 16px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.05);border-radius:12px;font-size:.73rem;color:rgba(255,255,255,.35);line-height:1.8;text-align:center}
 .notice b{color:rgba(255,255,255,.6)}
 </style></head>
@@ -1151,111 +1105,124 @@ body::after{width:420px;height:420px;background:radial-gradient(circle,rgba(155,
 @keyframes orbDrift1{0%{transform:translate(0,0) scale(1)}100%{transform:translate(40px,30px) scale(1.1)}}
 @keyframes orbDrift2{0%{transform:translate(0,0) scale(1)}100%{transform:translate(-30px,-40px) scale(1.08)}}
 @keyframes orbDrift3{0%{transform:translate(-50%,-50%) scale(1)}100%{transform:translate(-45%,-55%) scale(1.12)}}
+
+/* ==== LOADING SCREEN ==== */
+#nangLoader{position:fixed;inset:0;z-index:9999;background:radial-gradient(circle at 50% 50%,#0a0a20 0%,#06060e 100%);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:24px;transition:opacity .5s ease,visibility .5s ease;overflow:hidden}
+#nangLoader.hide{opacity:0;visibility:hidden;pointer-events:none}
+#nangLoader::before,#nangLoader::after{content:'';position:absolute;border-radius:50%;filter:blur(80px);opacity:.35;pointer-events:none}
+#nangLoader::before{width:400px;height:400px;background:radial-gradient(circle,#e03c8a,transparent 70%);top:-100px;left:-100px;animation:loaderOrb1 4s ease-in-out infinite alternate}
+#nangLoader::after{width:350px;height:350px;background:radial-gradient(circle,#9b4de0,transparent 70%);bottom:-80px;right:-80px;animation:loaderOrb2 4s ease-in-out infinite alternate}
+@keyframes loaderOrb1{0%{transform:translate(0,0)}100%{transform:translate(40px,30px)}}
+@keyframes loaderOrb2{0%{transform:translate(0,0)}100%{transform:translate(-30px,-40px)}}
+.loader-logo{font-size:3.2rem;font-weight:900;background:linear-gradient(135deg,#ff6eb4,#c084fc,#67e8f9,#ff6eb4);background-size:300% 300%;-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;letter-spacing:-1.5px;animation:logoGlow 3s ease infinite;position:relative;z-index:1}
+@keyframes logoGlow{0%,100%{background-position:0% 50%;filter:drop-shadow(0 0 20px rgba(224,60,138,.5))}50%{background-position:100% 50%;filter:drop-shadow(0 0 30px rgba(155,77,224,.6))}}
+.loader-sub{color:rgba(255,255,255,.35);font-size:.7rem;letter-spacing:5px;text-transform:uppercase;font-weight:700;margin-top:-10px;position:relative;z-index:1}
+.loader-spinner{width:60px;height:60px;border-radius:50%;position:relative;z-index:1}
+.loader-spinner::before,.loader-spinner::after{content:'';position:absolute;inset:0;border-radius:50%;border:3px solid transparent}
+.loader-spinner::before{border-top-color:#e03c8a;border-right-color:#9b4de0;animation:spinCW 1s linear infinite}
+.loader-spinner::after{inset:8px;border-top-color:#00d4ff;border-left-color:#00e87a;animation:spinCCW 1.4s linear infinite}
+@keyframes spinCW{to{transform:rotate(360deg)}}
+@keyframes spinCCW{to{transform:rotate(-360deg)}}
+.loader-bar{width:220px;height:4px;background:rgba(255,255,255,.05);border-radius:4px;overflow:hidden;position:relative;z-index:1}
+.loader-bar-fill{height:100%;width:0;background:linear-gradient(90deg,#e03c8a,#9b4de0,#00d4ff);border-radius:4px;animation:barFill 1.8s ease forwards}
+@keyframes barFill{0%{width:0}40%{width:50%}80%{width:80%}100%{width:100%}}
+.loader-status{color:rgba(255,255,255,.4);font-size:.72rem;letter-spacing:1.5px;text-transform:uppercase;font-weight:600;position:relative;z-index:1}
+.loader-dots{display:inline-block;color:#e03c8a}
+.loader-dots::after{content:'';animation:dots 1.5s steps(4,end) infinite}
+@keyframes dots{0%{content:''}25%{content:'.'}50%{content:'..'}75%{content:'...'}}
+.loader-version{position:absolute;bottom:20px;right:24px;font-family:'JetBrains Mono',monospace;font-size:.65rem;color:rgba(255,255,255,.2);letter-spacing:1px;z-index:1}
+
 .hero{text-align:center;margin-bottom:28px;position:relative;z-index:1}
 .logo{font-size:2.8rem;font-weight:900;background:linear-gradient(135deg,var(--pink) 0%,var(--purple) 45%,var(--cyan) 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;line-height:1;filter:drop-shadow(0 0 20px rgba(224,60,138,0.4))}
-.logo-badge{display:inline-block;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;font-size:0.55rem;font-weight:800;padding:2px 8px;border-radius:20px;vertical-align:super;margin-left:5px;letter-spacing:1.5px;box-shadow:0 0 12px rgba(224,60,138,0.5)}
+.logo-badge{display:inline-block;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;font-size:0.55rem;font-weight:800;padding:2px 8px;border-radius:20px;vertical-align:super;margin-left:5px;letter-spacing:1.5px}
 .sub{color:var(--muted);font-size:0.78rem;margin-top:7px;letter-spacing:0.5px}
 .nav{display:flex;gap:5px;background:rgba(13,13,28,0.8);border:1px solid var(--border2);border-radius:16px;padding:5px;margin-bottom:22px;width:100%;max-width:480px;flex-wrap:wrap;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);position:relative;z-index:1}
-.nav::before{content:'';position:absolute;inset:0;border-radius:16px;background:linear-gradient(135deg,rgba(224,60,138,0.04),rgba(155,77,224,0.04));pointer-events:none}
-.nav-btn{flex:1;min-width:70px;padding:9px 6px;border:none;border-radius:11px;cursor:pointer;font-size:0.78rem;font-weight:600;background:transparent;color:var(--muted);font-family:inherit;transition:all .2s;position:relative}
+.nav-btn{flex:1;min-width:70px;padding:9px 6px;border:none;border-radius:11px;cursor:pointer;font-size:0.78rem;font-weight:600;background:transparent;color:var(--muted);font-family:inherit;transition:all .2s}
 .nav-btn:hover{color:var(--text)}
-.nav-btn.active{background:linear-gradient(135deg,rgba(224,60,138,0.25),rgba(155,77,224,0.2));color:#fff;border:1px solid rgba(224,60,138,0.35);box-shadow:0 2px 12px rgba(224,60,138,0.2),inset 0 1px 0 rgba(255,255,255,0.06)}
+.nav-btn.active{background:linear-gradient(135deg,rgba(224,60,138,0.25),rgba(155,77,224,0.2));color:#fff;border:1px solid rgba(224,60,138,0.35)}
 .panel{width:100%;max-width:480px;display:none;position:relative;z-index:1}
 .panel.active{display:block}
 .card{background:rgba(13,13,28,0.7);border:1px solid var(--border2);border-radius:18px;padding:20px;margin-bottom:14px;position:relative;overflow:hidden;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
 .card::before{content:'';position:absolute;top:0;left:20%;right:20%;height:1px;background:linear-gradient(90deg,transparent,rgba(224,60,138,0.6),rgba(155,77,224,0.4),transparent)}
-.card::after{content:'';position:absolute;inset:0;border-radius:18px;background:linear-gradient(135deg,rgba(224,60,138,0.025) 0%,transparent 60%);pointer-events:none}
 .card-title{font-size:0.65rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:2px;margin-bottom:16px;display:flex;align-items:center;gap:6px}
 .card-title::before{content:'';display:inline-block;width:3px;height:12px;background:linear-gradient(to bottom,var(--pink),var(--purple));border-radius:2px}
 .qr-wrap{display:flex;gap:14px;align-items:flex-start;margin-bottom:14px}
-.qr-img{width:100px;height:100px;border-radius:12px;border:2px solid var(--border2);object-fit:cover;flex-shrink:0;box-shadow:0 0 20px rgba(224,60,138,0.15)}
+.qr-img{width:100px;height:100px;border-radius:12px;border:2px solid var(--border2);object-fit:cover;flex-shrink:0}
 .qr-img-placeholder{width:100px;height:100px;border-radius:12px;border:2px dashed rgba(255,255,255,0.1);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:0.7rem;text-align:center;flex-shrink:0;background:rgba(255,255,255,0.02)}
 .qr-info{flex:1}
-.price-badge{display:inline-flex;background:linear-gradient(135deg,rgba(0,232,122,0.12),rgba(0,212,255,0.08));border:1px solid rgba(0,232,122,0.25);border-radius:10px;padding:6px 12px;font-size:0.9rem;font-weight:800;color:var(--green);margin-bottom:8px;font-family:'JetBrains Mono',monospace;box-shadow:0 0 14px rgba(0,232,122,0.1)}
+.price-badge{display:inline-flex;background:linear-gradient(135deg,rgba(0,232,122,0.12),rgba(0,212,255,0.08));border:1px solid rgba(0,232,122,0.25);border-radius:10px;padding:6px 12px;font-size:0.9rem;font-weight:800;color:var(--green);margin-bottom:8px;font-family:'JetBrains Mono',monospace}
 .qr-steps{font-size:0.75rem;color:var(--muted);line-height:1.9}
 .qr-steps span{color:var(--text)}
-.fmt-box{background:rgba(10,10,20,0.6);border:1px solid var(--border);border-radius:12px;padding:14px;font-size:0.75rem;color:var(--muted);line-height:2;margin-bottom:12px;position:relative}
-.fmt-box::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(155,77,224,0.3),transparent)}
+.fmt-box{background:rgba(10,10,20,0.6);border:1px solid var(--border);border-radius:12px;padding:14px;font-size:0.75rem;color:var(--muted);line-height:2;margin-bottom:12px}
 .fmt-box .label{color:var(--pink);font-weight:700}
 .fmt-box .field{color:var(--text);font-weight:500}
 .fmt-box a{color:var(--cyan);text-decoration:none}
-.fmt-box a:hover{text-decoration:underline}
-.wa-btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:14px;background:linear-gradient(135deg,#1ebe5d,#128c7e);color:#fff;border:none;border-radius:13px;font-size:0.95rem;font-weight:700;cursor:pointer;text-decoration:none;font-family:inherit;transition:all .2s;box-shadow:0 4px 16px rgba(30,190,93,0.25)}
-.wa-btn:hover{transform:translateY(-1px);box-shadow:0 6px 24px rgba(30,190,93,0.35)}
+.wa-btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:14px;background:linear-gradient(135deg,#1ebe5d,#128c7e);color:#fff;border:none;border-radius:13px;font-size:0.95rem;font-weight:700;cursor:pointer;text-decoration:none;font-family:inherit;transition:all .2s}
+.wa-btn:hover{transform:translateY(-1px)}
 .wa-icon{width:18px;height:18px;fill:#fff}
 .inp{width:100%;padding:12px 15px;background:rgba(10,10,22,0.8);border:1px solid var(--border2);border-radius:11px;color:var(--text);font-size:0.88rem;outline:none;margin-bottom:10px;font-family:inherit;transition:border-color .2s,box-shadow .2s}
 .inp:focus{border-color:rgba(224,60,138,0.5);box-shadow:0 0 0 3px rgba(224,60,138,0.08)}
 .inp::placeholder{color:var(--muted)}
 select.inp{cursor:pointer;-webkit-appearance:none;appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);background-position:calc(100% - 18px) 50%,calc(100% - 13px) 50%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:34px}
-.btn-main{width:100%;padding:13px;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;border:none;border-radius:12px;font-weight:700;font-size:0.9rem;cursor:pointer;font-family:inherit;margin-bottom:8px;transition:all .2s;box-shadow:0 4px 16px rgba(224,60,138,0.3)}
-.btn-main:hover{transform:translateY(-1px);box-shadow:0 6px 24px rgba(224,60,138,0.45)}
-.btn-cyan{width:100%;padding:13px;background:linear-gradient(135deg,#0099cc,var(--cyan));color:#000;border:none;border-radius:12px;font-weight:700;font-size:0.9rem;cursor:pointer;font-family:inherit;transition:all .2s;box-shadow:0 4px 16px rgba(0,212,255,0.2)}
-.btn-cyan:hover{transform:translateY(-1px);box-shadow:0 6px 24px rgba(0,212,255,0.35)}
-.btn-green{width:100%;padding:12px;background:linear-gradient(135deg,#00b866,var(--green));color:#000;border:none;border-radius:12px;font-weight:700;font-size:0.85rem;cursor:pointer;font-family:inherit;margin-top:8px;transition:all .2s;box-shadow:0 4px 14px rgba(0,232,122,0.2)}
-.btn-green:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(0,232,122,0.35)}
+.btn-main{width:100%;padding:13px;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;border:none;border-radius:12px;font-weight:700;font-size:0.9rem;cursor:pointer;font-family:inherit;margin-bottom:8px;transition:all .2s}
+.btn-main:hover{transform:translateY(-1px)}
+.btn-cyan{width:100%;padding:13px;background:linear-gradient(135deg,#0099cc,var(--cyan));color:#000;border:none;border-radius:12px;font-weight:700;font-size:0.9rem;cursor:pointer;font-family:inherit;transition:all .2s}
+.btn-cyan:hover{transform:translateY(-1px)}
+.btn-green{width:100%;padding:12px;background:linear-gradient(135deg,#00b866,var(--green));color:#000;border:none;border-radius:12px;font-weight:700;font-size:0.85rem;cursor:pointer;font-family:inherit;margin-top:8px}
+.btn-green:hover{transform:translateY(-1px)}
 .result{background:rgba(10,10,22,0.8);border:1px solid var(--border);border-radius:12px;padding:13px;font-size:0.78rem;margin-top:10px;display:none;word-break:break-all;line-height:1.7}
 .result.ok{border-color:rgba(0,232,122,0.35);color:var(--green);display:block;background:rgba(0,232,122,0.04)}
 .result.err{border-color:rgba(255,80,80,0.35);color:#ff6b6b;background:rgba(255,30,30,0.05);display:block}
 .result.warn{border-color:rgba(255,200,50,0.35);color:#ffc832;background:rgba(255,200,50,0.05);display:block}
 .result.info{border-color:rgba(0,212,255,0.35);color:var(--cyan);background:rgba(0,212,255,0.04);display:block}
 .result .key-line{font-family:'JetBrains Mono',monospace;font-size:0.85rem;color:var(--green);font-weight:700;margin:6px 0;padding:10px;background:rgba(0,20,10,0.8);border-radius:8px;word-break:break-all;border:1px solid rgba(0,232,122,0.2)}
-.result .link-line{font-family:'JetBrains Mono',monospace;font-size:0.7rem;color:var(--cyan);word-break:break-all;padding:8px;background:rgba(0,10,20,0.8);border-radius:8px;display:block;text-decoration:none;border:1px solid rgba(0,212,255,0.15);margin:6px 0}
 .result-big{padding:18px;border-radius:14px;margin-top:12px;font-size:0.9rem;line-height:1.7;display:none;border-width:2px;border-style:solid}
 .result-big.show{display:block}
-.result-big.success{background:linear-gradient(135deg,rgba(0,232,122,0.14),rgba(0,212,255,0.06));border-color:rgba(0,232,122,0.55);color:#4ade80;box-shadow:0 0 40px rgba(0,232,122,0.2)}
-.result-big.fail{background:linear-gradient(135deg,rgba(255,80,80,0.14),rgba(255,0,80,0.06));border-color:rgba(255,80,80,0.55);color:#ff9090;box-shadow:0 0 40px rgba(255,80,80,0.2)}
-.result-big .big-title{font-size:1.2rem;font-weight:900;margin-bottom:12px;display:flex;align-items:center;gap:10px;letter-spacing:.5px}
-.result-big .big-title .ico{font-size:1.8rem}
-.result-big .asset-id{font-family:'JetBrains Mono',monospace;font-size:1.2rem;font-weight:900;color:#fff;background:rgba(0,0,0,0.55);border:1px solid rgba(0,232,122,0.5);border-radius:10px;padding:16px;text-align:center;margin:12px 0;word-break:break-all;letter-spacing:1px;text-shadow:0 0 14px rgba(0,232,122,0.7)}
+.result-big.success{background:linear-gradient(135deg,rgba(0,232,122,0.14),rgba(0,212,255,0.06));border-color:rgba(0,232,122,0.55);color:#4ade80}
+.result-big.fail{background:linear-gradient(135deg,rgba(255,80,80,0.14),rgba(255,0,80,0.06));border-color:rgba(255,80,80,0.55);color:#ff9090}
+.result-big .big-title{font-size:1.2rem;font-weight:900;margin-bottom:12px;display:flex;align-items:center;gap:10px}
+.result-big .asset-id{font-family:'JetBrains Mono',monospace;font-size:1.2rem;font-weight:900;color:#fff;background:rgba(0,0,0,0.55);border:1px solid rgba(0,232,122,0.5);border-radius:10px;padding:16px;text-align:center;margin:12px 0;word-break:break-all}
 .result-big .err-msg{font-family:'JetBrains Mono',monospace;font-size:0.78rem;background:rgba(0,0,0,0.55);border:1px solid rgba(255,80,80,0.35);border-radius:10px;padding:12px;color:#ffb0b0;word-break:break-word;line-height:1.7;margin:8px 0}
-.result-big .err-hint{font-size:0.78rem;color:rgba(255,255,255,.6);margin-top:12px;line-height:1.7}
-.result-big .err-hint b{color:#fff}
-.result-big .link-btn{display:inline-block;margin-top:12px;padding:11px 20px;background:linear-gradient(135deg,#0099cc,var(--cyan));color:#000;border-radius:10px;font-weight:700;text-decoration:none;font-size:0.88rem;box-shadow:0 4px 16px rgba(0,212,255,0.35);border:none;cursor:pointer;font-family:inherit}
-.result-big .link-btn:hover{transform:translateY(-1px);box-shadow:0 6px 24px rgba(0,212,255,0.45)}
-.result-big .cp-btn{display:inline-block;margin-top:12px;margin-left:6px;padding:11px 20px;background:linear-gradient(135deg,#00b866,var(--green));color:#000;border-radius:10px;font-weight:700;font-size:0.88rem;border:none;cursor:pointer;font-family:inherit;box-shadow:0 4px 14px rgba(0,232,122,0.35)}
+.result-big .link-btn{display:inline-block;margin-top:12px;padding:11px 20px;background:linear-gradient(135deg,#0099cc,var(--cyan));color:#000;border-radius:10px;font-weight:700;text-decoration:none;font-size:0.88rem;border:none;cursor:pointer;font-family:inherit}
+.result-big .cp-btn{display:inline-block;margin-top:12px;margin-left:6px;padding:11px 20px;background:linear-gradient(135deg,#00b866,var(--green));color:#000;border-radius:10px;font-weight:700;font-size:0.88rem;border:none;cursor:pointer;font-family:inherit}
 .step{display:flex;align-items:center;gap:10px;padding:8px 0;font-size:0.82rem;color:var(--muted)}
 .step .dot{width:22px;height:22px;border-radius:50%;background:rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center;font-size:0.65rem;flex-shrink:0;border:1px solid var(--border);font-weight:800}
-.step.active .dot{background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;border-color:transparent;animation:pulseDot 1.2s infinite}
+.step.active .dot{background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;border-color:transparent}
 .step.done .dot{background:var(--green);color:#000;border-color:transparent}
 .step.err .dot{background:var(--red);color:#fff;border-color:transparent}
 .step.active{color:var(--text)}
 .step.done{color:var(--green)}
 .step.err{color:var(--red)}
-@keyframes pulseDot{0%,100%{transform:scale(1)}50%{transform:scale(1.15)}}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,0.08);border-top-color:var(--pink);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
 .drop{border:2px dashed rgba(255,255,255,0.12);border-radius:14px;padding:28px 16px;text-align:center;cursor:pointer;transition:all .25s;background:rgba(255,255,255,0.02);margin-bottom:12px}
-.drop:hover,.drop.over{border-color:var(--pink);background:rgba(224,60,138,0.06);box-shadow:0 0 20px rgba(224,60,138,0.1)}
+.drop:hover,.drop.over{border-color:var(--pink);background:rgba(224,60,138,0.06)}
 .drop.done{border-color:var(--green);background:rgba(0,232,122,0.05)}
 .drop-icon{font-size:2rem;margin-bottom:8px;opacity:.7}
 .drop-text{font-size:0.85rem;color:var(--text);margin-bottom:4px;word-break:break-all}
 .drop-hint{font-size:0.7rem;color:var(--muted)}
 .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
-.stat{background:rgba(255,255,255,0.03);border:1px solid var(--border);padding:14px;border-radius:12px;position:relative;overflow:hidden}
-.stat::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(155,77,224,0.3),transparent)}
+.stat{background:rgba(255,255,255,0.03);border:1px solid var(--border);padding:14px;border-radius:12px}
 .stat .label{font-size:.63rem;color:var(--muted);text-transform:uppercase;letter-spacing:1.2px;font-weight:700}
 .stat .value{font-size:1.5rem;font-weight:900;margin-top:5px;font-family:'JetBrains Mono',monospace}
-.key-item{padding:11px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:10px;margin-bottom:6px;font-size:.75rem;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;transition:border-color .2s}
-.key-item:hover{border-color:rgba(0,232,122,0.2)}
+.key-item{padding:11px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:10px;margin-bottom:6px;font-size:.75rem;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
 .key-item .info{flex:1;min-width:0}
 .key-item .k{font-family:'JetBrains Mono',monospace;color:var(--green);font-weight:700;word-break:break-all}
 .key-item .meta{color:var(--muted);font-size:.67rem;margin-top:4px}
-.key-item .cp{padding:5px 11px;background:rgba(255,255,255,0.05);border:1px solid var(--border2);border-radius:7px;color:var(--text);font-size:.67rem;font-weight:700;cursor:pointer;font-family:inherit;transition:all .15s}
-.key-item .cp:hover{background:rgba(0,232,122,0.1);border-color:rgba(0,232,122,0.3);color:var(--green)}
+.key-item .cp{padding:5px 11px;background:rgba(255,255,255,0.05);border:1px solid var(--border2);border-radius:7px;color:var(--text);font-size:.67rem;font-weight:700;cursor:pointer;font-family:inherit}
+.key-item .cp:hover{background:rgba(0,232,122,0.1);color:var(--green)}
 .toggle{display:flex;align-items:center;justify-content:space-between;padding:10px 0;font-size:.85rem}
 .toggle .switch{position:relative;width:44px;height:24px;background:rgba(255,255,255,0.08);border-radius:12px;cursor:pointer;transition:.25s;border:1px solid var(--border)}
-.toggle .switch.on{background:linear-gradient(135deg,var(--pink),var(--purple));border-color:transparent;box-shadow:0 0 12px rgba(224,60,138,0.4)}
-.toggle .switch::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;background:#fff;border-radius:50%;transition:.25s;box-shadow:0 1px 4px rgba(0,0,0,0.4)}
+.toggle .switch.on{background:linear-gradient(135deg,var(--pink),var(--purple));border-color:transparent}
+.toggle .switch::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;background:#fff;border-radius:50%;transition:.25s}
 .toggle .switch.on::after{left:22px}
 footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;opacity:0.4;position:relative;z-index:1}
 .hidden{display:none!important}
 .auth-bar{position:fixed;top:14px;right:14px;z-index:50;display:flex;gap:8px;align-items:center;font-size:.8rem}
-.auth-pill{display:flex;align-items:center;gap:8px;padding:8px 14px;background:rgba(13,13,28,0.85);border:1px solid var(--border2);border-radius:12px;font-size:.8rem;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);box-shadow:0 4px 20px rgba(0,0,0,0.4)}
+.auth-pill{display:flex;align-items:center;gap:8px;padding:8px 14px;background:rgba(13,13,28,0.85);border:1px solid var(--border2);border-radius:12px;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
 .auth-pill .uname{font-weight:700;color:var(--text)}
-.auth-btn{padding:8px 14px;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;border:none;border-radius:9px;font-weight:700;font-size:.78rem;cursor:pointer;font-family:inherit;box-shadow:0 2px 10px rgba(224,60,138,0.35);transition:all .2s}
-.auth-btn:hover{box-shadow:0 4px 16px rgba(224,60,138,0.5)}
-.auth-btn.gray{background:rgba(255,255,255,0.07);border:1px solid var(--border2);color:var(--text);box-shadow:none}
-.auth-btn.gray:hover{background:rgba(255,255,255,0.1)}
+.auth-btn{padding:8px 14px;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;border:none;border-radius:9px;font-weight:700;font-size:.78rem;cursor:pointer;font-family:inherit}
+.auth-btn.gray{background:rgba(255,255,255,0.07);border:1px solid var(--border2);color:var(--text)}
 .role-tag{font-size:.58rem;font-weight:800;text-transform:uppercase;letter-spacing:.8px;padding:2px 8px;border-radius:6px}
 .role-tag.owner{background:rgba(224,60,138,.15);color:var(--pink);border:1px solid rgba(224,60,138,.3)}
 .role-tag.admin{background:rgba(155,77,224,.15);color:#c899ff;border:1px solid rgba(155,77,224,.3)}
@@ -1264,28 +1231,25 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 .role-tag.banned{background:rgba(255,80,80,.12);color:var(--red);border:1px solid rgba(255,80,80,.25)}
 .modal-tabs{display:flex;gap:4px;background:rgba(10,10,22,0.8);border-radius:10px;padding:4px;margin-bottom:14px;border:1px solid var(--border)}
 .modal-tabs button{flex:1;padding:8px;border:none;border-radius:7px;background:transparent;color:var(--muted);font-family:inherit;font-weight:600;font-size:.8rem;cursor:pointer;transition:all .2s}
-.modal-tabs button.on{background:linear-gradient(135deg,rgba(224,60,138,.25),rgba(155,77,224,.2));color:#fff;box-shadow:0 2px 8px rgba(224,60,138,.2)}
+.modal-tabs button.on{background:linear-gradient(135deg,rgba(224,60,138,.25),rgba(155,77,224,.2));color:#fff}
 .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.8);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:none;align-items:center;justify-content:center;z-index:100;padding:20px}
 .modal-bg.show{display:flex}
-.modal-box{background:rgba(13,13,28,0.95);border:1px solid rgba(224,60,138,.3);border-radius:20px;padding:24px;max-width:420px;width:100%;position:relative;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.6),0 0 40px rgba(224,60,138,.1)}
+.modal-box{background:rgba(13,13,28,0.95);border:1px solid rgba(224,60,138,.3);border-radius:20px;padding:24px;max-width:420px;width:100%;position:relative;max-height:90vh;overflow-y:auto}
 .modal-box h3{color:var(--pink);font-size:1rem;margin-bottom:14px;font-weight:800}
-.modal-box .x{position:absolute;top:14px;right:18px;cursor:pointer;color:var(--muted);font-size:22px;line-height:1;transition:color .2s}
+.modal-box .x{position:absolute;top:14px;right:18px;cursor:pointer;color:var(--muted);font-size:22px}
 .modal-box .x:hover{color:var(--text)}
-.user-row{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:10px;margin-bottom:6px;gap:8px;flex-wrap:wrap;transition:border-color .2s}
-.user-row:hover{border-color:var(--border2)}
+.user-row{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:10px;margin-bottom:6px;gap:8px;flex-wrap:wrap}
 .user-row .name{font-weight:700;font-size:.9rem;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .user-row .meta{font-size:.7rem;color:var(--muted);margin-top:3px}
 .row-actions{display:flex;gap:4px;flex-wrap:wrap}
-.row-actions button{padding:5px 10px;border:none;border-radius:7px;font-size:.68rem;font-weight:700;cursor:pointer;font-family:inherit;background:rgba(255,255,255,0.05);color:var(--text);border:1px solid var(--border);transition:all .15s}
-.row-actions button:hover{background:rgba(255,255,255,0.1);border-color:var(--border2)}
+.row-actions button{padding:5px 10px;border:none;border-radius:7px;font-size:.68rem;font-weight:700;cursor:pointer;font-family:inherit;background:rgba(255,255,255,0.05);color:var(--text);border:1px solid var(--border)}
+.row-actions button:hover{background:rgba(255,255,255,0.1)}
 .locked{padding:40px 20px;text-align:center;color:var(--muted);font-size:.85rem;line-height:1.8}
-.locked button{margin-top:14px;padding:10px 24px;width:auto}
 .warn-box{padding:11px 14px;background:rgba(255,200,50,0.05);border:1px solid rgba(255,200,50,0.2);border-radius:11px;font-size:0.75rem;color:var(--yellow);margin-bottom:12px;line-height:1.7}
 .warn-box b{color:#fff}
-.warn-box a{color:var(--yellow)}
-.fab{position:fixed;bottom:22px;right:22px;width:50px;height:50px;border-radius:50%;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;cursor:pointer;z-index:80;box-shadow:0 6px 24px rgba(224,60,138,0.45),0 0 40px rgba(224,60,138,0.15);border:none;font-family:inherit;transition:all .2s}
-.fab:hover{transform:scale(1.07);box-shadow:0 8px 30px rgba(224,60,138,0.6)}
-.fab.active{background:linear-gradient(135deg,#00b866,var(--green));box-shadow:0 6px 24px rgba(0,232,122,0.4)}
+.fab{position:fixed;bottom:22px;right:22px;width:50px;height:50px;border-radius:50%;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;cursor:pointer;z-index:80;border:none;font-family:inherit;transition:all .2s}
+.fab:hover{transform:scale(1.07)}
+.fab.active{background:linear-gradient(135deg,#00b866,var(--green))}
 .hint{font-size:.7rem;margin:-6px 0 10px;padding-left:4px;color:var(--muted);min-height:14px;line-height:1.4}
 .hint.ok{color:var(--green)}
 .hint.err{color:var(--red)}
@@ -1294,9 +1258,20 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 .role-badge.admin{background:rgba(155,77,224,.2);color:#c899ff;border:1px solid rgba(155,77,224,.4)}
 .role-badge.reseller{background:rgba(0,212,255,.15);color:var(--cyan);border:1px solid rgba(0,212,255,.35)}
 .role-badge.member{background:rgba(150,150,170,.12);color:var(--muted);border:1px solid rgba(150,150,170,.3)}
+.progress-bar{width:100%;height:6px;background:rgba(255,255,255,.06);border-radius:4px;overflow:hidden;margin:8px 0}
+.progress-bar-fill{height:100%;width:0;background:linear-gradient(90deg,var(--pink),var(--cyan));transition:width .3s ease;border-radius:4px}
 </style></head><body>
-<div class="orb3"></div>
 
+<div id="nangLoader">
+  <div class="loader-logo">NANG</div>
+  <div class="loader-sub">Loading System</div>
+  <div class="loader-spinner"></div>
+  <div class="loader-bar"><div class="loader-bar-fill"></div></div>
+  <div class="loader-status" id="loaderStatus">Initializing<span class="loader-dots"></span></div>
+  <div class="loader-version">v${BUILD}</div>
+</div>
+
+<div class="orb3"></div>
 <div class="auth-bar" id="authBar"></div>
 <button class="fab" id="ownerFab" onclick="openOwnerModal()" title="Owner">🔒</button>
 
@@ -1308,7 +1283,7 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 <div id="loginWall">
   <div class="card" style="max-width:420px;width:100%">
     <div style="text-align:center;margin-bottom:18px">
-      <div style="width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,var(--pink),var(--purple));display:inline-flex;align-items:center;justify-content:center;font-size:1.4rem;margin-bottom:10px;box-shadow:0 0 24px rgba(224,60,138,0.4)">🔑</div>
+      <div style="width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,var(--pink),var(--purple));display:inline-flex;align-items:center;justify-content:center;font-size:1.4rem;margin-bottom:10px">🔑</div>
       <div style="font-weight:800;font-size:1rem;color:var(--text)">Masuk ke NANG Key</div>
       <div style="font-size:.72rem;color:var(--muted);margin-top:4px">Login atau daftar akun baru</div>
     </div>
@@ -1347,31 +1322,23 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 <div class="panel active" id="tab0">
 <div class="card">
 <div class="card-title">Pilih Penjual</div>
-<select class="inp" id="buyStoreSel" onchange="onStoreChange()">
-  <option value="">Memuat...</option>
-</select>
+<select class="inp" id="buyStoreSel" onchange="onStoreChange()"><option value="">Memuat...</option></select>
 <div class="fmt-box" id="buyStoreInfo">Pilih penjual di atas buat liat harga + WA.</div>
 </div>
 <div class="card">
 <div class="card-title">Pembayaran</div>
 <div class="qr-wrap">
 <img id="buyQrImg" class="qr-img" style="display:none;background:#fff;padding:4px" alt="QRIS">
-<div id="buyDanaBox" class="qr-img-placeholder" style="display:none;flex-direction:column;gap:4px;border-color:rgba(0,232,122,.4);background:linear-gradient(135deg,rgba(0,232,122,.08),rgba(0,212,255,.04));color:var(--green)">
-  <div style="font-size:1.8rem">💳</div>
-  <div style="font-size:.6rem;letter-spacing:1px;font-weight:700">DANA</div>
-</div>
+<div id="buyDanaBox" class="qr-img-placeholder" style="display:none;flex-direction:column;gap:4px;border-color:rgba(0,232,122,.4);color:var(--green)"><div style="font-size:1.8rem">💳</div><div style="font-size:.6rem;font-weight:700">DANA</div></div>
 <div id="buyQrPlaceholder" class="qr-img-placeholder">QR /<br>DANA<br>kosong</div>
 <div class="qr-info">
   <div class="price-badge" id="buyPrice">Rp500 / Key</div>
-  <div class="qr-steps">
-    Transfer <span id="buyPriceTransfer">Rp500</span><br>
-    <span id="buyPayHint" style="font-size:.7rem;color:var(--muted)">Scan QR atau klik nomor WA di bawah</span>
-  </div>
+  <div class="qr-steps">Transfer <span id="buyPriceTransfer">Rp500</span><br><span id="buyPayHint" style="font-size:.7rem;color:var(--muted)">Scan QR atau klik nomor WA di bawah</span></div>
 </div>
 </div>
 <div id="buyDanaDetail" style="display:none;margin-top:10px;padding:12px;background:rgba(0,232,122,.05);border:1px solid rgba(0,232,122,.25);border-radius:10px;text-align:center">
   <div style="font-size:.65rem;color:var(--muted);letter-spacing:1.5px;font-weight:800;text-transform:uppercase;margin-bottom:6px">Nomor DANA</div>
-  <div style="font-family:'JetBrains Mono',monospace;font-size:1.3rem;font-weight:900;color:var(--green);letter-spacing:1px" id="buyDanaNum">-</div>
+  <div style="font-family:'JetBrains Mono',monospace;font-size:1.3rem;font-weight:900;color:var(--green)" id="buyDanaNum">-</div>
   <button class="btn-green" style="margin-top:8px" onclick="copyDana(event)">📋 COPY NOMOR DANA</button>
 </div>
 <div class="fmt-box"><span class="label">Format pesan WA:</span><br><span class="field" id="buyWaName">Beli Key NANG</span><br>Nama: <span class="field" id="waNama">[isi di bawah]</span><br>Roblox ID: <span class="field" id="waUid">[isi di bawah]</span><br>Bukti TF: <span class="field">[screenshot]</span><br><br><span class="label">Nomor WA penjual:</span><br><a href="#" id="buyWaNumLink" target="_blank" style="color:var(--green);font-family:'JetBrains Mono',monospace;font-weight:700;font-size:.9rem;text-decoration:none">-</a></div>
@@ -1392,10 +1359,7 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 
 <div class="panel" id="tab2">
 <div id="uploadLocked" class="card">
-<div class="locked">
-🔒 Login dulu buat upload<br>
-<div style="font-size:.75rem;margin-top:6px">Semua role bisa upload</div>
-</div>
+<div class="locked">🔒 Login dulu buat upload<br><div style="font-size:.75rem;margin-top:6px">Semua role bisa upload</div></div>
 </div>
 <div id="uploadContent" class="hidden">
 <div class="card">
@@ -1423,7 +1387,6 @@ Limit web ini: max <span class="field">15 MB</span> per upload
 </div>
 </div>
 <div class="warn-box"><b>Penting:</b> Username di bawah HARUS <b>pemilik API Key</b> yang sama. Untuk <b>Audio</b>, akun Roblox harus sudah <b>verified creator</b>.</div>
-
 <div class="card">
 <div class="card-title">Tipe Asset</div>
 <div class="modal-tabs" style="margin-bottom:0">
@@ -1431,7 +1394,6 @@ Limit web ini: max <span class="field">15 MB</span> per upload
   <button id="upTypeAudio" onclick="upSetType('Audio')">🎵 Audio</button>
 </div>
 </div>
-
 <div class="card">
 <div class="card-title">Akun Roblox</div>
 <input type="text" class="inp" id="upUsername" placeholder="Username / User ID pemilik API key..." autocomplete="off">
@@ -1445,16 +1407,11 @@ Limit web ini: max <span class="field">15 MB</span> per upload
 </div>
 <div class="card">
 <div class="card-title">File</div>
-<div class="drop" id="upDrop">
-<div class="drop-icon">📦</div>
-<div class="drop-text">Klik atau drop file</div>
-<div class="drop-hint">.rbxm / .rbxmx — max 15 MB</div>
-</div>
+<div class="drop" id="upDrop"><div class="drop-icon">📦</div><div class="drop-text">Klik atau drop file</div><div class="drop-hint">.rbxm / .rbxmx — max 15 MB</div></div>
 <input type="file" id="upFileInput" accept=".rbxm,.rbxmx" hidden>
 <input type="text" class="inp" id="upName" placeholder="Nama asset (opsional)">
 <input type="text" class="inp" id="upDesc" placeholder="Deskripsi (opsional)">
 <button class="btn-cyan" id="upBtn" onclick="doUploadRbxm()">UPLOAD KE ROBLOX</button>
-
 <div class="result-big" id="upBigResult"></div>
 <div id="upProgress" style="margin-top:12px;display:none">
   <div class="step" id="step1"><div class="dot">1</div><span>Cari akun Roblox</span></div>
@@ -1496,55 +1453,36 @@ Limit web ini: max <span class="field">15 MB</span> per upload
 <input type="text" class="inp" id="stPrice" placeholder="Harga per key (angka, contoh: 500)" inputmode="numeric">
 <input type="text" class="inp" id="stWa" placeholder="Nomor WA (contoh: 081234567890)" inputmode="tel">
 <input type="text" class="inp" id="stDana" placeholder="Nomor DANA (kalau gak upload QR)" inputmode="tel">
-<div class="toggle">
-  <span>Aktifkan toko di halaman Beli Key</span>
-  <div class="switch" id="stActiveSw" onclick="toggleStoreActive()"></div>
-</div>
+<div class="toggle"><span>Aktifkan toko di halaman Beli Key</span><div class="switch" id="stActiveSw" onclick="toggleStoreActive()"></div></div>
 </div>
 <div class="card">
 <div class="card-title">📷 QRIS / Metode Bayar</div>
 <div class="fmt-box">Upload QRIS kalau ada. Kalau <b style="color:var(--pink)">gak upload QR</b>, buyer bakal lihat <b style="color:var(--green)">nomor DANA</b> lu dari kolom di atas.<br><br>Minimal harus ada salah satu: <b>QR</b> atau <b>nomor DANA</b>.</div>
 <input type="file" id="stQrFile" accept="image/*" style="display:none" onchange="onQrFileChange(event)">
-<div id="stQrPreviewWrap" class="hidden" style="text-align:center;margin-bottom:12px">
-  <img id="stQrPreview" style="max-width:200px;max-height:200px;border-radius:12px;border:1px solid var(--border);background:#fff;padding:6px">
-</div>
-<div id="stQrEmpty" class="drop" onclick="document.getElementById('stQrFile').click()">
-<div class="drop-icon">📷</div>
-<div class="drop-text">Klik upload QRIS</div>
-<div class="drop-hint">PNG / JPG — max 500 KB</div>
-</div>
+<div id="stQrPreviewWrap" class="hidden" style="text-align:center;margin-bottom:12px"><img id="stQrPreview" style="max-width:200px;max-height:200px;border-radius:12px;border:1px solid var(--border);background:#fff;padding:6px"></div>
+<div id="stQrEmpty" class="drop" onclick="document.getElementById('stQrFile').click()"><div class="drop-icon">📷</div><div class="drop-text">Klik upload QRIS</div><div class="drop-hint">PNG / JPG — max 500 KB</div></div>
 <button class="btn-main" id="stQrDelBtn" style="background:var(--bg3);color:var(--red);border:1px solid var(--border);display:none;margin-top:8px" onclick="delQr()">Hapus QR</button>
 </div>
-<div class="card">
-<button class="btn-cyan" onclick="doSaveStore()">SIMPAN TOKO</button>
-<div class="result" id="stResult"></div>
-</div>
+<div class="card"><button class="btn-cyan" onclick="doSaveStore()">SIMPAN TOKO</button><div class="result" id="stResult"></div></div>
 <div class="card">
 <div class="card-title">Preview</div>
-<div class="fmt-box" id="stPreview">
-Nama: <span class="field">-</span><br>
-Harga: <span class="field">-</span><br>
-WA: <span class="field">-</span><br>
-DANA: <span class="field">-</span><br>
-QR: <span class="field">-</span><br>
-Status: <span class="field">Nonaktif</span>
-</div>
+<div class="fmt-box" id="stPreview">Nama: <span class="field">-</span><br>Harga: <span class="field">-</span><br>WA: <span class="field">-</span><br>DANA: <span class="field">-</span><br>QR: <span class="field">-</span><br>Status: <span class="field">Nonaktif</span></div>
 </div>
 </div>
 
 <div class="panel" id="tab5">
 <div class="card">
 <div class="card-title">📥 Upload Free Model</div>
-<div class="fmt-box">Share model/script lu ke semua user. Support: <span class="field">.rbxm .rbxmx .rbxl .rbxlx .lua .txt .zip</span> — max 2 MB.</div>
+<div class="fmt-box">Share model/script lu ke semua user. Support: <span class="field">.rbxm .rbxmx .rbxl .rbxlx .lua .txt .zip</span> — max <span class="field">8 MB</span>.</div>
 <input type="text" class="inp" id="fmName" placeholder="Nama model (contoh: Ultimate ESP)">
 <input type="text" class="inp" id="fmDesc" placeholder="Deskripsi singkat (opsional)">
 <input type="file" id="fmFile" accept=".rbxm,.rbxmx,.rbxl,.rbxlx,.lua,.txt,.zip" style="display:none" onchange="fmOnFile(event)">
 <button class="btn-cyan" onclick="document.getElementById('fmFile').click()">📎 Pilih File</button>
 <div class="hint" id="fmFileHint"></div>
+<div class="progress-bar" id="fmProgressWrap" style="display:none"><div class="progress-bar-fill" id="fmProgressFill"></div></div>
 <button class="btn-main" id="fmUploadBtn" onclick="fmUpload()">⬆ UPLOAD FREE MODEL</button>
 <div class="result" id="fmResult"></div>
 </div>
-
 <div class="card">
 <div class="card-title">📦 Daftar Free Model</div>
 <button class="btn-cyan" style="margin-bottom:10px" onclick="loadFreeModels()">🔄 Refresh</button>
@@ -1589,6 +1527,7 @@ let STORES = [];
 let MY_STORE = { price: 500, wa: "", dana: "", name: "", active: false, qr: "" };
 let _qrData = "";
 let _upAssetType = "Model";
+const MAX_FREE_MB = 8;
 
 function $(id){return document.getElementById(id);}
 function apiCall(url, opts){
@@ -1599,22 +1538,26 @@ function apiCall(url, opts){
     });
   });
 }
-function setCookie(name, val, days){
-  try { document.cookie = name + '=' + encodeURIComponent(val) + '; max-age=' + (days*24*3600) + '; path=/; SameSite=Lax'; } catch(e) {}
-}
-function getCookie(name){
-  try {
-    const m = document.cookie.match(new RegExp('(^|;\\\\s*)' + name + '=([^;]*)'));
-    return m ? decodeURIComponent(m[2]) : null;
-  } catch(e) { return null; }
-}
+function setCookie(name, val, days){ try { document.cookie = name + '=' + encodeURIComponent(val) + '; max-age=' + (days*24*3600) + '; path=/; SameSite=Lax'; } catch(e) {} }
+function getCookie(name){ try { const m = document.cookie.match(new RegExp('(^|;\\\\s*)' + name + '=([^;]*)')); return m ? decodeURIComponent(m[2]) : null; } catch(e) { return null; } }
 function delCookie(name){ setCookie(name, '', -1); }
 function fmtRp(n){ n = parseInt(n) || 0; return 'Rp' + n.toLocaleString('id-ID'); }
 function esc(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function _randHex(n){
-  const a = new Uint8Array(n);
-  crypto.getRandomValues(a);
-  return Array.from(a).map(x => x.toString(16).padStart(2,'0')).join('');
+function _randHex(n){ const a = new Uint8Array(n); crypto.getRandomValues(a); return Array.from(a).map(x => x.toString(16).padStart(2,'0')).join(''); }
+
+// ==== LOADING SCREEN ====
+function nangLoaderSetStatus(text){
+  const el = $('loaderStatus');
+  if(el) el.innerHTML = text + '<span class="loader-dots"></span>';
+}
+function nangLoaderHide(){
+  const el = $('nangLoader');
+  if(!el) return;
+  nangLoaderSetStatus('Ready');
+  setTimeout(()=>{
+    el.classList.add('hide');
+    setTimeout(()=>{ try{ el.remove(); }catch(e){} }, 600);
+  }, 400);
 }
 
 function switchTab(i){
@@ -1675,9 +1618,8 @@ function updateAuthUI(){
     $('appContent').classList.add('hidden');
     bar.innerHTML = '';
   }
-  const canUpload = logged;
-  $('uploadLocked').classList.toggle('hidden', canUpload);
-  $('uploadContent').classList.toggle('hidden', !canUpload);
+  $('uploadLocked').classList.toggle('hidden', logged);
+  $('uploadContent').classList.toggle('hidden', !logged);
   const canMyKeys = logged && (ME.role==='owner'||ME.role==='admin'||ME.role==='reseller');
   $('navMyKeys').classList.toggle('hidden', !canMyKeys);
   const canStore = logged && (ME.role==='owner'||ME.role==='admin'||ME.role==='reseller');
@@ -1704,12 +1646,8 @@ async function lwDoLogin(){
   setCookie('nang_session', TOKEN, 30);
   _lastRefreshAt = Date.now();
   localStorage.setItem('nang_last_refresh', String(_lastRefreshAt));
-  if(d.noKv){
-    box.className='result warn';
-    box.innerHTML='⚠️ Berhasil masuk — tapi server belum pakai KV database!';
-  } else {
-    box.className='result ok'; box.innerHTML='Berhasil masuk';
-  }
+  if(d.noKv){ box.className='result warn'; box.innerHTML='⚠️ Berhasil masuk — tapi server belum pakai KV database!'; }
+  else { box.className='result ok'; box.innerHTML='Berhasil masuk'; }
   await checkSession();
 }
 async function lwDoRegister(){
@@ -1730,9 +1668,7 @@ async function lwDoRegister(){
   setTimeout(()=>{ lwSwitch(0); $('lwUser').value = username; }, 800);
 }
 async function doAuthLogout(){
-  if(TOKEN){
-    try{ await apiCall('/?api=reseller/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN})}); }catch(e){}
-  }
+  if(TOKEN){ try{ await apiCall('/?api=reseller/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN})}); }catch(e){} }
   TOKEN=null; ME=null;
   localStorage.removeItem('nang_session');
   localStorage.removeItem('nang_last_refresh');
@@ -1753,9 +1689,7 @@ async function loadStores(){
     return;
   }
   const prev = sel.value;
-  sel.innerHTML = STORES.map((s,i)=>(
-    '<option value="'+i+'">'+esc(s.name)+' ('+s.role+') — Rp'+(s.price||0).toLocaleString('id-ID')+'</option>'
-  )).join('');
+  sel.innerHTML = STORES.map((s,i)=>'<option value="'+i+'">'+esc(s.name)+' ('+s.role+') — Rp'+(s.price||0).toLocaleString('id-ID')+'</option>').join('');
   if(prev && STORES[prev]) sel.value = prev;
   onStoreChange();
 }
@@ -1763,21 +1697,14 @@ function onStoreChange(){
   const idx = parseInt($('buyStoreSel').value);
   if(isNaN(idx) || !STORES[idx]){
     $('buyStoreInfo').innerHTML = 'Pilih penjual di atas.';
-    $('buyQrImg').style.display = 'none';
-    $('buyDanaBox').style.display = 'none';
-    $('buyQrPlaceholder').style.display = 'flex';
-    $('buyDanaDetail').style.display = 'none';
-    $('buyWaNumLink').textContent = '-';
-    $('buyWaNumLink').href = '#';
+    $('buyQrImg').style.display = 'none'; $('buyDanaBox').style.display = 'none';
+    $('buyQrPlaceholder').style.display = 'flex'; $('buyDanaDetail').style.display = 'none';
+    $('buyWaNumLink').textContent = '-'; $('buyWaNumLink').href = '#';
     return;
   }
   const s = STORES[idx];
   const price = s.price || 500;
-  $('buyStoreInfo').innerHTML =
-    'Penjual: <span class="field">'+esc(s.name)+'</span><br>'+
-    'Harga: <span class="field">'+fmtRp(price)+'</span><br>'+
-    'WA: <span class="field">+'+esc(s.wa)+'</span>'+
-    (s.dana ? '<br>DANA: <span class="field">+'+esc(s.dana)+'</span>' : '');
+  $('buyStoreInfo').innerHTML = 'Penjual: <span class="field">'+esc(s.name)+'</span><br>Harga: <span class="field">'+fmtRp(price)+'</span><br>WA: <span class="field">+'+esc(s.wa)+'</span>'+(s.dana ? '<br>DANA: <span class="field">+'+esc(s.dana)+'</span>' : '');
   $('buyPrice').textContent = fmtRp(price) + ' / Key';
   $('buyPriceTransfer').textContent = fmtRp(price);
   $('buyWaName').textContent = 'Beli Key ' + s.name;
@@ -1785,38 +1712,23 @@ function onStoreChange(){
   $('buyWaNumLink').textContent = '+' + s.wa;
   $('buyWaNumLink').href = 'https://wa.me/' + s.wa;
   updateWA();
-
-  $('buyQrImg').style.display = 'none';
-  $('buyDanaBox').style.display = 'none';
-  $('buyQrPlaceholder').style.display = 'none';
-  $('buyDanaDetail').style.display = 'none';
-
+  $('buyQrImg').style.display = 'none'; $('buyDanaBox').style.display = 'none';
+  $('buyQrPlaceholder').style.display = 'none'; $('buyDanaDetail').style.display = 'none';
   if(s.hasQr){
-    $('buyQrImg').style.display = 'block';
-    $('buyQrImg').src = "";
+    $('buyQrImg').style.display = 'block'; $('buyQrImg').src = "";
     $('buyPayHint').textContent = 'Scan QR di samping untuk bayar';
     apiCall('/?api=stores/pay&username='+encodeURIComponent(s.username)+'&token='+encodeURIComponent(TOKEN))
       .then(r => {
-        if(r.ok && r.qr) {
-          $('buyQrImg').src = r.qr;
-        } else if(s.dana) {
-          $('buyQrImg').style.display = 'none';
-          _showDana(s);
-        } else {
-          $('buyQrImg').style.display = 'none';
-          $('buyQrPlaceholder').style.display = 'flex';
-        }
+        if(r.ok && r.qr) $('buyQrImg').src = r.qr;
+        else if(s.dana){ $('buyQrImg').style.display='none'; _showDana(s); }
+        else { $('buyQrImg').style.display='none'; $('buyQrPlaceholder').style.display='flex'; }
       })
       .catch(() => {
-        if(s.dana) { $('buyQrImg').style.display = 'none'; _showDana(s); }
-        else { $('buyQrImg').style.display = 'none'; $('buyQrPlaceholder').style.display = 'flex'; }
+        if(s.dana){ $('buyQrImg').style.display='none'; _showDana(s); }
+        else { $('buyQrImg').style.display='none'; $('buyQrPlaceholder').style.display='flex'; }
       });
-  } else if (s.dana && s.dana.length >= 8) {
-    _showDana(s);
-  } else {
-    $('buyQrPlaceholder').style.display = 'flex';
-    $('buyPayHint').textContent = 'Penjual belum pasang QR / DANA';
-  }
+  } else if (s.dana && s.dana.length >= 8) { _showDana(s); }
+  else { $('buyQrPlaceholder').style.display = 'flex'; $('buyPayHint').textContent = 'Penjual belum pasang QR / DANA'; }
 }
 function _showDana(s){
   $('buyDanaBox').style.display = 'flex';
@@ -1838,9 +1750,7 @@ function copyDana(ev){
 }
 function updateWA(){
   const idx = parseInt($('buyStoreSel').value);
-  if(isNaN(idx) || !STORES[idx]){
-    $('waBtn').href = '#'; $('waBtn').removeAttribute('target'); return;
-  }
+  if(isNaN(idx) || !STORES[idx]){ $('waBtn').href = '#'; $('waBtn').removeAttribute('target'); return; }
   const s = STORES[idx];
   const nama = lastLookup.name || '[isi di bawah]';
   const uid = lastLookup.uid || '[isi di bawah]';
@@ -1879,21 +1789,14 @@ async function refreshMyKeys(){
   $('mkLeft').textContent = isReseller ? Math.max(0, ME.quota - (ME.keysToday||0)) : '∞';
   $('mkTotal').textContent = (ME.keys || []).length;
   const hist = $('mkHistory');
-  if(!ME.keys || !ME.keys.length){
-    hist.innerHTML = '<div style="color:var(--muted);font-size:.8rem">Belum ada key.</div>';
-    return;
-  }
+  if(!ME.keys || !ME.keys.length){ hist.innerHTML = '<div style="color:var(--muted);font-size:.8rem">Belum ada key.</div>'; return; }
   hist.innerHTML = ME.keys.map(k => (
     '<div class="key-item"><div class="info"><div class="k">'+esc(k.key)+'</div>'+
     '<div class="meta">UID: '+esc(k.uid)+' · '+esc(k.name||'?')+' · '+new Date(k.ts).toLocaleString('id-ID')+'</div></div>'+
     '<button class="cp" onclick="copyKey(\\''+k.key+'\\',this)">COPY</button></div>'
   )).join('');
 }
-function copyKey(k, btn){
-  navigator.clipboard.writeText(k).then(()=>{
-    if(btn){ btn.textContent = 'OK'; setTimeout(()=>{ btn.textContent = 'COPY'; }, 1200); }
-  });
-}
+function copyKey(k, btn){ navigator.clipboard.writeText(k).then(()=>{ if(btn){ btn.textContent = 'OK'; setTimeout(()=>{ btn.textContent = 'COPY'; }, 1200); } }); }
 async function doMyKeysGenerate(){
   const uid = $('mkUid').value.trim();
   const box = $('mkResult');
@@ -1908,11 +1811,8 @@ async function doMyKeysGenerate(){
     box.innerHTML = '<b>'+esc(d.username||'Unknown')+'</b><span class="role-badge '+d.role+'">'+d.role+'</span><div class="key-line">'+esc(d.key)+'</div><div style="font-size:.75rem;color:var(--muted)">Berlaku: '+esc(d.expires)+' · Sisa: '+esc(d.remaining)+'</div><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';
     $('mkUid').value='';
     await refreshMyKeys();
-  } catch(e) {
-    box.className='result err'; box.innerHTML='Error: '+esc(e.message);
-  } finally {
-    btn.disabled = false; btn.textContent = 'GENERATE KEY';
-  }
+  } catch(e) { box.className='result err'; box.innerHTML='Error: '+esc(e.message); }
+  finally { btn.disabled = false; btn.textContent = 'GENERATE KEY'; }
 }
 
 async function refreshStore(){
@@ -1968,12 +1868,10 @@ function delQr(){
 function updateStorePreview(){
   const name = $('stName').value.trim() || '-';
   const price = parseInt($('stPrice').value) || 0;
-  const waRaw = $('stWa').value.trim();
-  let wa = waRaw.replace(/[^0-9]/g, '');
+  let wa = $('stWa').value.trim().replace(/[^0-9]/g, '');
   if(wa.startsWith('0')) wa = '62' + wa.slice(1);
   wa = wa || '-';
-  const danaRaw = $('stDana').value.trim();
-  let dana = danaRaw.replace(/[^0-9]/g, '');
+  let dana = $('stDana').value.trim().replace(/[^0-9]/g, '');
   if(dana.startsWith('0')) dana = '62' + dana.slice(1);
   dana = dana || '-';
   const hasQr = !!_qrData;
@@ -2160,25 +2058,14 @@ async function doConvert(){
   }catch(e){box.className='result err';box.innerHTML='Error: '+esc(e.message);}
 }
 
-// ============================================================
-// UPLOAD
-// ============================================================
+// ==== UPLOAD ====
 let _upFile=null;
 const upDrop=$('upDrop');
 const upFileInput=$('upFileInput');
 const upBigResult=$('upBigResult');
 
-const _LS_BASE = {
-  user: 'nang_up_username',
-  key:  'nang_up_apikey',
-  name: 'nang_up_name',
-  desc: 'nang_up_desc',
-  type: 'nang_up_type',
-};
-function _lsKey(k){
-  const who = (ME && ME.username) ? ME.username.toLowerCase() : '_guest';
-  return k + ':' + who;
-}
+const _LS_BASE = { user: 'nang_up_username', key: 'nang_up_apikey', name: 'nang_up_name', desc: 'nang_up_desc', type: 'nang_up_type' };
+function _lsKey(k){ const who = (ME && ME.username) ? ME.username.toLowerCase() : '_guest'; return k + ':' + who; }
 function _upSaveFields(){
   try{
     localStorage.setItem(_lsKey(_LS_BASE.user), $('upUsername').value.trim());
@@ -2190,10 +2077,7 @@ function _upSaveFields(){
 }
 function _upClearFieldsUI(){
   try{
-    $('upUsername').value = '';
-    $('upApiKey').value   = '';
-    $('upName').value     = '';
-    $('upDesc').value     = '';
+    $('upUsername').value = ''; $('upApiKey').value = ''; $('upName').value = ''; $('upDesc').value = '';
     const uh = $('upUserHint'); if(uh){ uh.className='hint'; uh.textContent=''; }
     const kh = $('upKeyHint');  if(kh){ kh.className='hint'; kh.textContent=''; }
   }catch(e){}
@@ -2205,14 +2089,12 @@ function _upLoadFields(){
     const n = localStorage.getItem(_lsKey(_LS_BASE.name));
     const d = localStorage.getItem(_lsKey(_LS_BASE.desc));
     const t = localStorage.getItem(_lsKey(_LS_BASE.type));
-
     if(u) $('upUsername').value = u; else $('upUsername').value = '';
     if(k) $('upApiKey').value   = k; else $('upApiKey').value   = '';
     if(n) $('upName').value     = n; else $('upName').value     = '';
     if(d) $('upDesc').value     = d; else $('upDesc').value     = '';
     if(t === 'Audio' || t === 'Model') upSetType(t);
     else upSetType('Model');
-
     if(u){
       try { $('upUsername').dispatchEvent(new Event('input', { bubbles:true })); } catch(e){}
       try { $('upApiKey').dispatchEvent(new Event('blur', { bubbles:true })); } catch(e){}
@@ -2237,7 +2119,6 @@ function upSetType(t){
   const icon = isAudio ? '🎵' : '📦';
   upFileInput.setAttribute('accept', accept);
   upDrop.querySelector('.drop-hint').textContent = hint;
-
   if (_upFile) {
     const n = _upFile.name.toLowerCase();
     const ok = isAudio ? /\.(mp3|ogg|wav|flac)$/.test(n) : /\.(rbxm|rbxmx)$/.test(n);
@@ -2249,24 +2130,15 @@ function upSetType(t){
       upDrop.querySelector('.drop-hint').textContent = hint;
       _upHideBig();
     }
-  } else {
-    upDrop.querySelector('.drop-icon').textContent = icon;
-  }
+  } else { upDrop.querySelector('.drop-icon').textContent = icon; }
 }
 
 function _upHandleFile(f){
   const n=f.name.toLowerCase();
   const isAudio = _upAssetType === 'Audio';
   const valid = isAudio ? /\.(mp3|ogg|wav|flac)$/.test(n) : /\.(rbxm|rbxmx)$/.test(n);
-  if(!valid){
-    return _upBigShowFail(
-      isAudio ? 'File harus .mp3 / .ogg / .wav / .flac' : 'File harus .rbxm atau .rbxmx',
-      'Ekstensi file lu: .' + f.name.split('.').pop()
-    );
-  }
-  if(f.size>15*1024*1024){
-    return _upBigShowFail('File > 15 MB', 'Ukuran: ' + (f.size/1024/1024).toFixed(2) + ' MB. Split dulu.');
-  }
+  if(!valid){ return _upBigShowFail(isAudio ? 'File harus .mp3 / .ogg / .wav / .flac' : 'File harus .rbxm atau .rbxmx', 'Ekstensi file lu: .' + f.name.split('.').pop()); }
+  if(f.size>15*1024*1024){ return _upBigShowFail('File > 15 MB', 'Ukuran: ' + (f.size/1024/1024).toFixed(2) + ' MB. Split dulu.'); }
   _upFile=f;
   upDrop.classList.add('done');
   upDrop.querySelector('.drop-icon').textContent='✓';
@@ -2278,26 +2150,20 @@ function _upHideBig(){ upBigResult.className='result-big'; upBigResult.innerHTML
 function _upBigShowFail(msg, hint){
   $('upProgress').style.display='none';
   upBigResult.className='result-big fail show';
-  upBigResult.innerHTML =
-    '<div class="big-title"><span class="ico">❌</span>GAGAL UPLOAD</div>'+
-    '<div class="err-msg">'+esc(msg)+'</div>'+
-    (hint ? '<div class="err-hint">💡 '+esc(hint)+'</div>' : '');
+  upBigResult.innerHTML = '<div class="big-title"><span class="ico">❌</span>GAGAL UPLOAD</div><div class="err-msg">'+esc(msg)+'</div>'+(hint ? '<div style="font-size:.78rem;color:rgba(255,255,255,.6);margin-top:12px">💡 '+esc(hint)+'</div>' : '');
   try { window.scrollTo({top: upBigResult.offsetTop - 100, behavior:'smooth'}); } catch(e){}
 }
 function _upBigShowSuccess(assetId, assetName, assetType){
   $('upProgress').style.display='none';
   const ico = assetType === 'Audio' ? '🎵' : '📦';
   upBigResult.className='result-big success show';
-  upBigResult.innerHTML =
-    '<div class="big-title"><span class="ico">✅</span>UPLOAD BERHASIL!</div>'+
+  upBigResult.innerHTML = '<div class="big-title"><span class="ico">✅</span>UPLOAD BERHASIL!</div>'+
     '<div style="font-size:.88rem;margin-bottom:6px">'+ico+' <b>'+esc(assetName||'Asset')+'</b> sudah masuk ke Roblox:</div>'+
     '<div class="asset-id">Asset ID: '+esc(assetId)+'</div>'+
     '<a class="link-btn" href="https://www.roblox.com/library/'+encodeURIComponent(assetId)+'" target="_blank">🌐 Buka di Roblox</a>'+
     '<button class="cp-btn" onclick="navigator.clipboard.writeText(\\''+assetId+'\\');this.textContent=\\'✓ COPIED\\';setTimeout(()=>this.textContent=\\'📋 COPY ASSET ID\\',1500)">📋 COPY ASSET ID</button>'+
     '<div style="font-size:.74rem;margin-top:12px;color:rgba(255,255,255,.6);line-height:1.7">'+
-      (assetType === 'Audio'
-        ? 'Audio perlu <b>moderation Roblox</b> dulu — bisa 5-30 menit sebelum approved.'
-        : 'Asset perlu <b>beberapa menit</b> buat muncul di Roblox Studio. Cek di <b>Toolbox → Inventory → Models</b>.')+
+    (assetType === 'Audio' ? 'Audio perlu <b>moderation Roblox</b> dulu — bisa 5-30 menit sebelum approved.' : 'Asset perlu <b>beberapa menit</b> buat muncul di Roblox Studio. Cek di <b>Toolbox → Inventory → Models</b>.')+
     '</div>';
   try { window.scrollTo({top: upBigResult.offsetTop - 100, behavior:'smooth'}); } catch(e){}
 }
@@ -2317,13 +2183,11 @@ async function doUploadRbxm(){
   const apiKey=$('upApiKey').value.trim();
   const name=$('upName').value.trim();
   const desc=$('upDesc').value.trim();
-
   if(!username) return _upBigShowFail('Username / User ID Roblox kosong', 'Isi kolom "Akun Roblox" dulu.');
   if(!apiKey) return _upBigShowFail('API Key Roblox kosong', 'Bikin key di create.roblox.com → Credentials.');
   if(!_upFile) return _upBigShowFail('Belum ada file dipilih', 'Klik/drop file dulu.');
 
   _upSaveFields();
-
   const btn=$('upBtn');
   btn.disabled=true; btn.textContent='⏳ PROSES...';
   _upHideBig();
@@ -2331,33 +2195,17 @@ async function doUploadRbxm(){
   _upStep(1,'active'); _upStep(2,''); _upStep(3,''); _upStep(4,'');
 
   try{
-    const lk=await apiCall('/?api=lookup-user',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({query:username})
-    });
-    if(!lk.ok){
-      _upStep(1,'err');
-      throw new Error('Gagal cari akun Roblox: '+(lk.error||'tidak ditemukan'));
-    }
+    const lk=await apiCall('/?api=lookup-user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:username})});
+    if(!lk.ok){ _upStep(1,'err'); throw new Error('Gagal cari akun Roblox: '+(lk.error||'tidak ditemukan')); }
     _upStep(1,'done');
-
     _upStep(2,'active');
-    const vk=await apiCall('/?api=verify-apikey',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({apiKey})
-    });
-    if(!vk.ok){
-      _upStep(2,'err');
-      throw new Error('API Key bermasalah: '+(vk.error||'tidak valid'));
-    }
+    const vk=await apiCall('/?api=verify-apikey',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apiKey})});
+    if(!vk.ok){ _upStep(2,'err'); throw new Error('API Key bermasalah: '+(vk.error||'tidak valid')); }
     _upStep(2,'done');
-
     _upStep(3,'active');
     const CHUNK_SIZE = 500 * 1024;
     const totalChunks = Math.max(1, Math.ceil(_upFile.size / CHUNK_SIZE));
-
     let operationId = null;
-
     if (totalChunks <= 1) {
       _upShowStep3('Mengirim file ('+(_upFile.size/1024).toFixed(1)+' KB)...');
       const r = await fetch('/?api=upload-rbxm-raw', {
@@ -2377,67 +2225,28 @@ async function doUploadRbxm(){
       let up;
       try { up = JSON.parse(upText); }
       catch(e){ _upStep(3,'err'); throw new Error('Server tidak balikin JSON: ' + upText.slice(0,200)); }
-      if(!up.ok){
-        _upStep(3,'err');
-        let em = up.error || 'Upload gagal';
-        if(up.debug) em += ' · ['+up.debug.size+' bytes · userId '+up.debug.userId+' · type '+up.debug.assetType+']';
-        throw new Error(em);
-      }
+      if(!up.ok){ _upStep(3,'err'); let em = up.error || 'Upload gagal'; if(up.debug) em += ' · ['+up.debug.size+' bytes]'; throw new Error(em); }
       operationId = up.operationId;
-
     } else {
       const sid = _randHex(16);
       const displayName = (name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac)$/i,'')).slice(0,50);
-
       for (let i = 0; i < totalChunks; i++) {
         const start = i * CHUNK_SIZE;
         const end = Math.min(start + CHUNK_SIZE, _upFile.size);
         const chunk = _upFile.slice(start, end);
         const pct = Math.round((end / _upFile.size) * 100);
-
-        _upShowStep3('Kirim bagian '+(i+1)+'/'+totalChunks+' ('+pct+'%) · '+((end-start)/1024).toFixed(0)+' KB...');
-
-        const url = '/?api=upload-chunk'
-          + '&sid=' + encodeURIComponent(sid)
-          + '&idx=' + i
-          + '&total=' + totalChunks
-          + '&fn=' + encodeURIComponent(_upFile.name)
-          + '&at=' + encodeURIComponent(_upAssetType);
-
-        const r = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: chunk
-        });
+        _upShowStep3('Kirim bagian '+(i+1)+'/'+totalChunks+' ('+pct+'%)...');
+        const url = '/?api=upload-chunk&sid=' + encodeURIComponent(sid) + '&idx=' + i + '&total=' + totalChunks + '&fn=' + encodeURIComponent(_upFile.name) + '&at=' + encodeURIComponent(_upAssetType);
+        const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: chunk });
         const d = await r.json();
-        if (!d.ok) {
-          _upStep(3,'err');
-          throw new Error('Gagal kirim bagian '+(i+1)+'/'+totalChunks+': '+(d.error||'unknown'));
-        }
+        if (!d.ok) { _upStep(3,'err'); throw new Error('Gagal kirim bagian '+(i+1)+': '+(d.error||'unknown')); }
       }
-
       _upShowStep3('Gabung & upload ke Roblox...');
-      const commit = await apiCall('/?api=upload-commit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sid, apiKey,
-          userId: lk.userId,
-          displayName,
-          description: desc || 'Upload via NANG web'
-        })
-      });
-      if (!commit.ok) {
-        _upStep(3,'err');
-        let em = commit.error || 'Commit gagal';
-        if (commit.debug) em += ' · ['+commit.debug.size+' bytes · userId '+commit.debug.userId+' · type '+commit.debug.assetType+']';
-        throw new Error(em);
-      }
+      const commit = await apiCall('/?api=upload-commit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sid, apiKey, userId: lk.userId, displayName, description: desc || 'Upload via NANG web' }) });
+      if (!commit.ok) { _upStep(3,'err'); throw new Error(commit.error || 'Commit gagal'); }
       operationId = commit.operationId;
     }
-
     _upStep(3,'done');
-
     _upStep(4,'active');
     let assetId=null, lastErr=null;
     for(let i=0;i<80;i++){
@@ -2445,41 +2254,28 @@ async function doUploadRbxm(){
       const st=await apiCall('/?api=upload-status&id='+encodeURIComponent(operationId)+'&k='+encodeURIComponent(apiKey));
       if(!st.ok){ lastErr = st.error; continue; }
       if(st.done){
-        if(st.error){
-          _upStep(4,'err');
-          throw new Error('Roblox tolak asset: ' + st.error);
-        }
+        if(st.error){ _upStep(4,'err'); throw new Error('Roblox tolak asset: ' + st.error); }
         assetId = st.assetId;
         break;
       }
     }
-    if(!assetId){
-      _upStep(4,'err');
-      throw new Error(lastErr || 'Timeout setelah 2 menit. Cek dashboard Roblox.');
-    }
+    if(!assetId){ _upStep(4,'err'); throw new Error(lastErr || 'Timeout setelah 2 menit. Cek dashboard Roblox.'); }
     _upStep(4,'done');
-
     _upBigShowSuccess(assetId, name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac)$/i,''), _upAssetType);
   }
-  catch(e){
-    _upBigShowFail(e.message || 'Error tidak diketahui');
-  }
-  finally{
-    btn.disabled=false; btn.textContent='UPLOAD KE ROBLOX';
-  }
+  catch(e){ _upBigShowFail(e.message || 'Error tidak diketahui'); }
+  finally{ btn.disabled=false; btn.textContent='UPLOAD KE ROBLOX'; }
 }
 
-// ============================================================
-// FREE MODELS
-// ============================================================
+// ==== FREE MODELS ====
 let _fmFile = null;
 
 function fmOnFile(e){
   const f = e.target.files[0];
   if(!f) return;
-  if(f.size > 2 * 1024 * 1024){
+  if(f.size > MAX_FREE_MB * 1024 * 1024){
     $('fmFileHint').className = 'hint err';
-    $('fmFileHint').textContent = '✗ File > 2 MB (' + (f.size/1024/1024).toFixed(2) + ' MB)';
+    $('fmFileHint').textContent = '✗ File > ' + MAX_FREE_MB + ' MB (' + (f.size/1024/1024).toFixed(2) + ' MB)';
     _fmFile = null;
     return;
   }
@@ -2489,6 +2285,15 @@ function fmOnFile(e){
   e.target.value = '';
 }
 
+function _fmProgress(pct){
+  const wrap = $('fmProgressWrap');
+  const fill = $('fmProgressFill');
+  if(!wrap || !fill) return;
+  if(pct <= 0){ wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+  fill.style.width = Math.min(100, pct) + '%';
+}
+
 async function fmUpload(){
   const box = $('fmResult');
   const name = $('fmName').value.trim();
@@ -2496,26 +2301,54 @@ async function fmUpload(){
   if(!name){ box.className='result err'; box.innerHTML='Isi nama model'; return; }
   if(!_fmFile){ box.className='result err'; box.innerHTML='Pilih file dulu'; return; }
   const ext = _fmFile.name.toLowerCase().split('.').pop();
+  if (_fmFile.size > MAX_FREE_MB * 1024 * 1024) { box.className='result err'; box.innerHTML='File > ' + MAX_FREE_MB + ' MB'; return; }
+
+  const btn = $('fmUploadBtn');
+  btn.disabled = true; btn.textContent = '⏳ PROSES...';
   box.className='result info'; box.innerHTML='<span class="spinner"></span>Upload...';
+  _fmProgress(1);
+
   try {
-    const buf = await _fmFile.arrayBuffer();
-    const bytes = new Uint8Array(buf);
-    let b64 = '';
-    const chunkSz = 0x8000;
-    for (let i = 0; i < bytes.length; i += chunkSz) {
-      b64 += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSz));
+    if (_fmFile.size < 2.5 * 1024 * 1024) {
+      const buf = await _fmFile.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let b64 = '';
+      const chunkSz = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSz) b64 += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSz));
+      b64 = btoa(b64);
+      _fmProgress(50);
+      const d = await apiCall('/?api=free/upload', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ token:TOKEN, name, desc, ext, file:b64 }) });
+      if(d.error){ box.className='result err'; box.innerHTML=esc(d.error); return; }
+    } else {
+      const sid = _randHex(16);
+      const CHUNK_SIZE = 1 * 1024 * 1024;
+      const total = Math.ceil(_fmFile.size / CHUNK_SIZE);
+      for (let i = 0; i < total; i++) {
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, _fmFile.size);
+        const chunk = _fmFile.slice(start, end);
+        const pct = Math.round((end / _fmFile.size) * 80);
+        box.className='result info';
+        box.innerHTML='<span class="spinner"></span>Upload '+ (i+1) +'/'+ total +' ('+ pct +'%)...';
+        _fmProgress(pct);
+        const url = '/?api=free/upload-chunk&sid=' + encodeURIComponent(sid) + '&idx=' + i + '&total=' + total + '&name=' + encodeURIComponent(name) + '&desc=' + encodeURIComponent(desc) + '&ext=' + encodeURIComponent(ext) + '&token=' + encodeURIComponent(TOKEN);
+        const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: chunk });
+        const d = await r.json();
+        if (!d.ok) { box.className='result err'; box.innerHTML='Gagal bagian '+(i+1)+': '+esc(d.error||'unknown'); _fmProgress(0); return; }
+      }
+      box.className='result info'; box.innerHTML='<span class="spinner"></span>Gabung...';
+      _fmProgress(90);
+      const commit = await apiCall('/?api=free/upload-commit', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ token:TOKEN, sid }) });
+      if(commit.error){ box.className='result err'; box.innerHTML=esc(commit.error); _fmProgress(0); return; }
     }
-    b64 = btoa(b64);
-    const d = await apiCall('/?api=free/upload', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ token:TOKEN, name, desc, ext, file:b64 })
-    });
-    if(d.error){ box.className='result err'; box.innerHTML=esc(d.error); return; }
+    _fmProgress(100);
     box.className='result ok'; box.innerHTML='✓ Upload berhasil!';
     $('fmName').value=''; $('fmDesc').value=''; _fmFile=null;
     $('fmFileHint').className='hint'; $('fmFileHint').textContent='';
+    setTimeout(()=>_fmProgress(0), 800);
     loadFreeModels();
-  } catch(e) { box.className='result err'; box.innerHTML='Error: '+esc(e.message); }
+  } catch(e) { box.className='result err'; box.innerHTML='Error: '+esc(e.message); _fmProgress(0); }
+  finally { btn.disabled = false; btn.textContent = '⬆ UPLOAD FREE MODEL'; }
 }
 
 async function loadFreeModels(){
@@ -2525,25 +2358,19 @@ async function loadFreeModels(){
   try{
     const d = await apiCall('/?api=free/list&token='+encodeURIComponent(TOKEN));
     if(!d.ok){ box.innerHTML='<div style="color:var(--red);font-size:.8rem">'+esc(d.error||'Gagal load')+'</div>'; return; }
-    if(!d.items || !d.items.length){
-      box.innerHTML='<div style="color:var(--muted);font-size:.8rem">Belum ada model. Jadi yang pertama! 🚀</div>';
-      return;
-    }
+    if(!d.items || !d.items.length){ box.innerHTML='<div style="color:var(--muted);font-size:.8rem">Belum ada model. Jadi yang pertama! 🚀</div>'; return; }
     const canDel = ME && (ME.role==='owner'||ME.role==='admin');
     box.innerHTML = d.items.map(m => {
       const canDelThis = canDel || (ME && ME.username === m.author);
       const sizeKb = (m.size/1024).toFixed(1);
       const safeName = esc(m.name).replace(/'/g, '');
-      return '<div class="key-item" style="align-items:flex-start">'+
-        '<div class="info">'+
-          '<div class="k" style="color:var(--cyan)">'+esc(m.name)+' <span style="color:var(--muted);font-size:.7rem">.'+esc(m.ext)+'</span></div>'+
-          '<div class="meta">'+(m.desc ? esc(m.desc)+' · ' : '')+'by <b>'+esc(m.author)+'</b> · '+sizeKb+' KB · ⬇ '+(m.downloads||0)+'</div>'+
-        '</div>'+
+      return '<div class="key-item" style="align-items:flex-start"><div class="info">'+
+        '<div class="k" style="color:var(--cyan)">'+esc(m.name)+' <span style="color:var(--muted);font-size:.7rem">.'+esc(m.ext)+'</span></div>'+
+        '<div class="meta">'+(m.desc ? esc(m.desc)+' · ' : '')+'by <b>'+esc(m.author)+'</b> · '+sizeKb+' KB · ⬇ '+(m.downloads||0)+'</div></div>'+
         '<div style="display:flex;gap:4px;flex-direction:column">'+
-          '<button class="cp" onclick="fmDownload(\\''+m.id+'\\',\\''+safeName+'\\',\\''+m.ext+'\\')">⬇ DOWNLOAD</button>'+
-          (canDelThis ? '<button class="cp" style="border-color:rgba(255,80,80,.3);color:#ff8080" onclick="fmDelete(\\''+m.id+'\\')">🗑 HAPUS</button>' : '')+
-        '</div>'+
-      '</div>';
+        '<button class="cp" onclick="fmDownload(\\''+m.id+'\\',\\''+safeName+'\\',\\''+m.ext+'\\')">⬇ DOWNLOAD</button>'+
+        (canDelThis ? '<button class="cp" style="border-color:rgba(255,80,80,.3);color:#ff8080" onclick="fmDelete(\\''+m.id+'\\')">🗑 HAPUS</button>' : '')+
+        '</div></div>';
     }).join('');
   } catch(e){ box.innerHTML='<div style="color:var(--red);font-size:.8rem">Error: '+esc(e.message)+'</div>'; }
 }
@@ -2564,22 +2391,21 @@ async function fmDownload(id, name, ext){
 
 async function fmDelete(id){
   if(!confirm('Hapus model ini?')) return;
-  const d = await apiCall('/?api=free/delete', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ token:TOKEN, id })
-  });
+  const d = await apiCall('/?api=free/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ token:TOKEN, id }) });
   if(d.error){ alert(d.error); return; }
   loadFreeModels();
 }
 
-document.addEventListener('DOMContentLoaded',()=>{
-  if(!TOKEN){
-    const ck = getCookie('nang_session');
-    if(ck){ TOKEN = ck; localStorage.setItem('nang_session', ck); }
-  }
-  checkSession();
+document.addEventListener('DOMContentLoaded', async ()=>{
+  nangLoaderSetStatus('Checking session');
+  if(!TOKEN){ const ck = getCookie('nang_session'); if(ck){ TOKEN = ck; localStorage.setItem('nang_session', ck); } }
 
+  nangLoaderSetStatus('Loading data');
+  try { await checkSession(); } catch(e){}
+
+  nangLoaderSetStatus('Preparing UI');
   _upLoadFields();
+
   ['upUsername','upApiKey','upName','upDesc'].forEach(id=>{
     $(id).addEventListener('input', _upSaveFields);
     $(id).addEventListener('change', _upSaveFields);
@@ -2600,17 +2426,9 @@ document.addEventListener('DOMContentLoaded',()=>{
     h.className='hint';
     h.innerHTML='<span class="spinner"></span>Mencari...';
     _upUserT=setTimeout(async()=>{
-      const d=await apiCall('/?api=lookup-user',{
-        method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({query:v})
-      });
-      if(d.ok){
-        h.className='hint ok';
-        h.textContent='✓ '+d.name+(d.displayName&&d.displayName!==d.name?' ('+d.displayName+')':'')+' · ID '+d.userId;
-      }else{
-        h.className='hint err';
-        h.textContent='✗ '+(d.error||'tidak ditemukan');
-      }
+      const d=await apiCall('/?api=lookup-user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:v})});
+      if(d.ok){ h.className='hint ok'; h.textContent='✓ '+d.name+(d.displayName&&d.displayName!==d.name?' ('+d.displayName+')':'')+' · ID '+d.userId; }
+      else{ h.className='hint err'; h.textContent='✗ '+(d.error||'tidak ditemukan'); }
     },500);
   });
 
@@ -2620,13 +2438,16 @@ document.addEventListener('DOMContentLoaded',()=>{
     if(!k){h.className='hint';h.textContent='';return;}
     h.className='hint';
     h.innerHTML='<span class="spinner"></span>Verifikasi API key...';
-    const d=await apiCall('/?api=verify-apikey',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({apiKey:k})
-    });
+    const d=await apiCall('/?api=verify-apikey',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apiKey:k})});
     if(d.ok){ h.className='hint ok'; h.textContent='✓ API key valid'; }
     else { h.className='hint err'; h.textContent='✗ '+(d.error||'tidak valid'); }
   });
+
+  // Sembunyikan loader setelah semua ready
+  setTimeout(nangLoaderHide, 600);
 });
+
+// Fallback: kalau DOMContentLoaded gak fire (edge case), sembunyikan setelah 3 detik
+setTimeout(()=>{ const el = $('nangLoader'); if(el && !el.classList.contains('hide')) nangLoaderHide(); }, 3000);
 </script></body></html>`;
 }
