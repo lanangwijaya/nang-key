@@ -1,4 +1,4 @@
-const BUILD = "69.8";
+const BUILD = "70.0";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -158,6 +158,15 @@ function _getClientIP(req) {
   return req.headers["x-real-ip"] || "unknown";
 }
 
+async function _saveKeyRole(uid, key, role, by) {
+  try { await storeSet("nang:key:" + uid + ":" + key, { role, by, ts: Date.now() }, 30 * 24 * 3600); }
+  catch(e){}
+}
+async function _getKeyRole(uid, key) {
+  try { return await storeGet("nang:key:" + uid + ":" + key); }
+  catch(e){ return null; }
+}
+
 async function sendWebhook(fields) {
   if (!NANG_WEBHOOK || NANG_WEBHOOK.includes("GANTI_INI")) return;
   try {
@@ -233,18 +242,24 @@ async function handle(req, res) {
     let parsed;
     try { parsed = JSON.parse(body); } catch { res.status(400).json({ valid: false, error: "bad json" }); return; }
     const valid = _verifyKey(parsed.uid, parsed.key).valid;
-    let username = null;
-    if (valid) username = await _getRobloxUser(parsed.uid);
+    let username = null, role = "member", generatedBy = null;
     if (valid) {
+      username = await _getRobloxUser(parsed.uid);
+      const kr = await _getKeyRole(parsed.uid, parsed.key);
+      if (kr) { role = kr.role || "member"; generatedBy = kr.by || null; }
       sendWebhook([
         { name: "Event", value: "Key Verified", inline: false },
         { name: "Username", value: String(username || "Unknown"), inline: true },
         { name: "User ID", value: String(parsed.uid), inline: true },
+        { name: "Role", value: role, inline: true },
         { name: "Remaining", value: _expiryStr(parsed.uid, parsed.key), inline: true },
         { name: "IP", value: _getClientIP(req), inline: true },
       ]);
     }
-    res.status(200).json({ valid, expires: valid ? _expiryStr(parsed.uid, parsed.key) : null, username });
+    res.status(200).json({
+      valid, role, generatedBy, username,
+      expires: valid ? _expiryStr(parsed.uid, parsed.key) : null
+    });
     return;
   }
 
@@ -265,9 +280,13 @@ async function handle(req, res) {
     const uid = params.get("uid");
     const key = params.get("key");
     const valid = _verifyKey(uid, key).valid;
-    let username = null;
-    if (valid) username = await _getRobloxUser(uid);
-    res.status(200).json({ valid, expires: valid ? _expiryStr(uid, key) : null, username });
+    let username = null, role = "member";
+    if (valid) {
+      username = await _getRobloxUser(uid);
+      const kr = await _getKeyRole(uid, key);
+      if (kr) role = kr.role || "member";
+    }
+    res.status(200).json({ valid, role, expires: valid ? _expiryStr(uid, key) : null, username });
     return;
   }
 
@@ -556,8 +575,9 @@ async function handleApi(req, res, path, method, params, ctx) {
     const uid = String((body && body.uid) || "").trim();
     if (!uid || !/^\d+$/.test(uid)) return res.status(200).json({ error: "User ID tidak valid" });
     const key = _makeKey(uid);
+    await _saveKeyRole(uid, key, "owner", "owner");
     const name = await _getRobloxUser(uid);
-    return res.status(200).json({ ok: true, key, expires: _expiryStr(uid, key), username: name });
+    return res.status(200).json({ ok: true, key, role: "owner", expires: _expiryStr(uid, key), username: name });
   }
 
   if ((route === "lookup-user" || route === "lookup-username") && method === "POST") {
@@ -651,6 +671,78 @@ async function handleApi(req, res, path, method, params, ctx) {
     } catch (e) {
       return res.status(200).json({ ok: false, error: String(e.message || e) });
     }
+  }
+
+  if (route === "free/list" && method === "GET") {
+    const u = await authFromToken();
+    if (!u) return res.status(200).json({ error: "not logged in" });
+    const ids = (await storeGet("nang:freelist")) || [];
+    const items = [];
+    for (const id of ids) {
+      const m = await storeGet("nang:free:" + id);
+      if (m) items.push({
+        id: m.id, name: m.name, desc: m.desc, author: m.author,
+        size: m.size, ext: m.ext, ts: m.ts, downloads: m.downloads || 0,
+      });
+    }
+    items.sort((a,b) => (b.ts||0) - (a.ts||0));
+    return res.status(200).json({ ok: true, items });
+  }
+
+  if (route === "free/upload" && method === "POST") {
+    const u = await authFromToken();
+    if (!u) return res.status(200).json({ error: "not logged in" });
+    const name = String((body && body.name) || "").trim().slice(0, 60);
+    const desc = String((body && body.desc) || "").trim().slice(0, 300);
+    const ext  = String((body && body.ext)  || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8);
+    const fileB64 = String((body && body.file) || "");
+    if (!name)    return res.status(200).json({ error: "Nama kosong" });
+    if (!fileB64) return res.status(200).json({ error: "File kosong" });
+    const allowedExt = ["rbxm","rbxmx","rbxl","rbxlx","lua","txt","zip"];
+    if (!allowedExt.includes(ext)) return res.status(200).json({ error: "Ekstensi tidak didukung (rbxm/rbxmx/rbxl/rbxlx/lua/txt/zip)" });
+    const size = Math.floor(fileB64.length * 0.75);
+    if (size > 2 * 1024 * 1024) return res.status(200).json({ error: "File > 2 MB" });
+    const id = randomHex(8);
+    const item = { id, name, desc, ext, size, author: u.username, ts: Date.now(), downloads: 0, file: fileB64 };
+    await storeSet("nang:free:" + id, item);
+    const list = (await storeGet("nang:freelist")) || [];
+    list.unshift(id);
+    if (list.length > 200) list.length = 200;
+    await storeSet("nang:freelist", list);
+    sendWebhook([
+      { name: "Event", value: "Free Model Uploaded", inline: false },
+      { name: "Name", value: name, inline: true },
+      { name: "Author", value: u.username, inline: true },
+      { name: "Size", value: (size/1024).toFixed(1) + " KB", inline: true },
+    ]);
+    return res.status(200).json({ ok: true, id });
+  }
+
+  if (route === "free/download" && method === "GET") {
+    const u = await authFromToken();
+    if (!u) return res.status(200).json({ error: "not logged in" });
+    const id = String(params.get("id") || "").trim();
+    if (!id || !/^[a-f0-9]+$/i.test(id)) return res.status(200).json({ error: "id invalid" });
+    const m = await storeGet("nang:free:" + id);
+    if (!m || !m.file) return res.status(200).json({ error: "tidak ditemukan" });
+    m.downloads = (m.downloads || 0) + 1;
+    storeSet("nang:free:" + id, m).catch(() => {});
+    return res.status(200).json({ ok: true, name: m.name, ext: m.ext, file: m.file });
+  }
+
+  if (route === "free/delete" && method === "POST") {
+    const u = await authFromToken();
+    if (!u) return res.status(200).json({ error: "not logged in" });
+    const id = String((body && body.id) || "").trim();
+    const m = await storeGet("nang:free:" + id);
+    if (!m) return res.status(200).json({ error: "tidak ditemukan" });
+    const canDel = u.role === "owner" || u.role === "admin" || m.author === u.username;
+    if (!canDel) return res.status(200).json({ error: "forbidden" });
+    await storeDel("nang:free:" + id);
+    const list = (await storeGet("nang:freelist")) || [];
+    const idx = list.indexOf(id);
+    if (idx >= 0) { list.splice(idx, 1); await storeSet("nang:freelist", list); }
+    return res.status(200).json({ ok: true });
   }
 
   if (route === "reseller/register" && method === "POST") {
@@ -766,6 +858,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     const uid = String((body && body.uid) || "").trim();
     if (!uid || !/^\d+$/.test(uid)) return res.status(200).json({ error: "Roblox User ID tidak valid" });
     const key = _makeKey(uid);
+    await _saveKeyRole(uid, key, u.role, u.username);
     const name = await _getRobloxUser(uid);
     u.keysToday = (u.keysToday || 0) + 1;
     u.keys = u.keys || [];
@@ -773,7 +866,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     if (u.keys.length > 100) u.keys = u.keys.slice(0, 100);
     await saveUser(u);
     return res.status(200).json({
-      ok: true, key,
+      ok: true, key, role: u.role,
       expires: _expiryStr(uid, key),
       username: name,
       remaining: u.role === "reseller" ? (u.quota - u.keysToday) : "unlimited",
@@ -1196,6 +1289,11 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 .hint{font-size:.7rem;margin:-6px 0 10px;padding-left:4px;color:var(--muted);min-height:14px;line-height:1.4}
 .hint.ok{color:var(--green)}
 .hint.err{color:var(--red)}
+.role-badge{display:inline-block;font-size:.55rem;font-weight:800;text-transform:uppercase;letter-spacing:.6px;padding:2px 7px;border-radius:5px;margin-left:6px}
+.role-badge.owner{background:rgba(224,60,138,.2);color:var(--pink);border:1px solid rgba(224,60,138,.4)}
+.role-badge.admin{background:rgba(155,77,224,.2);color:#c899ff;border:1px solid rgba(155,77,224,.4)}
+.role-badge.reseller{background:rgba(0,212,255,.15);color:var(--cyan);border:1px solid rgba(0,212,255,.35)}
+.role-badge.member{background:rgba(150,150,170,.12);color:var(--muted);border:1px solid rgba(150,150,170,.3)}
 </style></head><body>
 <div class="orb3"></div>
 
@@ -1240,9 +1338,10 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 <div class="nav">
   <button class="nav-btn active" onclick="switchTab(0)">Beli Key</button>
   <button class="nav-btn" onclick="switchTab(1)">Convert</button>
-  <button class="nav-btn" id="navUpload" onclick="switchTab(2)">Upload</button>
+  <button class="nav-btn" onclick="switchTab(2)">Upload</button>
   <button class="nav-btn hidden" id="navMyKeys" onclick="switchTab(3)">My Keys</button>
   <button class="nav-btn hidden" id="navStore" onclick="switchTab(4)">Toko</button>
+  <button class="nav-btn" onclick="switchTab(5)">Free</button>
 </div>
 
 <div class="panel active" id="tab0">
@@ -1432,6 +1531,26 @@ Status: <span class="field">Nonaktif</span>
 </div>
 </div>
 </div>
+
+<div class="panel" id="tab5">
+<div class="card">
+<div class="card-title">📥 Upload Free Model</div>
+<div class="fmt-box">Share model/script lu ke semua user. Support: <span class="field">.rbxm .rbxmx .rbxl .rbxlx .lua .txt .zip</span> — max 2 MB.</div>
+<input type="text" class="inp" id="fmName" placeholder="Nama model (contoh: Ultimate ESP)">
+<input type="text" class="inp" id="fmDesc" placeholder="Deskripsi singkat (opsional)">
+<input type="file" id="fmFile" accept=".rbxm,.rbxmx,.rbxl,.rbxlx,.lua,.txt,.zip" style="display:none" onchange="fmOnFile(event)">
+<button class="btn-cyan" onclick="document.getElementById('fmFile').click()">📎 Pilih File</button>
+<div class="hint" id="fmFileHint"></div>
+<button class="btn-main" id="fmUploadBtn" onclick="fmUpload()">⬆ UPLOAD FREE MODEL</button>
+<div class="result" id="fmResult"></div>
+</div>
+
+<div class="card">
+<div class="card-title">📦 Daftar Free Model</div>
+<button class="btn-cyan" style="margin-bottom:10px" onclick="loadFreeModels()">🔄 Refresh</button>
+<div id="fmList"><div style="color:var(--muted);font-size:.8rem">Loading...</div></div>
+</div>
+</div>
 </div>
 
 <footer>NANG RBXM Tool &copy; 2025 &middot; v${BUILD}</footer>
@@ -1503,6 +1622,7 @@ function switchTab(i){
   document.querySelectorAll('.panel').forEach((p,j)=>p.classList.toggle('active',i===j));
   if(i===3) refreshMyKeys();
   if(i===4) refreshStore();
+  if(i===5) loadFreeModels();
   if(i===0) loadStores();
 }
 
@@ -1533,10 +1653,6 @@ async function checkSession(){
         } catch(e) {}
       }
     } else {
-      try {
-        const d2 = await apiCall('/?api=reseller/me&token='+encodeURIComponent(TOKEN));
-        if(d2.ok){ ME = d2.user; updateAuthUI(); if(ME && ME.role !== 'banned') loadStores(); return; }
-      } catch(e2) {}
       TOKEN=null; ME=null;
       localStorage.removeItem('nang_session');
       localStorage.removeItem('nang_last_refresh');
@@ -1566,7 +1682,6 @@ function updateAuthUI(){
   $('navMyKeys').classList.toggle('hidden', !canMyKeys);
   const canStore = logged && (ME.role==='owner'||ME.role==='admin'||ME.role==='reseller');
   $('navStore').classList.toggle('hidden', !canStore);
-  // reload field upload sesuai akun yang aktif
   try { _upLoadFields(); } catch(e) {}
 }
 
@@ -1746,12 +1861,8 @@ async function doLookup(){
     if(d.name){
       lastLookup={uid:d.uid,name:d.name};
       updateWA();
-      box.style.display='none';
-      const ex=$('userCard');if(ex)ex.remove();
-      const card=document.createElement('div');
-      card.id='userCard';card.className='user-card';
-      card.innerHTML='<div class="user-avatar">'+esc(d.name.charAt(0).toUpperCase())+'</div><div class="user-info"><div class="user-name">'+esc(d.name)+'</div><div class="user-id">ID: '+esc(d.uid)+'</div></div>';
-      box.parentNode.insertBefore(card,box.nextSibling);
+      box.className='result ok';
+      box.innerHTML='Username: <b>'+esc(d.name)+'</b> · ID: '+esc(d.uid);
     } else { box.className='result err';box.innerHTML='User ID tidak ditemukan'; }
   }catch(e){box.className='result err';box.innerHTML='Error: '+esc(e.message);}
 }
@@ -1794,7 +1905,7 @@ async function doMyKeysGenerate(){
     const d = await apiCall('/?api=reseller/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN, uid})});
     if(d.error){ box.className='result err'; box.innerHTML=esc(d.error); return; }
     box.className='result ok';
-    box.innerHTML = '<b>'+esc(d.username||'Unknown')+'</b><div class="key-line">'+esc(d.key)+'</div><div style="font-size:.75rem;color:var(--muted)">Berlaku: '+esc(d.expires)+' · Sisa: '+esc(d.remaining)+'</div><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';
+    box.innerHTML = '<b>'+esc(d.username||'Unknown')+'</b><span class="role-badge '+d.role+'">'+d.role+'</span><div class="key-line">'+esc(d.key)+'</div><div style="font-size:.75rem;color:var(--muted)">Berlaku: '+esc(d.expires)+' · Sisa: '+esc(d.remaining)+'</div><button class="btn-green" onclick="navigator.clipboard.writeText(\\''+d.key+'\\');this.textContent=\\'COPIED\\';setTimeout(()=>this.textContent=\\'COPY KEY\\',1500)">COPY KEY</button>';
     $('mkUid').value='';
     await refreshMyKeys();
   } catch(e) {
@@ -2023,7 +2134,7 @@ async function doOwnerGen(){
     const d = await r.json();
     if(d.error){ box.className='result err'; box.innerHTML=esc(d.error); return; }
     box.className='result ok';
-    box.innerHTML = '<b>'+esc(d.username||'Unknown')+'</b><div class="key-line">'+esc(d.key)+'</div><div style="font-size:.75rem;color:var(--muted)">Expires: '+esc(d.expires)+'</div>';
+    box.innerHTML = '<b>'+esc(d.username||'Unknown')+'</b><span class="role-badge owner">owner</span><div class="key-line">'+esc(d.key)+'</div><div style="font-size:.75rem;color:var(--muted)">Expires: '+esc(d.expires)+'</div>';
   } catch(e) { box.className='result err'; box.innerHTML='Error: '+esc(e.message); }
 }
 
@@ -2050,14 +2161,13 @@ async function doConvert(){
 }
 
 // ============================================================
-// UPLOAD — Model + Audio + Chunked (max 15 MB)
+// UPLOAD
 // ============================================================
 let _upFile=null;
 const upDrop=$('upDrop');
 const upFileInput=$('upFileInput');
 const upBigResult=$('upBigResult');
 
-// === Persist per-akun (username & API key & nama/desc/tipe) ===
 const _LS_BASE = {
   user: 'nang_up_username',
   key:  'nang_up_apikey',
@@ -2103,7 +2213,6 @@ function _upLoadFields(){
     if(t === 'Audio' || t === 'Model') upSetType(t);
     else upSetType('Model');
 
-    // trigger auto-lookup hint kalau ada username tersimpan
     if(u){
       try { $('upUsername').dispatchEvent(new Event('input', { bubbles:true })); } catch(e){}
       try { $('upApiKey').dispatchEvent(new Event('blur', { bubbles:true })); } catch(e){}
@@ -2360,6 +2469,109 @@ async function doUploadRbxm(){
   }
 }
 
+// ============================================================
+// FREE MODELS
+// ============================================================
+let _fmFile = null;
+
+function fmOnFile(e){
+  const f = e.target.files[0];
+  if(!f) return;
+  if(f.size > 2 * 1024 * 1024){
+    $('fmFileHint').className = 'hint err';
+    $('fmFileHint').textContent = '✗ File > 2 MB (' + (f.size/1024/1024).toFixed(2) + ' MB)';
+    _fmFile = null;
+    return;
+  }
+  _fmFile = f;
+  $('fmFileHint').className = 'hint ok';
+  $('fmFileHint').textContent = '✓ ' + f.name + ' (' + (f.size/1024).toFixed(1) + ' KB)';
+  e.target.value = '';
+}
+
+async function fmUpload(){
+  const box = $('fmResult');
+  const name = $('fmName').value.trim();
+  const desc = $('fmDesc').value.trim();
+  if(!name){ box.className='result err'; box.innerHTML='Isi nama model'; return; }
+  if(!_fmFile){ box.className='result err'; box.innerHTML='Pilih file dulu'; return; }
+  const ext = _fmFile.name.toLowerCase().split('.').pop();
+  box.className='result info'; box.innerHTML='<span class="spinner"></span>Upload...';
+  try {
+    const buf = await _fmFile.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let b64 = '';
+    const chunkSz = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSz) {
+      b64 += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSz));
+    }
+    b64 = btoa(b64);
+    const d = await apiCall('/?api=free/upload', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ token:TOKEN, name, desc, ext, file:b64 })
+    });
+    if(d.error){ box.className='result err'; box.innerHTML=esc(d.error); return; }
+    box.className='result ok'; box.innerHTML='✓ Upload berhasil!';
+    $('fmName').value=''; $('fmDesc').value=''; _fmFile=null;
+    $('fmFileHint').className='hint'; $('fmFileHint').textContent='';
+    loadFreeModels();
+  } catch(e) { box.className='result err'; box.innerHTML='Error: '+esc(e.message); }
+}
+
+async function loadFreeModels(){
+  const box = $('fmList');
+  if(!TOKEN){ box.innerHTML='<div style="color:var(--muted);font-size:.8rem">Login dulu</div>'; return; }
+  box.innerHTML='<div style="color:var(--muted);font-size:.8rem"><span class="spinner"></span>Loading...</div>';
+  try{
+    const d = await apiCall('/?api=free/list&token='+encodeURIComponent(TOKEN));
+    if(!d.ok){ box.innerHTML='<div style="color:var(--red);font-size:.8rem">'+esc(d.error||'Gagal load')+'</div>'; return; }
+    if(!d.items || !d.items.length){
+      box.innerHTML='<div style="color:var(--muted);font-size:.8rem">Belum ada model. Jadi yang pertama! 🚀</div>';
+      return;
+    }
+    const canDel = ME && (ME.role==='owner'||ME.role==='admin');
+    box.innerHTML = d.items.map(m => {
+      const canDelThis = canDel || (ME && ME.username === m.author);
+      const sizeKb = (m.size/1024).toFixed(1);
+      const safeName = esc(m.name).replace(/'/g, '');
+      return '<div class="key-item" style="align-items:flex-start">'+
+        '<div class="info">'+
+          '<div class="k" style="color:var(--cyan)">'+esc(m.name)+' <span style="color:var(--muted);font-size:.7rem">.'+esc(m.ext)+'</span></div>'+
+          '<div class="meta">'+(m.desc ? esc(m.desc)+' · ' : '')+'by <b>'+esc(m.author)+'</b> · '+sizeKb+' KB · ⬇ '+(m.downloads||0)+'</div>'+
+        '</div>'+
+        '<div style="display:flex;gap:4px;flex-direction:column">'+
+          '<button class="cp" onclick="fmDownload(\\''+m.id+'\\',\\''+safeName+'\\',\\''+m.ext+'\\')">⬇ DOWNLOAD</button>'+
+          (canDelThis ? '<button class="cp" style="border-color:rgba(255,80,80,.3);color:#ff8080" onclick="fmDelete(\\''+m.id+'\\')">🗑 HAPUS</button>' : '')+
+        '</div>'+
+      '</div>';
+    }).join('');
+  } catch(e){ box.innerHTML='<div style="color:var(--red);font-size:.8rem">Error: '+esc(e.message)+'</div>'; }
+}
+
+async function fmDownload(id, name, ext){
+  const d = await apiCall('/?api=free/download&id='+encodeURIComponent(id)+'&token='+encodeURIComponent(TOKEN));
+  if(d.error){ alert(d.error); return; }
+  const bin = atob(d.file);
+  const arr = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) arr[i] = bin.charCodeAt(i);
+  const blob = new Blob([arr], {type:'application/octet-stream'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name + '.' + ext; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  loadFreeModels();
+}
+
+async function fmDelete(id){
+  if(!confirm('Hapus model ini?')) return;
+  const d = await apiCall('/?api=free/delete', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ token:TOKEN, id })
+  });
+  if(d.error){ alert(d.error); return; }
+  loadFreeModels();
+}
+
 document.addEventListener('DOMContentLoaded',()=>{
   if(!TOKEN){
     const ck = getCookie('nang_session');
@@ -2367,7 +2579,6 @@ document.addEventListener('DOMContentLoaded',()=>{
   }
   checkSession();
 
-  // === Persist field upload (per-akun) ===
   _upLoadFields();
   ['upUsername','upApiKey','upName','upDesc'].forEach(id=>{
     $(id).addEventListener('input', _upSaveFields);
