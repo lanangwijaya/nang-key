@@ -1,4 +1,4 @@
-const BUILD = "69.4";
+const BUILD = "69.5";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -200,7 +200,7 @@ async function handle(req, res) {
 
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-nang-apikey, x-nang-userid, x-nang-filename, x-nang-display, x-nang-desc");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-nang-apikey, x-nang-userid, x-nang-filename, x-nang-display, x-nang-desc, x-nang-assettype");
   if (method === "OPTIONS") { res.status(200).end(); return; }
 
   if (params.has("version")) { res.status(200).json({ version: BUILD, ts: Date.now(), hasKv: _HAS_KV }); return; }
@@ -302,9 +302,6 @@ async function handle(req, res) {
   res.status(200).send(mainPage(WA_NUMBER));
 }
 
-// ============================================================
-// Helper: flatten error object dari Roblox
-// ============================================================
 function _flatRobloxErrors(data) {
   if (!data) return "unknown";
   if (typeof data === "string") return data;
@@ -328,22 +325,25 @@ function _flatRobloxErrors(data) {
 }
 
 // ============================================================
-// RAW BINARY UPLOAD — multipart sesuai spesifikasi resmi Roblox
-//   - Part "request"     : JSON metadata
-//   - Part "fileContent" : file binary (.rbxm / .rbxmx)
-//   - MIME               : "model/x-rbxm"
+// RAW BINARY UPLOAD — support Model & Audio
+//   Model : .rbxm / .rbxmx  → MIME "model/x-rbxm"      → assetType "Model"
+//   Audio : .mp3 / .ogg / .wav / .flac → MIME sesuai    → assetType "Audio"
 // ============================================================
 async function handleRawUpload(req, res) {
   res.setHeader("Content-Type", "application/json");
 
   const apiKey = String(req.headers["x-nang-apikey"] || "").trim();
   const userId = String(req.headers["x-nang-userid"] || "").trim();
-  const fileName = String(req.headers["x-nang-filename"] || "model.rbxm").slice(0, 128);
-  const displayName = String(req.headers["x-nang-display"] || "Model").slice(0, 50);
+  const fileName = String(req.headers["x-nang-filename"] || "file.bin").slice(0, 128);
+  const displayName = String(req.headers["x-nang-display"] || "Asset").slice(0, 50);
   const description = String(req.headers["x-nang-desc"] || "").slice(0, 1000);
+  const assetType = String(req.headers["x-nang-assettype"] || "Model").trim();
 
   if (!apiKey) return res.status(200).json({ ok: false, error: "API key kosong" });
   if (!userId || !/^\d+$/.test(userId)) return res.status(200).json({ ok: false, error: "userId invalid" });
+  if (assetType !== "Model" && assetType !== "Audio") {
+    return res.status(200).json({ ok: false, error: "assetType harus Model atau Audio" });
+  }
 
   let buffer;
   try {
@@ -360,19 +360,36 @@ async function handleRawUpload(req, res) {
 
   if (!buffer.length) return res.status(200).json({ ok: false, error: "File kosong" });
 
-  const lower = fileName.toLowerCase();
-  const isXml = lower.endsWith(".rbxmx");
-  const isBin = lower.endsWith(".rbxm");
-  if (!isXml && !isBin) return res.status(200).json({ ok: false, error: "Ekstensi harus .rbxm atau .rbxmx (bukan .rbxl)" });
+  const ext = fileName.toLowerCase().split(".").pop();
+  const MODEL_EXT = ["rbxm", "rbxmx"];
+  const AUDIO_EXT = ["mp3", "ogg", "wav", "flac"];
+  const MIME_MAP = {
+    rbxm: "model/x-rbxm",
+    rbxmx: "model/x-rbxm",
+    mp3: "audio/mpeg",
+    ogg: "audio/ogg",
+    wav: "audio/wav",
+    flac: "audio/flac"
+  };
 
-  const mime = "model/x-rbxm"; // WAJIB untuk .rbxm & .rbxmx
+  const allowed = assetType === "Audio" ? AUDIO_EXT : MODEL_EXT;
+  if (!allowed.includes(ext)) {
+    return res.status(200).json({
+      ok: false,
+      error: assetType === "Audio"
+        ? "Audio harus .mp3 / .ogg / .wav / .flac (file lu: ." + ext + ")"
+        : "Model harus .rbxm / .rbxmx (file lu: ." + ext + ")"
+    });
+  }
+
+  const mime = MIME_MAP[ext] || "application/octet-stream";
 
   try {
     const form = new FormData();
 
     // Part "request" — metadata JSON
     form.append("request", JSON.stringify({
-      assetType: "Model",
+      assetType: assetType,
       displayName: displayName,
       description: description,
       creationContext: {
@@ -380,7 +397,7 @@ async function handleRawUpload(req, res) {
       }
     }));
 
-    // Part "fileContent" — file binary
+    // Part "fileContent" — binary
     const blob = new Blob([new Uint8Array(buffer)], { type: mime });
     form.append("fileContent", blob, fileName);
 
@@ -397,7 +414,7 @@ async function handleRawUpload(req, res) {
     if (!r.ok) {
       let msg;
       if (r.status === 401) msg = "API key tidak valid / expired";
-      else if (r.status === 403) msg = "Forbidden — cek: (1) API key punya permission Assets API Write? (2) userId ini pemilik API key? (3) IP restriction OFF di dashboard Roblox?";
+      else if (r.status === 403) msg = "Forbidden — cek: (1) API key punya permission Assets API Write? (2) userId ini pemilik API key? (3) IP restriction OFF di dashboard Roblox? (4) Untuk Audio: akun harus verified creator";
       else if (r.status === 429) msg = "Rate limit Roblox — tunggu ~10 detik";
       else if (r.status === 413) msg = "File terlalu besar untuk Roblox (max ~20 MB)";
       else if (r.status === 400 || r.status === 415 || r.status === 422) {
@@ -408,7 +425,7 @@ async function handleRawUpload(req, res) {
       return res.status(200).json({
         ok: false,
         error: "[" + r.status + "] " + msg,
-        debug: { fileName, size: buffer.length, userId, status: r.status }
+        debug: { fileName, size: buffer.length, userId, status: r.status, assetType }
       });
     }
 
@@ -552,17 +569,21 @@ async function handleApi(req, res, path, method, params, ctx) {
     const fileName = (body && body.fileName) || "model.rbxm";
     const displayName = (body && body.displayName) || "Model";
     const description = (body && body.description) || "";
+    const assetType = (body && body.assetType) || "Model";
     if (!apiKey || !userId || !fileBase64) return res.status(200).json({ ok: false, error: "data kurang" });
     try {
       const buffer = Buffer.from(fileBase64, "base64");
+      const ext = fileName.toLowerCase().split(".").pop();
+      const MIME_MAP = { rbxm: "model/x-rbxm", rbxmx: "model/x-rbxm", mp3: "audio/mpeg", ogg: "audio/ogg", wav: "audio/wav", flac: "audio/flac" };
+      const mime = MIME_MAP[ext] || "application/octet-stream";
       const form = new FormData();
       form.append("request", JSON.stringify({
-        assetType: "Model",
+        assetType: assetType,
         displayName: String(displayName).slice(0, 50),
         description: String(description).slice(0, 1000),
         creationContext: { creator: { userId: Number(userId) } }
       }));
-      const blob = new Blob([buffer], { type: "model/x-rbxm" });
+      const blob = new Blob([buffer], { type: mime });
       form.append("fileContent", blob, fileName);
       const r = await fetch("https://apis.roblox.com/assets/v1/assets", {
         method: "POST",
@@ -1252,11 +1273,21 @@ Nama: <span class="field">NANG_UPLOADER_KEY</span><br><br>
 <div class="card">
 <div class="card-title">📦 Format Support</div>
 <div class="fmt-box">
-Model: <span class="field">.rbxm</span> / <span class="field">.rbxmx</span> — max 20 MB<br>
+<b style="color:var(--pink)">📦 Model</b> — <span class="field">.rbxm</span> / <span class="field">.rbxmx</span> — max 20 MB<br>
+<b style="color:var(--cyan)">🎵 Audio</b> — <span class="field">.mp3 .ogg .wav .flac</span> — max 7 menit<br>
 Limit web ini: max <span class="field">4 MB</span> per upload
 </div>
 </div>
-<div class="warn-box"><b>Penting:</b> Username di bawah HARUS <b>pemilik API Key</b> yang sama. Kalau bukan → error 403.</div>
+<div class="warn-box"><b>Penting:</b> Username di bawah HARUS <b>pemilik API Key</b> yang sama. Untuk <b>Audio</b>, akun Roblox harus sudah <b>verified creator</b>.</div>
+
+<div class="card">
+<div class="card-title">Tipe Asset</div>
+<div class="modal-tabs" style="margin-bottom:0">
+  <button id="upTypeModel" class="on" onclick="upSetType('Model')">📦 Model</button>
+  <button id="upTypeAudio" onclick="upSetType('Audio')">🎵 Audio</button>
+</div>
+</div>
+
 <div class="card">
 <div class="card-title">Akun Roblox</div>
 <input type="text" class="inp" id="upUsername" placeholder="Username / User ID pemilik API key..." autocomplete="off">
@@ -1385,6 +1416,7 @@ let lastLookup={uid:null,name:null};
 let STORES = [];
 let MY_STORE = { price: 500, wa: "", name: "", active: false, qr: "" };
 let _qrData = "";
+let _upAssetType = "Model";
 
 function $(id){return document.getElementById(id);}
 function apiCall(url, opts){
@@ -1900,7 +1932,7 @@ async function doConvert(){
 }
 
 // ============================================================
-// UPLOAD — RAW BINARY + progress + hasil BESAR
+// UPLOAD — Model + Audio
 // ============================================================
 let _upFile=null;
 const upDrop=$('upDrop');
@@ -1913,13 +1945,46 @@ upDrop.addEventListener('dragleave',()=>upDrop.classList.remove('over'));
 upDrop.addEventListener('drop',e=>{e.preventDefault();upDrop.classList.remove('over');if(e.dataTransfer.files.length)_upHandleFile(e.dataTransfer.files[0]);});
 upFileInput.addEventListener('change',e=>{if(e.target.files.length)_upHandleFile(e.target.files[0]);});
 
+function upSetType(t){
+  _upAssetType = t;
+  $('upTypeModel').classList.toggle('on', t === 'Model');
+  $('upTypeAudio').classList.toggle('on', t === 'Audio');
+  const isAudio = t === 'Audio';
+  const accept = isAudio ? '.mp3,.ogg,.wav,.flac' : '.rbxm,.rbxmx';
+  const hint = isAudio ? '.mp3 / .ogg / .wav / .flac — max 4 MB' : '.rbxm / .rbxmx — max 4 MB';
+  const icon = isAudio ? '🎵' : '📦';
+  upFileInput.setAttribute('accept', accept);
+  upDrop.querySelector('.drop-hint').textContent = hint;
+
+  // Reset file kalau ekstensi gak match tipe baru
+  if (_upFile) {
+    const n = _upFile.name.toLowerCase();
+    const ok = isAudio ? /\.(mp3|ogg|wav|flac)$/.test(n) : /\.(rbxm|rbxmx)$/.test(n);
+    if (!ok) {
+      _upFile = null;
+      upDrop.classList.remove('done');
+      upDrop.querySelector('.drop-icon').textContent = icon;
+      upDrop.querySelector('.drop-text').textContent = 'Klik atau drop file';
+      upDrop.querySelector('.drop-hint').textContent = hint;
+      _upHideBig();
+    }
+  } else {
+    upDrop.querySelector('.drop-icon').textContent = icon;
+  }
+}
+
 function _upHandleFile(f){
   const n=f.name.toLowerCase();
-  if(!n.endsWith('.rbxm')&&!n.endsWith('.rbxmx')){
-    return _upBigShowFail('File harus .rbxm atau .rbxmx', 'Ekstensi file lu: .' + f.name.split('.').pop());
+  const isAudio = _upAssetType === 'Audio';
+  const valid = isAudio ? /\.(mp3|ogg|wav|flac)$/.test(n) : /\.(rbxm|rbxmx)$/.test(n);
+  if(!valid){
+    return _upBigShowFail(
+      isAudio ? 'File harus .mp3 / .ogg / .wav / .flac' : 'File harus .rbxm atau .rbxmx',
+      'Ekstensi file lu: .' + f.name.split('.').pop()
+    );
   }
   if(f.size>4*1024*1024){
-    return _upBigShowFail('File > 4 MB', 'Ukuran: ' + (f.size/1024/1024).toFixed(2) + ' MB. Split model jadi beberapa bagian.');
+    return _upBigShowFail('File > 4 MB', 'Ukuran: ' + (f.size/1024/1024).toFixed(2) + ' MB.');
   }
   _upFile=f;
   upDrop.classList.add('done');
@@ -1938,16 +2003,21 @@ function _upBigShowFail(msg, hint){
     (hint ? '<div class="err-hint">💡 '+esc(hint)+'</div>' : '');
   try { window.scrollTo({top: upBigResult.offsetTop - 100, behavior:'smooth'}); } catch(e){}
 }
-function _upBigShowSuccess(assetId, assetName){
+function _upBigShowSuccess(assetId, assetName, assetType){
   $('upProgress').style.display='none';
+  const ico = assetType === 'Audio' ? '🎵' : '📦';
   upBigResult.className='result-big success show';
   upBigResult.innerHTML =
     '<div class="big-title"><span class="ico">✅</span>UPLOAD BERHASIL!</div>'+
-    '<div style="font-size:.88rem;margin-bottom:6px">Asset <b>'+esc(assetName||'Model')+'</b> sudah masuk ke Roblox:</div>'+
+    '<div style="font-size:.88rem;margin-bottom:6px">'+ico+' <b>'+esc(assetName||'Asset')+'</b> sudah masuk ke Roblox:</div>'+
     '<div class="asset-id">Asset ID: '+esc(assetId)+'</div>'+
     '<a class="link-btn" href="https://www.roblox.com/library/'+encodeURIComponent(assetId)+'" target="_blank">🌐 Buka di Roblox</a>'+
     '<button class="cp-btn" onclick="navigator.clipboard.writeText(\\''+assetId+'\\');this.textContent=\\'✓ COPIED\\';setTimeout(()=>this.textContent=\\'📋 COPY ASSET ID\\',1500)">📋 COPY ASSET ID</button>'+
-    '<div style="font-size:.74rem;margin-top:12px;color:rgba(255,255,255,.6);line-height:1.7">Asset perlu <b>beberapa menit</b> buat muncul di Roblox Studio. Cek di <b>Toolbox → Inventory → Models</b>.</div>';
+    '<div style="font-size:.74rem;margin-top:12px;color:rgba(255,255,255,.6);line-height:1.7">'+
+      (assetType === 'Audio'
+        ? 'Audio perlu <b>moderation Roblox</b> dulu — bisa 5-30 menit sebelum approved. Cek di <b>Creator Dashboard → Audio</b>.'
+        : 'Asset perlu <b>beberapa menit</b> buat muncul di Roblox Studio. Cek di <b>Toolbox → Inventory → Models</b>.')+
+    '</div>';
   try { window.scrollTo({top: upBigResult.offsetTop - 100, behavior:'smooth'}); } catch(e){}
 }
 function _upStep(n, state){
@@ -1965,7 +2035,7 @@ async function doUploadRbxm(){
 
   if(!username) return _upBigShowFail('Username / User ID Roblox kosong', 'Isi kolom "Akun Roblox" dulu.');
   if(!apiKey) return _upBigShowFail('API Key Roblox kosong', 'Bikin key di create.roblox.com → Credentials.');
-  if(!_upFile) return _upBigShowFail('Belum ada file dipilih', 'Klik/drop file .rbxm atau .rbxmx dulu.');
+  if(!_upFile) return _upBigShowFail('Belum ada file dipilih', 'Klik/drop file dulu.');
 
   const btn=$('upBtn');
   btn.disabled=true; btn.textContent='⏳ PROSES...';
@@ -1974,7 +2044,6 @@ async function doUploadRbxm(){
   _upStep(1,'active'); _upStep(2,''); _upStep(3,''); _upStep(4,'');
 
   try{
-    // Step 1: Cari akun
     const lk=await apiCall('/?api=lookup-user',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({query:username})
@@ -1985,7 +2054,6 @@ async function doUploadRbxm(){
     }
     _upStep(1,'done');
 
-    // Step 2: Verify API key
     _upStep(2,'active');
     const vk=await apiCall('/?api=verify-apikey',{
       method:'POST',headers:{'Content-Type':'application/json'},
@@ -1997,7 +2065,6 @@ async function doUploadRbxm(){
     }
     _upStep(2,'done');
 
-    // Step 3: Upload raw binary
     _upStep(3,'active');
     const r = await fetch('/?api=upload-rbxm-raw', {
       method: 'POST',
@@ -2006,8 +2073,9 @@ async function doUploadRbxm(){
         'x-nang-apikey': apiKey,
         'x-nang-userid': String(lk.userId),
         'x-nang-filename': _upFile.name,
-        'x-nang-display': (name || _upFile.name.replace(/\.(rbxm|rbxmx)$/i,'')).slice(0,50),
-        'x-nang-desc': (desc || 'Upload via NANG web').slice(0,1000)
+        'x-nang-display': (name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac)$/i,'')).slice(0,50),
+        'x-nang-desc': (desc || 'Upload via NANG web').slice(0,1000),
+        'x-nang-assettype': _upAssetType
       },
       body: _upFile
     });
@@ -2022,12 +2090,11 @@ async function doUploadRbxm(){
     if(!up.ok){
       _upStep(3,'err');
       let em = up.error || 'Upload gagal';
-      if(up.debug) em += ' · ['+up.debug.size+' bytes · userId '+up.debug.userId+' · HTTP '+up.debug.status+']';
+      if(up.debug) em += ' · ['+up.debug.size+' bytes · userId '+up.debug.userId+' · type '+up.debug.assetType+' · HTTP '+up.debug.status+']';
       throw new Error(em);
     }
     _upStep(3,'done');
 
-    // Step 4: Poll
     _upStep(4,'active');
     let assetId=null, lastErr=null;
     for(let i=0;i<80;i++){
@@ -2045,11 +2112,11 @@ async function doUploadRbxm(){
     }
     if(!assetId){
       _upStep(4,'err');
-      throw new Error(lastErr || 'Timeout setelah 2 menit. Cek dashboard Roblox — asset mungkin sudah masuk.');
+      throw new Error(lastErr || 'Timeout setelah 2 menit. Cek dashboard Roblox.');
     }
     _upStep(4,'done');
 
-    _upBigShowSuccess(assetId, name || _upFile.name.replace(/\.(rbxm|rbxmx)$/i,''));
+    _upBigShowSuccess(assetId, name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac)$/i,''), _upAssetType);
   }
   catch(e){
     _upBigShowFail(e.message || 'Error tidak diketahui');
@@ -2095,7 +2162,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     },500);
   });
 
-  // Auto-verify API key saat blur
+  // Auto-verify API key
   $('upApiKey').addEventListener('blur',async()=>{
     const k=$('upApiKey').value.trim();
     const h=$('upKeyHint');
