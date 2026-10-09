@@ -1,4 +1,4 @@
-const BUILD = "73.0";
+const BUILD = "74.0";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -118,38 +118,18 @@ async function listUsers() {
   return out;
 }
 
-// ============================================================
-// KEY GENERATION — FIXED: window harian, match sama Lua client
-// ============================================================
 const _SECRET = "NANG2024";
 const _EXPIRE_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_QUOTA = 10;
 const SESSION_MS = 30 * 24 * 3600 * 1000;
-
-function _simpleHash(str) {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) h = ((h * 31) + str.charCodeAt(i)) % 1000000007;
-  return h;
-}
-
-// window harian, samain sama Lua: math.floor(os.time() / 86400)
-function _getWindow() {
-  return Math.floor(Date.now() / 86400000);
-}
-
-// samain sama Lua genKey(uid, w)
+function _simpleHash(str) { let h = 0; for (let i = 0; i < str.length; i++) h = ((h * 31) + str.charCodeAt(i)) % 1000000007; return h; }
+function _getWindow() { return Math.floor(Date.now() / 86400000); }
 function _makeKeyAt(uid, w) {
   const h = _simpleHash(_SECRET + String(uid) + String(w));
   const p1 = String(uid).slice(0, 5).padEnd(5, "0");
-  return "NANG-" + p1
-    + "-" + String(h % 10000).padStart(4, "0")
-    + "-" + String(Math.floor(h / 10000) % 10000).padStart(4, "0");
+  return "NANG-" + p1 + "-" + String(h % 10000).padStart(4, "0") + "-" + String(Math.floor(h / 10000) % 10000).padStart(4, "0");
 }
-function _makeKey(uid) {
-  return _makeKeyAt(uid, _getWindow());
-}
-
-// samain sama Lua validKey: terima window hari ini & kemarin
+function _makeKey(uid) { return _makeKeyAt(uid, _getWindow()); }
 function _verifyKey(uid, key) {
   const k = String(key || "").toUpperCase().replace(/\s+/g, "");
   if (!k) return { valid: false, remainingMs: 0 };
@@ -162,7 +142,6 @@ function _verifyKey(uid, key) {
   }
   return { valid: false, remainingMs: 0 };
 }
-
 function _fmtRemaining(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
   return Math.floor(s / 3600) + "j " + Math.floor((s % 3600) / 60) + "m";
@@ -171,7 +150,36 @@ function _expiryStr(uid, key) {
   const r = _verifyKey(uid, key);
   return r.valid ? _fmtRemaining(r.remainingMs) : null;
 }
-// ============================================================
+
+function detectObfuscator(src) {
+  const s = String(src || "");
+  const len = s.length;
+  if (len < 50) return { type: "plain", confidence: 1, reason: "terlalu pendek" };
+
+  if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(s.slice(0, 200))) {
+    return { type: "bytecode", confidence: 0.9, reason: "binary header" };
+  }
+
+  const sig = [
+    { type: "IronBrew2",     re: /IronBrew|AztupBrew|ironbrew/i, conf: 0.9 },
+    { type: "MoonSec",       re: /Moonsec|MoonsecV\d|MoonsecVM/i, conf: 0.95 },
+    { type: "Luraph",        re: /Luraph|LPH_\d|LPH_no_vm/i, conf: 0.95 },
+    { type: "Psu",           re: /Psu|PSU_|_psu_/i, conf: 0.9 },
+    { type: "WeAreDevs",     re: /WeAreDevs|WAD_OBFUSCATOR/i, conf: 0.9 },
+    { type: "Obfuscator.io", re: /obfuscator\.io|obfuscator_io/i, conf: 0.9 },
+    { type: "SynapseBC",     re: /Synapse|synapse_load|syn_load/i, conf: 0.9 },
+  ];
+
+  for (const x of sig) if (x.re.test(s)) return { type: x.type, confidence: x.conf };
+
+  const printable = (s.match(/[\x20-\x7e\n\r\t]/g) || []).length;
+  if (printable / s.length < 0.4) return { type: "bytecode-or-encrypted", confidence: 0.7 };
+
+  const shortIds = (s.match(/\b[a-zA-Z]{1,2}\b/g) || []).length;
+  if (shortIds / s.length > 0.15) return { type: "minified", confidence: 0.5 };
+
+  return { type: "plain", confidence: 0.4 };
+}
 
 async function _getRobloxUser(uid) {
   try { const r = await fetch("https://users.roblox.com/v1/users/" + uid); if (!r.ok) return null; return (await r.json()).name || null; }
@@ -326,10 +334,12 @@ async function handle(req, res) {
     const gameName = String(params.get("game") || "Unknown").slice(0, 64);
     const placeId = String(params.get("place") || "0").slice(0, 20);
     const jobId = String(params.get("job") || "").slice(0, 40);
+    const role = String(params.get("role") || "").slice(0, 32);
     sendWebhook([
       { name: "Event", value: event, inline: false },
       { name: "Username", value: user, inline: true },
       { name: "User ID", value: uid, inline: true },
+      { name: "Role", value: role || "-", inline: true },
       { name: "Executor", value: exec, inline: true },
       { name: "Game", value: gameName, inline: true },
       { name: "Place ID", value: placeId, inline: true },
@@ -463,6 +473,58 @@ async function handleApi(req, res, path, method, params, ctx) {
 
   if (route === "upload-rbxm-raw" && method === "POST") {
     return await handleRawUpload(req, res);
+  }
+
+  if (route === "deobf/detect" && method === "POST") {
+    const buf = await _readRawBody(req);
+    res.setHeader("Content-Type", "application/json");
+    if (!buf || !buf.length) return res.status(200).json({ ok: false, error: "kosong" });
+    const src = buf.toString("utf8");
+    return res.status(200).json({ ok: true, detected: detectObfuscator(src), size: src.length });
+  }
+
+  if (route === "deobf/run" && method === "POST") {
+    const buf = await _readRawBody(req);
+    res.setHeader("Content-Type", "application/json");
+    if (!buf || !buf.length) return res.status(200).json({ ok: false, error: "kosong" });
+    const src = buf.toString("utf8");
+    const det = detectObfuscator(src);
+    const out = { detected: det, size: src.length, deobf: null, deobfErr: null };
+
+    const trimmed = src.trim();
+    const wrapperRe = /^[\s\S]*?loadstring\s*\(\s*([\s\S]+?)\s*\)\s*\(\s*\)\s*;?\s*$/;
+    const m = trimmed.match(wrapperRe);
+    if (m && det.confidence < 0.95) {
+      try {
+        const fengari = await import("fengari");
+        const { lua, lauxlib, lualib, to_luastring, to_jsstring } = fengari;
+        const L = lauxlib.luaL_newstate();
+        lualib.luaL_openlibs(L);
+
+        const fakeLoad = (L) => { lua.lua_pushvalue(L, 1); return 1; };
+        lua.lua_pushjsfunction(L, fakeLoad);
+        lua.lua_setglobal(L, to_luastring("loadstring"));
+
+        const expr = m[1];
+        const code = "return (" + expr + ")";
+        const ok = lauxlib.luaL_dostring(L, to_luastring(code));
+        if (ok === lua.LUA_OK) {
+          const v = lua.lua_tostring(L, -1);
+          if (v) out.deobf = to_jsstring(v);
+        } else {
+          out.deobfErr = "luaL_dostring gagal";
+        }
+        lua.lua_close(L);
+      } catch (e) {
+        out.deobfErr = String(e.message || e);
+      }
+    } else if (det.confidence >= 0.95) {
+      out.deobfErr = "Tipe VM terdeteksi — butuh runtime trace, gak bisa static.";
+    } else {
+      out.deobfErr = "Pola wrapper gak ketemu.";
+    }
+
+    return res.status(200).json({ ok: true, ...out });
   }
 
   if (route === "convert" && method === "POST") {
@@ -1394,6 +1456,13 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 <button class="btn-cyan" onclick="document.getElementById('convFile').click()">Pilih File</button>
 <div class="result" id="convResult"></div>
 </div>
+<div class="card">
+<div class="card-title">Deobf Detector</div>
+<div class="fmt-box">Deteksi tipe obfuscator + coba deobf kalau wrapper-only.</div>
+<input type="file" id="deobfFile" accept=".lua,.txt" style="display:none" onchange="doDeobf()">
+<button class="btn-cyan" onclick="document.getElementById('deobfFile').click()">Pilih File Lua</button>
+<div class="result" id="deobfResult"></div>
+</div>
 </div>
 
 <div class="panel" id="tab2">
@@ -2072,6 +2141,42 @@ async function doConvert(){
     box.className='result err';
     box.innerHTML = 'Gagal: ' + esc(d.error || 'unknown') + (d.detail ? '<br><small style="color:var(--muted)">'+esc(d.detail)+'</small>' : '');
   }catch(e){box.className='result err';box.innerHTML='Error: '+esc(e.message);}
+}
+
+async function doDeobf(){
+  const input = $('deobfFile');
+  const box = $('deobfResult');
+  if(!input.files || !input.files[0]) return;
+  const f = input.files[0];
+  if(f.size > 5*1024*1024){ box.className='result err'; box.innerHTML='File > 5 MB'; return; }
+  box.className='result info';
+  box.innerHTML='<span class="spinner"></span>Analisis...';
+  try {
+    const buf = await f.arrayBuffer();
+    const r = await fetch('/?api=deobf/run', { method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:buf });
+    const d = await r.json();
+    if(!d.ok){ box.className='result err'; box.innerHTML='Gagal: '+esc(d.error); return; }
+    const t = d.detected;
+    let html = '<b>Tipe:</b> '+esc(t.type)+' ('+Math.round((t.confidence||0)*100)+'%)<br>';
+    html += '<b>Size:</b> '+d.size.toLocaleString('id-ID')+' bytes';
+    if(d.deobf){
+      html += '<br><b style="color:var(--green)">✓ Deobf berhasil!</b> Output: '+d.deobf.length.toLocaleString('id-ID')+' bytes';
+      html += '<br><button class="btn-green" style="margin-top:8px" onclick="downloadDeobf()">⬇ Download .lua</button>';
+      window.__deobfOut = d.deobf;
+    } else if(d.deobfErr){
+      html += '<br><span style="color:var(--yellow)">⚠️</span> '+esc(d.deobfErr);
+    }
+    box.className='result ok';
+    box.innerHTML = html;
+  } catch(e){ box.className='result err'; box.innerHTML='Error: '+esc(e.message); }
+}
+function downloadDeobf(){
+  const s = window.__deobfOut || '';
+  const blob = new Blob([s], {type:'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'deobfuscated.lua';
+  a.click();
 }
 
 let _upFile=null;
