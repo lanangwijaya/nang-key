@@ -151,6 +151,10 @@ function _expiryStr(uid, key) {
   return r.valid ? _fmtRemaining(r.remainingMs) : null;
 }
 
+// ═══════════════════════════════════════════════════════
+// DEOBF — Pure JS, no fengari
+// ═══════════════════════════════════════════════════════
+
 function detectObfuscator(src) {
   const s = String(src || "");
   const len = s.length;
@@ -163,11 +167,14 @@ function detectObfuscator(src) {
   const sig = [
     { type: "IronBrew2",     re: /IronBrew|AztupBrew|ironbrew/i, conf: 0.9 },
     { type: "MoonSec",       re: /Moonsec|MoonsecV\d|MoonsecVM/i, conf: 0.95 },
+    { type: "MoonSec",       re: /Moonsec\s*V?\d|moonsec\s*[Vv]\d/i, conf: 0.9 },
     { type: "Luraph",        re: /Luraph|LPH_\d|LPH_no_vm/i, conf: 0.95 },
     { type: "Psu",           re: /Psu|PSU_|_psu_/i, conf: 0.9 },
     { type: "WeAreDevs",     re: /WeAreDevs|WAD_OBFUSCATOR/i, conf: 0.9 },
     { type: "Obfuscator.io", re: /obfuscator\.io|obfuscator_io/i, conf: 0.9 },
     { type: "SynapseBC",     re: /Synapse|synapse_load|syn_load/i, conf: 0.9 },
+    { type: "Prometheus",    re: /Prometheus|prometheus_v/i, conf: 0.9 },
+    { type: "AztupBrew",     re: /AztupBrew|aztupbrew/i, conf: 0.9 },
   ];
 
   for (const x of sig) if (x.re.test(s)) return { type: x.type, confidence: x.conf };
@@ -179,6 +186,223 @@ function detectObfuscator(src) {
   if (shortIds / s.length > 0.15) return { type: "minified", confidence: 0.5 };
 
   return { type: "plain", confidence: 0.4 };
+}
+
+// decode base64 (Lua-compatible, supports +/-, padding optional)
+function _b64decode(str) {
+  let s = String(str).replace(/[^A-Za-z0-9+/=]/g, "").replace(/-/g, "+").replace(/_/g, "/");
+  while (s.length % 4) s += "=";
+  try { return Buffer.from(s, "base64").toString("utf8"); } catch { return null; }
+}
+
+// decode Lua string literal "\x41\x42" or "ABC"
+function _decodeLuaString(raw) {
+  let out = "";
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (c === "\\") {
+      const n = raw[i + 1];
+      if (n === "n") { out += "\n"; i++; }
+      else if (n === "t") { out += "\t"; i++; }
+      else if (n === "r") { out += "\r"; i++; }
+      else if (n === "\\") { out += "\\"; i++; }
+      else if (n === '"') { out += '"'; i++; }
+      else if (n === "'") { out += "'"; i++; }
+      else if (n === "a") { out += String.fromCharCode(7); i++; }
+      else if (n === "b") { out += "\b"; i++; }
+      else if (n === "f") { out += "\f"; i++; }
+      else if (n === "v") { out += "\v"; i++; }
+      else if (n === "x") {
+        const hex = raw.slice(i + 2, i + 4);
+        if (/^[0-9a-f]{2}$/i.test(hex)) { out += String.fromCharCode(parseInt(hex, 16)); i += 3; }
+        else { out += "x"; i++; }
+      }
+      else if (/[0-9]/.test(n)) {
+        let num = n, j = i + 2;
+        while (j < raw.length && /[0-9]/.test(raw[j]) && num.length < 3) { num += raw[j]; j++; }
+        out += String.fromCharCode(parseInt(num, 10) & 0xff);
+        i = j - 1;
+      }
+      else { out += n; i++; }
+    } else out += c;
+  }
+  return out;
+}
+
+// ekstrak string literal dari Lua source
+function _extractLuaString(expr) {
+  expr = expr.trim();
+  // "..." atau '...'
+  let m = expr.match(/^"((?:[^"\\]|\\.)*)"$/s);
+  if (m) return _decodeLuaString(m[1]);
+  m = expr.match(/^'((?:[^'\\]|\\.)*)'$/s);
+  if (m) return _decodeLuaString(m[1]);
+  m = expr.match(/^\[\[([\s\S]*?)\]\]$/);
+  if (m) return m[1];
+  return null;
+}
+
+// evaluate string.char(n1, n2, ...)
+function _evalStringChar(expr) {
+  const m = expr.match(/^\s*(?:string\.)?char\s*\(([\s\S]+)\)\s*$/);
+  if (!m) return null;
+  const args = m[1].split(",").map(x => x.trim());
+  let out = "";
+  for (const a of args) {
+    const n = Number(a);
+    if (!isNaN(n)) out += String.fromCharCode(n & 0xff);
+    else return null;
+  }
+  return out;
+}
+
+// evaluate table.concat({...}, sep)
+function _evalTableConcat(expr) {
+  const m = expr.match(/^\s*table\.concat\s*\(\s*\{([\s\S]*?)\}\s*(?:,\s*(.+?))?\s*\)\s*$/);
+  if (!m) return null;
+  const items = m[1].split(",").map(x => x.trim());
+  const sep = m[2] ? (_extractLuaString(m[2]) || "") : "";
+  let out = [];
+  for (const it of items) {
+    let v = _extractLuaString(it);
+    if (v === null) v = _evalStringChar(it);
+    if (v === null) return null;
+    out.push(v);
+  }
+  return out.join(sep);
+}
+
+// recursive evaluator untuk expression string
+function _evalLuaStringExpr(expr, depth) {
+  depth = depth || 0;
+  if (depth > 10) return null;
+  expr = String(expr || "").trim();
+
+  // unwrap outer parens
+  while (expr.startsWith("(") && expr.endsWith(")")) {
+    let balanced = 0, ok = true;
+    for (let i = 0; i < expr.length; i++) {
+      if (expr[i] === "(") balanced++;
+      else if (expr[i] === ")") { balanced--; if (balanced === 0 && i < expr.length - 1) { ok = false; break; } }
+    }
+    if (ok) expr = expr.slice(1, -1).trim();
+    else break;
+  }
+
+  // direct string literal
+  let s = _extractLuaString(expr);
+  if (s !== null) return s;
+
+  // string.char(...)
+  s = _evalStringChar(expr);
+  if (s !== null) return s;
+
+  // table.concat({...}, sep)
+  s = _evalTableConcat(expr);
+  if (s !== null) return s;
+
+  // base64 decode via various functions
+  const b64re = /^(?:base64[_]?decode|base64|b64d|atob)\s*\(\s*([\s\S]+)\s*\)\s*$/i;
+  const bm = expr.match(b64re);
+  if (bm) {
+    const inner = _evalLuaStringExpr(bm[1], depth + 1);
+    if (inner !== null) return _b64decode(inner);
+  }
+
+  // string.rep(s, n)
+  const rm = expr.match(/^string\.rep\s*\(\s*([\s\S]+?)\s*,\s*(\d+)\s*\)\s*$/);
+  if (rm) {
+    const inner = _evalLuaStringExpr(rm[1], depth + 1);
+    if (inner !== null) return inner.repeat(Number(rm[2]));
+  }
+
+  // string.reverse
+  const revm = expr.match(/^string\.reverse\s*\(\s*([\s\S]+)\s*\)\s*$/);
+  if (revm) {
+    const inner = _evalLuaStringExpr(revm[1], depth + 1);
+    if (inner !== null) return inner.split("").reverse().join("");
+  }
+
+  // string.gsub(s, pat, rep) — handle simple cases
+  const gsm = expr.match(/^string\.gsub\s*\(\s*([\s\S]+?)\s*,\s*(.+?)\s*,\s*(.+?)\s*\)\s*$/);
+  if (gsm) {
+    const inner = _evalLuaStringExpr(gsm[1], depth + 1);
+    const pat = _extractLuaString(gsm[2]);
+    const rep = _extractLuaString(gsm[3]);
+    if (inner !== null && pat !== null && rep !== null) {
+      try { return inner.replace(new RegExp(pat.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), rep); }
+      catch { return inner.split(pat).join(rep); }
+    }
+  }
+
+  // concatenation a .. b .. c
+  if (expr.includes("..")) {
+    // split on .. not inside quotes
+    const parts = [];
+    let cur = "", depth2 = 0, inStr = null;
+    for (let i = 0; i < expr.length; i++) {
+      const c = expr[i];
+      if (inStr) {
+        cur += c;
+        if (c === inStr && expr[i - 1] !== "\\") inStr = null;
+      } else if (c === '"' || c === "'") {
+        inStr = c; cur += c;
+      } else if (c === "(") { depth2++; cur += c; }
+      else if (c === ")") { depth2--; cur += c; }
+      else if (c === "." && expr[i + 1] === "." && depth2 === 0) {
+        parts.push(cur); cur = ""; i++;
+      } else cur += c;
+    }
+    parts.push(cur);
+    if (parts.length > 1) {
+      const vals = parts.map(p => _evalLuaStringExpr(p, depth + 1));
+      if (vals.every(v => v !== null)) return vals.join("");
+    }
+  }
+
+  return null;
+}
+
+// main deobf function
+function deobfuscate(src) {
+  const s = String(src || "");
+  const trimmed = s.trim();
+
+  // pattern 1: file cuma loadstring(EXPR)() di akhir, atau ada prefix kode lain
+  // cari loadstring(...)() — yang terakhir
+  const m = trimmed.match(/loadstring\s*\(\s*([\s\S]+?)\s*\)\s*\(\s*\)\s*;?\s*$/);
+  if (m) {
+    const expr = m[1];
+    const result = _evalLuaStringExpr(expr);
+    if (result !== null && result.length > 0) return { ok: true, code: result, method: "loadstring-expr" };
+  }
+
+  // pattern 2: pcall(loadstring, EXPR) atau load(EXPR)
+  const m2 = trimmed.match(/(?:loadstring|load)\s*\(\s*([\s\S]+?)\s*\)/);
+  if (m2) {
+    const result = _evalLuaStringExpr(m2[1]);
+    if (result !== null && result.length > 0) return { ok: true, code: result, method: "load" };
+  }
+
+  // pattern 3: return EXPR di mana EXPR adalah string concat
+  const m3 = trimmed.match(/^return\s+([\s\S]+)$/);
+  if (m3) {
+    const result = _evalLuaStringExpr(m3[1]);
+    if (result !== null && result.length > 0) return { ok: true, code: result, method: "return" };
+  }
+
+  // pattern 4: file cuma string literal (base64 dll)
+  const direct = _extractLuaString(trimmed);
+  if (direct !== null && direct.length > 20) {
+    // coba decode sebagai base64
+    const decoded = _b64decode(direct);
+    if (decoded && decoded.length > 10 && /[\x20-\x7e\n\r\t]/.test(decoded.slice(0, 100))) {
+      return { ok: true, code: decoded, method: "base64-literal" };
+    }
+    return { ok: true, code: direct, method: "string-literal" };
+  }
+
+  return { ok: false };
 }
 
 async function _getRobloxUser(uid) {
@@ -489,39 +713,18 @@ async function handleApi(req, res, path, method, params, ctx) {
     if (!buf || !buf.length) return res.status(200).json({ ok: false, error: "kosong" });
     const src = buf.toString("utf8");
     const det = detectObfuscator(src);
-    const out = { detected: det, size: src.length, deobf: null, deobfErr: null };
+    const out = { detected: det, size: src.length, deobf: null, deobfErr: null, method: null };
 
-    const trimmed = src.trim();
-    const wrapperRe = /^[\s\S]*?loadstring\s*\(\s*([\s\S]+?)\s*\)\s*\(\s*\)\s*;?\s*$/;
-    const m = trimmed.match(wrapperRe);
-    if (m && det.confidence < 0.95) {
-      try {
-        const fengari = await import("fengari");
-        const { lua, lauxlib, lualib, to_luastring, to_jsstring } = fengari;
-        const L = lauxlib.luaL_newstate();
-        lualib.luaL_openlibs(L);
-
-        const fakeLoad = (L) => { lua.lua_pushvalue(L, 1); return 1; };
-        lua.lua_pushjsfunction(L, fakeLoad);
-        lua.lua_setglobal(L, to_luastring("loadstring"));
-
-        const expr = m[1];
-        const code = "return (" + expr + ")";
-        const ok = lauxlib.luaL_dostring(L, to_luastring(code));
-        if (ok === lua.LUA_OK) {
-          const v = lua.lua_tostring(L, -1);
-          if (v) out.deobf = to_jsstring(v);
-        } else {
-          out.deobfErr = "luaL_dostring gagal";
-        }
-        lua.lua_close(L);
-      } catch (e) {
-        out.deobfErr = String(e.message || e);
-      }
-    } else if (det.confidence >= 0.95) {
-      out.deobfErr = "Tipe VM terdeteksi — butuh runtime trace, gak bisa static.";
+    const result = deobfuscate(src);
+    if (result.ok) {
+      out.deobf = result.code;
+      out.method = result.method;
     } else {
-      out.deobfErr = "Pola wrapper gak ketemu.";
+      if (det.confidence >= 0.9) {
+        out.deobfErr = "Tipe " + det.type + " pakai VM/interpreter runtime. Gak bisa deobf statically — butuh runtime trace.";
+      } else {
+        out.deobfErr = "Pola wrapper gak ketemu. Kemungkinan obfuscator custom atau VM.";
+      }
     }
 
     return res.status(200).json({ ok: true, ...out });
@@ -1458,7 +1661,7 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 </div>
 <div class="card">
 <div class="card-title">Deobf Detector</div>
-<div class="fmt-box">Deteksi tipe obfuscator + coba deobf kalau wrapper-only.</div>
+<div class="fmt-box">Deteksi tipe obfuscator + coba deobf kalau wrapper-only (loadstring / base64 / string.char).</div>
 <input type="file" id="deobfFile" accept=".lua,.txt" style="display:none" onchange="doDeobf()">
 <button class="btn-cyan" onclick="document.getElementById('deobfFile').click()">Pilih File Lua</button>
 <div class="result" id="deobfResult"></div>
@@ -2160,7 +2363,8 @@ async function doDeobf(){
     let html = '<b>Tipe:</b> '+esc(t.type)+' ('+Math.round((t.confidence||0)*100)+'%)<br>';
     html += '<b>Size:</b> '+d.size.toLocaleString('id-ID')+' bytes';
     if(d.deobf){
-      html += '<br><b style="color:var(--green)">✓ Deobf berhasil!</b> Output: '+d.deobf.length.toLocaleString('id-ID')+' bytes';
+      html += '<br><b style="color:var(--green)">✓ Deobf berhasil!</b> ('+esc(d.method||'-')+')';
+      html += '<br>Output: '+d.deobf.length.toLocaleString('id-ID')+' bytes';
       html += '<br><button class="btn-green" style="margin-top:8px" onclick="downloadDeobf()">⬇ Download .lua</button>';
       window.__deobfOut = d.deobf;
     } else if(d.deobfErr){
