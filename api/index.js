@@ -1,4 +1,4 @@
-const BUILD = "72.0";
+const BUILD = "73.0";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -118,31 +118,51 @@ async function listUsers() {
   return out;
 }
 
+// ============================================================
+// KEY GENERATION — FIXED: window harian, match sama Lua client
+// ============================================================
 const _SECRET = "NANG2024";
 const _EXPIRE_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_QUOTA = 10;
 const SESSION_MS = 30 * 24 * 3600 * 1000;
-function _simpleHash(str) { let h = 0; for (let i = 0; i < str.length; i++) h = ((h * 31) + str.charCodeAt(i)) % 1000000007; return h; }
-function _makeKeyAt(uid, ts) {
-  const code = Math.floor(ts / 60000) % 10000;
-  const h = _simpleHash(_SECRET + String(uid) + String(code));
-  const p1 = String(uid).slice(0, 5).padEnd(5, "0");
-  return "NANG-" + p1 + "-" + String(h % 10000).padStart(4, "0") + "-" + String(Math.floor(h / 10000) % 10000).padStart(4, "0");
+
+function _simpleHash(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = ((h * 31) + str.charCodeAt(i)) % 1000000007;
+  return h;
 }
-function _makeKey(uid) { return _makeKeyAt(uid, Date.now()); }
+
+// window harian, samain sama Lua: math.floor(os.time() / 86400)
+function _getWindow() {
+  return Math.floor(Date.now() / 86400000);
+}
+
+// samain sama Lua genKey(uid, w)
+function _makeKeyAt(uid, w) {
+  const h = _simpleHash(_SECRET + String(uid) + String(w));
+  const p1 = String(uid).slice(0, 5).padEnd(5, "0");
+  return "NANG-" + p1
+    + "-" + String(h % 10000).padStart(4, "0")
+    + "-" + String(Math.floor(h / 10000) % 10000).padStart(4, "0");
+}
+function _makeKey(uid) {
+  return _makeKeyAt(uid, _getWindow());
+}
+
+// samain sama Lua validKey: terima window hari ini & kemarin
 function _verifyKey(uid, key) {
   const k = String(key || "").toUpperCase().replace(/\s+/g, "");
   if (!k) return { valid: false, remainingMs: 0 };
+  const w = _getWindow();
   const now = Date.now();
-  for (let delta = 0; delta < 1440; delta++) {
-    const ts = now - delta * 60000;
-    if (_makeKeyAt(uid, ts) === k) {
-      const rem = Math.max(0, (ts + _EXPIRE_MS) - now);
-      return { valid: rem > 0, remainingMs: rem };
-    }
+  const endOfToday = (w + 1) * 86400000;
+  if (_makeKeyAt(uid, w) === k || _makeKeyAt(uid, w - 1) === k) {
+    const rem = Math.max(0, endOfToday - now);
+    return { valid: rem > 0, remainingMs: rem };
   }
   return { valid: false, remainingMs: 0 };
 }
+
 function _fmtRemaining(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
   return Math.floor(s / 3600) + "j " + Math.floor((s % 3600) / 60) + "m";
@@ -151,6 +171,8 @@ function _expiryStr(uid, key) {
   const r = _verifyKey(uid, key);
   return r.valid ? _fmtRemaining(r.remainingMs) : null;
 }
+// ============================================================
+
 async function _getRobloxUser(uid) {
   try { const r = await fetch("https://users.roblox.com/v1/users/" + uid); if (!r.ok) return null; return (await r.json()).name || null; }
   catch { return null; }
@@ -213,7 +235,7 @@ async function handle(req, res) {
 
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-nang-apikey, x-nang-userid, x-nang-filename, x-nang-display, x-nang-desc, x-nang-assettype");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-nang-apikey, x-nang-userid, x-nang-groupid, x-nang-filename, x-nang-display, x-nang-desc, x-nang-assettype");
   if (method === "OPTIONS") { res.status(200).end(); return; }
 
   if (params.has("version")) { res.status(200).json({ version: BUILD, ts: Date.now(), hasKv: _HAS_KV }); return; }
@@ -351,7 +373,7 @@ function _readRawBody(req) {
   });
 }
 
-async function _robloxUploadDirect({ apiKey, userId, buffer, fileName, assetType, displayName, description }) {
+async function _robloxUploadDirect({ apiKey, userId, groupId, buffer, fileName, assetType, displayName, description }) {
   const ext = fileName.toLowerCase().split(".").pop();
   const MIME_MAP = {
     rbxm: "model/x-rbxm", rbxmx: "model/x-rbxm",
@@ -359,12 +381,16 @@ async function _robloxUploadDirect({ apiKey, userId, buffer, fileName, assetType
   };
   const mime = MIME_MAP[ext] || "application/octet-stream";
 
+  const creator = groupId
+    ? { groupId: Number(groupId) }
+    : { userId: Number(userId) };
+
   const form = new FormData();
   form.append("request", JSON.stringify({
     assetType: assetType || "Model",
     displayName: String(displayName).slice(0, 50),
     description: String(description).slice(0, 1000),
-    creationContext: { creator: { userId: Number(userId) } }
+    creationContext: { creator }
   }));
   const blob = new Blob([new Uint8Array(buffer)], { type: mime });
   form.append("fileContent", blob, fileName);
@@ -382,7 +408,9 @@ async function _robloxUploadDirect({ apiKey, userId, buffer, fileName, assetType
   if (!r.ok) {
     let msg;
     if (r.status === 401) msg = "API key tidak valid / expired";
-    else if (r.status === 403) msg = "Forbidden — cek permission/key/userId/creator status";
+    else if (r.status === 403) msg = groupId
+      ? "Forbidden — cek: key punya akses grup? akun dedicated udah masuk grup & punya role cukup?"
+      : "Forbidden — cek permission/key/userId/creator status";
     else if (r.status === 429) msg = "Rate limit Roblox";
     else if (r.status === 413) msg = "File terlalu besar untuk Roblox";
     else if (r.status === 400 || r.status === 415 || r.status === 422) msg = "Data ditolak Roblox: " + _flatRobloxErrors(data);
@@ -399,13 +427,18 @@ async function handleRawUpload(req, res) {
   res.setHeader("Content-Type", "application/json");
   const apiKey = String(req.headers["x-nang-apikey"] || "").trim();
   const userId = String(req.headers["x-nang-userid"] || "").trim();
+  const groupId = String(req.headers["x-nang-groupid"] || "").trim();
   const fileName = String(req.headers["x-nang-filename"] || "file.bin").slice(0, 128);
   const displayName = String(req.headers["x-nang-display"] || "Asset").slice(0, 50);
   const description = String(req.headers["x-nang-desc"] || "").slice(0, 1000);
   const assetType = String(req.headers["x-nang-assettype"] || "Model").trim();
 
   if (!apiKey) return res.status(200).json({ ok: false, error: "API key kosong" });
-  if (!userId || !/^\d+$/.test(userId)) return res.status(200).json({ ok: false, error: "userId invalid" });
+  if (groupId) {
+    if (!/^\d+$/.test(groupId)) return res.status(200).json({ ok: false, error: "groupId invalid" });
+  } else {
+    if (!userId || !/^\d+$/.test(userId)) return res.status(200).json({ ok: false, error: "userId invalid" });
+  }
 
   const buffer = await _readRawBody(req);
   if (!buffer) return res.status(200).json({ ok: false, error: "Gagal baca body" });
@@ -417,11 +450,11 @@ async function handleRawUpload(req, res) {
     return res.status(200).json({ ok: false, error: assetType === "Audio" ? "Audio harus .mp3/.ogg/.wav/.flac" : "Model harus .rbxm/.rbxmx" });
   }
 
-  const result = await _robloxUploadDirect({ apiKey, userId, buffer, fileName, assetType, displayName, description });
+  const result = await _robloxUploadDirect({ apiKey, userId, groupId, buffer, fileName, assetType, displayName, description });
   if (!result.ok) {
-    return res.status(200).json({ ok: false, error: result.error, debug: { fileName, size: buffer.length, userId, status: result.status, assetType } });
+    return res.status(200).json({ ok: false, error: result.error, debug: { fileName, size: buffer.length, userId, groupId: groupId || null, status: result.status, assetType } });
   }
-  return res.status(200).json({ ok: true, operationId: result.operationId });
+  return res.status(200).json({ ok: true, operationId: result.operationId, groupId: groupId || null });
 }
 
 async function handleApi(req, res, path, method, params, ctx) {
@@ -474,17 +507,19 @@ async function handleApi(req, res, path, method, params, ctx) {
     const total = parseInt(params.get("total") || "0", 10);
     const fileName = String(params.get("fn") || "file.bin").slice(0, 128);
     const assetType = String(params.get("at") || "Model");
+    const groupId = String(params.get("gid") || "").trim();
 
     if (!sid || sid.length > 64 || !/^[a-f0-9]+$/i.test(sid)) return res.status(200).json({ ok: false, error: "sid invalid" });
     if (isNaN(idx) || idx < 0 || idx >= 200) return res.status(200).json({ ok: false, error: "idx invalid" });
     if (isNaN(total) || total < 1 || total > 200) return res.status(200).json({ ok: false, error: "total invalid" });
+    if (groupId && !/^\d+$/.test(groupId)) return res.status(200).json({ ok: false, error: "groupId invalid" });
 
     const buffer = await _readRawBody(req);
     if (!buffer || !buffer.length) return res.status(200).json({ ok: false, error: "chunk kosong" });
 
     const b64 = buffer.toString("base64");
     const ok1 = await storeSet("nang:up:" + sid + ":" + String(idx).padStart(4, "0"), b64, 900);
-    if (idx === 0) await storeSet("nang:up:" + sid + ":meta", { total, fileName, assetType, ts: Date.now() }, 900);
+    if (idx === 0) await storeSet("nang:up:" + sid + ":meta", { total, fileName, assetType, groupId: groupId || null, ts: Date.now() }, 900);
     return res.status(200).json({ ok: ok1, idx, bytes: buffer.length });
   }
 
@@ -497,14 +532,21 @@ async function handleApi(req, res, path, method, params, ctx) {
     const sid = String((body && body.sid) || "").trim();
     const apiKey = String((body && body.apiKey) || "").trim();
     const userId = String((body && body.userId) || "").trim();
+    const groupId = String((body && body.groupId) || "").trim();
     const displayName = String((body && body.displayName) || "Asset").slice(0, 50);
     const description = String((body && body.description) || "").slice(0, 1000);
 
-    if (!sid || !apiKey || !userId) return res.status(200).json({ ok: false, error: "data kurang" });
-    if (!/^\d+$/.test(userId)) return res.status(200).json({ ok: false, error: "userId invalid" });
+    if (!sid || !apiKey) return res.status(200).json({ ok: false, error: "data kurang" });
+    if (groupId) {
+      if (!/^\d+$/.test(groupId)) return res.status(200).json({ ok: false, error: "groupId invalid" });
+    } else {
+      if (!userId || !/^\d+$/.test(userId)) return res.status(200).json({ ok: false, error: "userId invalid" });
+    }
 
     const meta = await storeGet("nang:up:" + sid + ":meta");
     if (!meta || !meta.total) return res.status(200).json({ ok: false, error: "Session tidak ditemukan / kadaluarsa" });
+
+    const finalGroupId = groupId || meta.groupId || null;
 
     const buffers = [];
     for (let i = 0; i < meta.total; i++) {
@@ -518,9 +560,9 @@ async function handleApi(req, res, path, method, params, ctx) {
     for (let i = 0; i < meta.total; i++) storeDel("nang:up:" + sid + ":" + String(i).padStart(4, "0")).catch(() => {});
     storeDel("nang:up:" + sid + ":meta").catch(() => {});
 
-    const result = await _robloxUploadDirect({ apiKey, userId, buffer: fullBuffer, fileName: meta.fileName, assetType: meta.assetType, displayName, description });
-    if (!result.ok) return res.status(200).json({ ok: false, error: result.error, debug: { fileName: meta.fileName, size: fullBuffer.length, userId, status: result.status, assetType: meta.assetType } });
-    return res.status(200).json({ ok: true, operationId: result.operationId, size: fullBuffer.length });
+    const result = await _robloxUploadDirect({ apiKey, userId, groupId: finalGroupId, buffer: fullBuffer, fileName: meta.fileName, assetType: meta.assetType, displayName, description });
+    if (!result.ok) return res.status(200).json({ ok: false, error: result.error, debug: { fileName: meta.fileName, size: fullBuffer.length, userId, groupId: finalGroupId, status: result.status, assetType: meta.assetType } });
+    return res.status(200).json({ ok: true, operationId: result.operationId, size: fullBuffer.length, groupId: finalGroupId });
   }
 
   let body = null;
@@ -609,6 +651,17 @@ async function handleApi(req, res, path, method, params, ctx) {
       if (!hit) hit = await tryLookup(true);
       if (!hit) return res.status(200).json({ ok: false, error: "Username tidak ditemukan" });
       return res.status(200).json({ ok: true, userId: hit.id, name: hit.name, displayName: hit.displayName || hit.name });
+    } catch (e) { return res.status(200).json({ ok: false, error: String(e.message || e) }); }
+  }
+
+  if (route === "lookup-group" && method === "POST") {
+    const gid = String((body && body.groupId) || "").trim();
+    if (!gid || !/^\d+$/.test(gid)) return res.status(200).json({ ok: false, error: "Group ID tidak valid" });
+    try {
+      const r = await fetch("https://groups.roblox.com/v1/groups/" + gid);
+      if (!r.ok) return res.status(200).json({ ok: false, error: "Grup tidak ditemukan" });
+      const d = await r.json();
+      return res.status(200).json({ ok: true, groupId: d.id, name: d.name, memberCount: d.memberCount, owner: d.owner && d.owner.username });
     } catch (e) { return res.status(200).json({ ok: false, error: String(e.message || e) }); }
   }
 
@@ -1131,7 +1184,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
 .nav-btn.active{background:linear-gradient(135deg,rgba(224,60,138,0.25),rgba(155,77,224,0.2));color:#fff;border:1px solid rgba(224,60,138,0.35)}
 .panel{width:100%;max-width:480px;display:none}
 .panel.active{display:block}
-.card{background:rgba(13,13,28,0.7);border:1px solid var(--border2);border-radius:18px;padding:20px;margin-bottom:14px;position:relative}
+.card{background:rgba(13,13,28,0.7);border:1px solid var(--border2);border-radius:18px;padding:20px;margin-bottom:14px}
 .card-title{font-size:0.65rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:2px;margin-bottom:16px}
 .card-title::before{content:'';display:inline-block;width:3px;height:12px;background:linear-gradient(to bottom,var(--pink),var(--purple));border-radius:2px;margin-right:8px;vertical-align:middle}
 .inp{width:100%;padding:12px 15px;background:rgba(10,10,22,0.8);border:1px solid var(--border2);border-radius:11px;color:var(--text);font-size:0.88rem;outline:none;margin-bottom:10px;font-family:inherit}
@@ -1217,7 +1270,6 @@ select.inp{cursor:pointer}
 .fmt-box .field{color:var(--text);font-weight:500}
 .fmt-box a{color:var(--cyan);text-decoration:none}
 .wa-btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:14px;background:linear-gradient(135deg,#1ebe5d,#128c7e);color:#fff;border:none;border-radius:13px;font-size:0.95rem;font-weight:700;cursor:pointer;text-decoration:none;font-family:inherit}
-.wa-icon{width:18px;height:18px;fill:#fff}
 .toggle{display:flex;align-items:center;justify-content:space-between;padding:10px 0;font-size:.85rem}
 .toggle .switch{position:relative;width:44px;height:24px;background:rgba(255,255,255,0.08);border-radius:12px;cursor:pointer;border:1px solid var(--border)}
 .toggle .switch.on{background:linear-gradient(135deg,var(--pink),var(--purple));border-color:transparent}
@@ -1242,6 +1294,9 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 .loader-dots::after{content:'';animation:dots 1.5s steps(4,end) infinite}
 @keyframes dots{0%{content:''}25%{content:'.'}50%{content:'..'}75%{content:'...'}}
 .loader-version{position:absolute;bottom:20px;right:24px;font-family:'JetBrains Mono',monospace;font-size:.65rem;color:rgba(255,255,255,.2)}
+.upload-mode-tabs{display:flex;gap:4px;background:rgba(10,10,22,0.8);border-radius:10px;padding:4px;border:1px solid var(--border);margin-bottom:14px}
+.upload-mode-tabs button{flex:1;padding:8px;border:none;border-radius:7px;background:transparent;color:var(--muted);font-family:inherit;font-weight:600;font-size:.8rem;cursor:pointer}
+.upload-mode-tabs button.on{background:linear-gradient(135deg,rgba(224,60,138,.25),rgba(155,77,224,.2));color:#fff}
 </style></head><body>
 
 <div id="nangLoader">
@@ -1262,7 +1317,7 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 </div>
 
 <div id="kvWarning" class="kv-warning hidden">
-  ⚠️ <b>KV Storage belum aktif</b> — data user akan hilang saat server restart. Setup <code>KV_REST_API_URL</code> + <code>KV_REST_API_TOKEN</code> di Vercel.
+  ⚠️ <b>KV Storage belum aktif</b> — data user akan hilang saat server restart.
 </div>
 
 <div id="loginWall">
@@ -1334,7 +1389,7 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 <div class="panel" id="tab1">
 <div class="card">
 <div class="card-title">RBXL / RBXM → RBXLX</div>
-<div class="fmt-box">Upload <span class="field">.rbxl / .rbxm</span> (binary) atau <span class="field">.rbxlx / .rbxmx</span> (XML). Hasil: <span class="field">.rbxlx</span> siap insert.<br><br><b style="color:var(--yellow)">Catatan:</b> butuh paket <code style="color:var(--cyan)">rbx-dom</code> di server.</div>
+<div class="fmt-box">Upload <span class="field">.rbxl / .rbxm</span> (binary) atau <span class="field">.rbxlx / .rbxmx</span> (XML). Hasil: <span class="field">.rbxlx</span>.<br><br><b style="color:var(--yellow)">Butuh paket <code style="color:var(--cyan)">rbx-dom</code> di server.</b></div>
 <input type="file" id="convFile" accept=".rbxl,.rbxm,.rbxlx,.rbxmx" style="display:none" onchange="doConvert()">
 <button class="btn-cyan" onclick="document.getElementById('convFile').click()">Pilih File</button>
 <div class="result" id="convResult"></div>
@@ -1345,13 +1400,19 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 <div id="uploadLocked" class="card"><div class="locked">🔒 Login dulu buat upload</div></div>
 <div id="uploadContent" class="hidden">
 <div class="card">
-<div class="card-title">📖 Cara Bikin API Key Roblox</div>
+<div class="card-title">📖 Cara Bikin API Key</div>
 <div class="fmt-box">
-<span class="label">1. Buka:</span> <a href="https://create.roblox.com/dashboard/credentials" target="_blank">create.roblox.com/dashboard/credentials</a><br><br>
-<span class="label">2. API Keys → Create API Key</span><br>
-<span class="label">3. Access:</span> Assets API → centang <span class="field">Write</span> ✅ + <span class="field">Read</span> ✅<br>
-<span class="label">4. Experience/IP Restriction:</span> nonaktif<br>
-<span class="label">5. Save & Generate</span> → copy key
+<span class="label">Personal Upload:</span><br>
+1. Buka <a href="https://create.roblox.com/dashboard/credentials" target="_blank">create.roblox.com/dashboard/credentials</a><br>
+2. Create API Key → Assets API → Write + Read<br>
+3. Experience/IP restriction: nonaktif<br>
+4. Save & Generate → copy key<br><br>
+<span class="label">Group Upload:</span><br>
+1. Bikin akun Roblox khusus automation<br>
+2. Invite akun ke grup + role min bikin asset<br>
+3. Login pakai akun itu → bikin API key<br>
+4. Sama kayak di atas, tapi key punya akses grup<br>
+5. <b style="color:var(--pink)">Jangan pakai akun utama</b> — key bisa akses semua akun itu
 </div>
 </div>
 <div class="card">
@@ -1370,13 +1431,27 @@ Limit web: max <span class="field">15 MB</span>
 </div>
 </div>
 <div class="card">
-<div class="card-title">Akun Roblox</div>
+<div class="card-title">Upload Sebagai</div>
+<div class="upload-mode-tabs">
+  <button id="upModePersonal" class="on" onclick="upSetMode('personal')">👤 Personal</button>
+  <button id="upModeGroup" onclick="upSetMode('group')">👥 Grup</button>
+</div>
+<div id="upGroupWrap" class="hidden">
+  <input type="text" class="inp" id="upGroupId" placeholder="Group ID (contoh: 7654321)" inputmode="numeric">
+  <div class="hint" id="upGroupHint">Masukkan ID grup komunitas lu</div>
+  <div class="fmt-box" style="font-size:.7rem;line-height:1.7">
+    <b style="color:var(--yellow)">⚠️ Penting:</b> API key harus dari <b>akun yang jadi member grup</b> dengan role yang bisa bikin asset. Kalau bukan, upload bakal kena <b>403</b>.
+  </div>
+</div>
+</div>
+<div class="card">
+<div class="card-title">Akun Roblox / Pemilik API Key</div>
 <input type="text" class="inp" id="upUsername" placeholder="Username / User ID pemilik API key...">
 <div class="hint" id="upUserHint"></div>
 <input type="password" class="inp" id="upApiKey" placeholder="API Key Roblox...">
 <div class="hint" id="upKeyHint"></div>
 <button class="btn-main" style="background:var(--bg3);color:var(--red);border:1px solid var(--border);margin-top:6px"
-  onclick="if(confirm('Hapus data tersimpan untuk akun ini?')){const b=_LS_BASE;localStorage.removeItem(_lsKey(b.user));localStorage.removeItem(_lsKey(b.key));localStorage.removeItem(_lsKey(b.name));localStorage.removeItem(_lsKey(b.desc));localStorage.removeItem(_lsKey(b.type));_upClearFieldsUI();}">🗑 Hapus Data Tersimpan</button>
+  onclick="if(confirm('Hapus data tersimpan untuk akun ini?')){const b=_LS_BASE;Object.values(b).forEach(k=>localStorage.removeItem(_lsKey(k)));_upClearFieldsUI();}">🗑 Hapus Data Tersimpan</button>
 </div>
 <div class="card">
 <div class="card-title">File</div>
@@ -1520,6 +1595,7 @@ let STORES = [];
 let MY_STORE = { price: 500, wa: "", dana: "", name: "", active: false, qr: "" };
 let _qrData = "";
 let _upAssetType = "Model";
+let _upMode = "personal";
 const MAX_FREE_MB = 8;
 
 function $(id){return document.getElementById(id);}
@@ -1610,22 +1686,10 @@ async function checkKvStatus(){
   try {
     const r = await fetch('/?kvtest');
     const d = await r.json();
-    if(d.ok && d.hasKv){
-      el.textContent = '🟢';
-      el.title = 'KV Storage: Connected';
-      $('kvWarning').classList.add('hidden');
-    } else if(!d.hasKv){
-      el.textContent = '🟡';
-      el.title = 'In-Memory Storage (data bisa hilang saat restart)';
-      $('kvWarning').classList.remove('hidden');
-    } else {
-      el.textContent = '🔴';
-      el.title = 'KV Error: ' + (d.error || 'unknown');
-    }
-  } catch(e){
-    el.textContent = '🔴';
-    el.title = 'KV Error: ' + e.message;
-  }
+    if(d.ok && d.hasKv){ el.textContent = '🟢'; el.title = 'KV Storage: Connected'; $('kvWarning').classList.add('hidden'); }
+    else if(!d.hasKv){ el.textContent = '🟡'; el.title = 'In-Memory Storage'; $('kvWarning').classList.remove('hidden'); }
+    else { el.textContent = '🔴'; el.title = 'KV Error: ' + (d.error || 'unknown'); }
+  } catch(e){ el.textContent = '🔴'; el.title = 'KV Error: ' + e.message; }
 }
 
 function lwSwitch(i){
@@ -2004,20 +2068,26 @@ async function doConvert(){
       return;
     }
     const text = await r.text();
-    let d;
-    try { d = JSON.parse(text); } catch(e) { d = { error: text.slice(0,200) }; }
+    let d; try { d = JSON.parse(text); } catch(e) { d = { error: text.slice(0,200) }; }
     box.className='result err';
     box.innerHTML = 'Gagal: ' + esc(d.error || 'unknown') + (d.detail ? '<br><small style="color:var(--muted)">'+esc(d.detail)+'</small>' : '');
   }catch(e){box.className='result err';box.innerHTML='Error: '+esc(e.message);}
 }
 
-// ==== UPLOAD ====
 let _upFile=null;
 const upDrop=$('upDrop');
 const upFileInput=$('upFileInput');
 const upBigResult=$('upBigResult');
 
-const _LS_BASE = { user: 'nang_up_username', key: 'nang_up_apikey', name: 'nang_up_name', desc: 'nang_up_desc', type: 'nang_up_type' };
+const _LS_BASE = {
+  user: 'nang_up_username',
+  key: 'nang_up_apikey',
+  name: 'nang_up_name',
+  desc: 'nang_up_desc',
+  type: 'nang_up_type',
+  mode: 'nang_up_mode',
+  group: 'nang_up_group',
+};
 function _lsKey(k){ const who = (ME && ME.username) ? ME.username.toLowerCase() : '_guest'; return k + ':' + who; }
 function _upSaveFields(){
   try{
@@ -2026,13 +2096,16 @@ function _upSaveFields(){
     localStorage.setItem(_lsKey(_LS_BASE.name), $('upName').value.trim());
     localStorage.setItem(_lsKey(_LS_BASE.desc), $('upDesc').value.trim());
     localStorage.setItem(_lsKey(_LS_BASE.type), _upAssetType);
+    localStorage.setItem(_lsKey(_LS_BASE.mode), _upMode);
+    localStorage.setItem(_lsKey(_LS_BASE.group), $('upGroupId').value.trim());
   }catch(e){}
 }
 function _upClearFieldsUI(){
   try{
-    $('upUsername').value = ''; $('upApiKey').value = ''; $('upName').value = ''; $('upDesc').value = '';
+    $('upUsername').value = ''; $('upApiKey').value = ''; $('upName').value = ''; $('upDesc').value = ''; $('upGroupId').value = '';
     $('upUserHint').className='hint'; $('upUserHint').textContent='';
     $('upKeyHint').className='hint'; $('upKeyHint').textContent='';
+    $('upGroupHint').className='hint'; $('upGroupHint').textContent='Masukkan ID grup komunitas lu';
   }catch(e){}
 }
 function _upLoadFields(){
@@ -2042,14 +2115,29 @@ function _upLoadFields(){
     const n = localStorage.getItem(_lsKey(_LS_BASE.name));
     const d = localStorage.getItem(_lsKey(_LS_BASE.desc));
     const t = localStorage.getItem(_lsKey(_LS_BASE.type));
+    const m = localStorage.getItem(_lsKey(_LS_BASE.mode));
+    const g = localStorage.getItem(_lsKey(_LS_BASE.group));
     $('upUsername').value = u || ''; $('upApiKey').value = k || '';
     $('upName').value = n || ''; $('upDesc').value = d || '';
+    $('upGroupId').value = g || '';
     if(t === 'Audio' || t === 'Model') upSetType(t); else upSetType('Model');
+    upSetMode(m === 'group' ? 'group' : 'personal', true);
     if(u){
       try { $('upUsername').dispatchEvent(new Event('input', { bubbles:true })); } catch(e){}
       try { $('upApiKey').dispatchEvent(new Event('blur', { bubbles:true })); } catch(e){}
     }
+    if(g){
+      try { $('upGroupId').dispatchEvent(new Event('input', { bubbles:true })); } catch(e){}
+    }
   }catch(e){}
+}
+
+function upSetMode(mode, silent){
+  _upMode = mode;
+  $('upModePersonal').classList.toggle('on', mode === 'personal');
+  $('upModeGroup').classList.toggle('on', mode === 'group');
+  $('upGroupWrap').classList.toggle('hidden', mode !== 'group');
+  if(!silent) _upSaveFields();
 }
 
 upDrop.addEventListener('click',()=>upFileInput.click());
@@ -2101,11 +2189,12 @@ function _upBigShowFail(msg, hint){
   upBigResult.className='result err';
   upBigResult.innerHTML = '❌ '+esc(msg)+(hint ? '<br><small>💡 '+esc(hint)+'</small>' : '');
 }
-function _upBigShowSuccess(assetId, assetName, assetType){
+function _upBigShowSuccess(assetId, assetName, assetType, groupId){
   $('upProgress').style.display='none';
   const ico = assetType === 'Audio' ? '🎵' : '📦';
+  const target = groupId ? 'Grup #' + groupId : 'Akun pribadi';
   upBigResult.className='result ok';
-  upBigResult.innerHTML = '✅ UPLOAD BERHASIL<br>'+ico+' <b>'+esc(assetName||'Asset')+'</b><br><div class="key-line">Asset ID: '+esc(assetId)+'</div>'+
+  upBigResult.innerHTML = '✅ UPLOAD BERHASIL ke <b>'+esc(target)+'</b><br>'+ico+' <b>'+esc(assetName||'Asset')+'</b><br><div class="key-line">Asset ID: '+esc(assetId)+'</div>'+
     '<a href="https://www.roblox.com/library/'+encodeURIComponent(assetId)+'" target="_blank" style="color:var(--cyan)">🌐 Buka di Roblox</a> '+
     '<button class="cp" onclick="navigator.clipboard.writeText(\\''+assetId+'\\');this.textContent=\\'✓ COPIED\\';setTimeout(()=>this.textContent=\\'📋 COPY ID\\',1500)">📋 COPY ID</button>';
 }
@@ -2125,8 +2214,12 @@ async function doUploadRbxm(){
   const apiKey=$('upApiKey').value.trim();
   const name=$('upName').value.trim();
   const desc=$('upDesc').value.trim();
+  const groupId = _upMode === 'group' ? $('upGroupId').value.trim() : '';
+
   if(!username) return _upBigShowFail('Username / User ID kosong');
   if(!apiKey) return _upBigShowFail('API Key kosong');
+  if(_upMode === 'group' && !groupId) return _upBigShowFail('Group ID kosong', 'Isi Group ID di panel "Upload Sebagai → Grup"');
+  if(_upMode === 'group' && !/^\d+$/.test(groupId)) return _upBigShowFail('Group ID tidak valid', 'Hanya angka');
   if(!_upFile) return _upBigShowFail('Belum ada file dipilih');
 
   _upSaveFields();
@@ -2140,29 +2233,36 @@ async function doUploadRbxm(){
     const lk=await apiCall('/?api=lookup-user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:username})});
     if(!lk.ok){ _upStep(1,'err'); throw new Error('Gagal cari akun: '+(lk.error||'tidak ditemukan')); }
     _upStep(1,'done');
+
+    if(_upMode === 'group'){
+      const gk = await apiCall('/?api=lookup-group',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groupId})});
+      if(!gk.ok){ _upStep(1,'err'); throw new Error('Grup tidak ditemukan: '+(gk.error||'')); }
+    }
+
     _upStep(2,'active');
     const vk=await apiCall('/?api=verify-apikey',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apiKey})});
     if(!vk.ok){ _upStep(2,'err'); throw new Error('API Key: '+(vk.error||'tidak valid')); }
     _upStep(2,'done');
     _upStep(3,'active');
+
     const CHUNK_SIZE = 500 * 1024;
     const totalChunks = Math.max(1, Math.ceil(_upFile.size / CHUNK_SIZE));
     let operationId = null;
+
     if (totalChunks <= 1) {
       _upShowStep3('Mengirim file...');
-      const r = await fetch('/?api=upload-rbxm-raw', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/octet-stream',
-          'x-nang-apikey': apiKey,
-          'x-nang-userid': String(lk.userId),
-          'x-nang-filename': _upFile.name,
-          'x-nang-display': (name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac)$/i,'')).slice(0,50),
-          'x-nang-desc': (desc || 'Upload via NANG web').slice(0,1000),
-          'x-nang-assettype': _upAssetType
-        },
-        body: _upFile
-      });
+      const headers = {
+        'Content-Type': 'application/octet-stream',
+        'x-nang-apikey': apiKey,
+        'x-nang-filename': _upFile.name,
+        'x-nang-display': (name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac)$/i,'')).slice(0,50),
+        'x-nang-desc': (desc || 'Upload via NANG web').slice(0,1000),
+        'x-nang-assettype': _upAssetType
+      };
+      if(groupId) headers['x-nang-groupid'] = groupId;
+      else headers['x-nang-userid'] = String(lk.userId);
+
+      const r = await fetch('/?api=upload-rbxm-raw', { method: 'POST', headers, body: _upFile });
       const upText = await r.text();
       let up; try { up = JSON.parse(upText); } catch(e){ throw new Error('Server tidak balikin JSON'); }
       if(!up.ok){ _upStep(3,'err'); throw new Error(up.error || 'Upload gagal'); }
@@ -2176,13 +2276,17 @@ async function doUploadRbxm(){
         const chunk = _upFile.slice(start, end);
         const pct = Math.round((end / _upFile.size) * 100);
         _upShowStep3('Kirim bagian '+(i+1)+'/'+totalChunks+' ('+pct+'%)...');
-        const url = '/?api=upload-chunk&sid=' + encodeURIComponent(sid) + '&idx=' + i + '&total=' + totalChunks + '&fn=' + encodeURIComponent(_upFile.name) + '&at=' + encodeURIComponent(_upAssetType);
+        let url = '/?api=upload-chunk&sid=' + encodeURIComponent(sid) + '&idx=' + i + '&total=' + totalChunks + '&fn=' + encodeURIComponent(_upFile.name) + '&at=' + encodeURIComponent(_upAssetType);
+        if(groupId) url += '&gid=' + encodeURIComponent(groupId);
         const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: chunk });
         const d = await r.json();
         if (!d.ok) { _upStep(3,'err'); throw new Error('Gagal bagian '+(i+1)+': '+(d.error||'unknown')); }
       }
       _upShowStep3('Gabung & upload ke Roblox...');
-      const commit = await apiCall('/?api=upload-commit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sid, apiKey, userId: lk.userId, displayName, description: desc || 'Upload via NANG web' }) });
+      const commitBody = { sid, apiKey, displayName, description: desc || 'Upload via NANG web' };
+      if(groupId) commitBody.groupId = groupId;
+      else commitBody.userId = lk.userId;
+      const commit = await apiCall('/?api=upload-commit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(commitBody) });
       if (!commit.ok) { _upStep(3,'err'); throw new Error(commit.error || 'Commit gagal'); }
       operationId = commit.operationId;
     }
@@ -2201,13 +2305,12 @@ async function doUploadRbxm(){
     }
     if(!assetId){ _upStep(4,'err'); throw new Error(lastErr || 'Timeout. Cek dashboard Roblox.'); }
     _upStep(4,'done');
-    _upBigShowSuccess(assetId, name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac)$/i,''), _upAssetType);
+    _upBigShowSuccess(assetId, name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac)$/i,''), _upAssetType, groupId);
   }
   catch(e){ _upBigShowFail(e.message || 'Error tidak diketahui'); }
   finally{ btn.disabled=false; btn.textContent='UPLOAD KE ROBLOX'; }
 }
 
-// ==== FREE MODELS ====
 let _fmFile = null;
 
 function fmOnFile(e){
@@ -2317,7 +2420,6 @@ async function fmDelete(id){
   loadFreeModels();
 }
 
-// ==== PROFILE ====
 async function loadProfile(){
   if(!ME) return;
   $('pfUsername').textContent = ME.username || '—';
@@ -2377,7 +2479,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   nangLoaderSetStatus('Preparing UI');
   _upLoadFields();
 
-  ['upUsername','upApiKey','upName','upDesc'].forEach(id=>{
+  ['upUsername','upApiKey','upName','upDesc','upGroupId'].forEach(id=>{
     $(id).addEventListener('input', _upSaveFields);
     $(id).addEventListener('change', _upSaveFields);
   });
@@ -2399,6 +2501,21 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       const d=await apiCall('/?api=lookup-user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:v})});
       if(d.ok){ h.className='hint ok'; h.textContent='✓ '+d.name+(d.displayName&&d.displayName!==d.name?' ('+d.displayName+')':'')+' · ID '+d.userId; }
       else{ h.className='hint err'; h.textContent='✗ '+(d.error||'tidak ditemukan'); }
+    },500);
+  });
+
+  let _upGroupT;
+  $('upGroupId').addEventListener('input',()=>{
+    clearTimeout(_upGroupT);
+    const v=$('upGroupId').value.trim();
+    const h=$('upGroupHint');
+    if(!v){h.className='hint';h.textContent='Masukkan ID grup komunitas lu';return;}
+    if(!/^\d+$/.test(v)){ h.className='hint err'; h.textContent='✗ Group ID cuma angka'; return; }
+    h.className='hint'; h.innerHTML='<span class="spinner"></span>Mencari grup...';
+    _upGroupT=setTimeout(async()=>{
+      const d=await apiCall('/?api=lookup-group',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groupId:v})});
+      if(d.ok){ h.className='hint ok'; h.textContent='✓ '+d.name+(d.owner?' (owner: '+d.owner+')':'')+' · '+d.memberCount+' member'; }
+      else{ h.className='hint err'; h.textContent='✗ '+(d.error||'Grup tidak ditemukan'); }
     },500);
   });
 
