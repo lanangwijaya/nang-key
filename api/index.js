@@ -1,4 +1,4 @@
-const BUILD = "78.0";
+const BUILD = "78.1";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -451,6 +451,15 @@ async function handleApi(req, res, path, method, params, ctx) {
     return await handleRawUpload(req, res);
   }
 
+  if (route === "convert-to-model" && method === "POST") {
+    res.setHeader("Content-Type", "application/json");
+    return res.status(200).json({
+      ok: false,
+      error: "Converter otomatis gak aktif di server ini",
+      hint: "Pakai Roblox Studio (cara paling gampang & reliable):\n\n1. Buka file RBXL di Roblox Studio\n2. Di panel Explorer, klik service (Workspace / ReplicatedStorage / ServerScriptService)\n3. Ctrl+A (pilih semua isinya)\n4. Klik kanan → Save to File → simpan jadi .rbxm\n5. Selesai\n\nUntuk convert binary → XML: File → Save to File As → pilih .rbxlx"
+    });
+  }
+
   if (route === "upload-chunk" && method === "POST") {
     res.setHeader("Content-Type", "application/json");
     const sid = String(params.get("sid") || "").trim();
@@ -503,7 +512,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     for (let i = 0; i < meta.total; i++) {
       const key = "nang:up:" + sid + ":" + String(i).padStart(4, "0");
       const b64 = await storeGet(key);
-      if (typeof b64 !== "string" || !b64.length) return res.status(200).json({ ok: false, error: "Bagian " + (i + 1) + " dari " + meta.total + " hilang" });
+      if (typeof b64 !== "string" || !b64.length) return res.status(200).json({ ok: false, error: "Bagian " + (i + 1) + " dari " + meta.total + " hilang — coba upload ulang" });
       buffers.push(Buffer.from(b64, "base64"));
     }
     const fullBuffer = Buffer.concat(buffers);
@@ -514,38 +523,6 @@ async function handleApi(req, res, path, method, params, ctx) {
     const result = await _robloxUploadDirect({ apiKey, userId, groupId: finalGroupId, buffer: fullBuffer, fileName: meta.fileName, assetType: meta.assetType, displayName, description });
     if (!result.ok) return res.status(200).json({ ok: false, error: result.error, debug: { fileName: meta.fileName, size: fullBuffer.length, userId, groupId: finalGroupId, status: result.status, assetType: meta.assetType } });
     return res.status(200).json({ ok: true, operationId: result.operationId, size: fullBuffer.length, groupId: finalGroupId });
-  }
-
-  if (route === "convert-to-model" && method === "POST") {
-    const buffer = await _readRawBody(req);
-    res.setHeader("Content-Type", "application/json");
-    if (!buffer || !buffer.length) return res.status(200).json({ ok: false, error: "File kosong" });
-
-    const target = String(params.get("target") || "Workspace");
-    const name = String(params.get("name") || "Extracted").slice(0, 60);
-    const group = String(params.get("group") || "1");
-
-    try {
-      const proto = req.headers["x-forwarded-proto"] || "https";
-      const host = req.headers.host || "localhost";
-      const pyUrl = proto + "://" + host + "/api/convert?target="
-        + encodeURIComponent(target) + "&name=" + encodeURIComponent(name)
-        + "&group=" + encodeURIComponent(group);
-
-      const r = await fetch(pyUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/octet-stream" },
-        body: buffer
-      });
-      const d = await r.json();
-      return res.status(200).json(d);
-    } catch (e) {
-      return res.status(200).json({
-        ok: false,
-        error: "Gagal konek Python function: " + String(e.message || e),
-        hint: "Pastikan api/convert.py + requirements.txt ada di repo, lalu redeploy."
-      });
-    }
   }
 
   let body = null;
@@ -1179,7 +1156,7 @@ select.inp{cursor:pointer}
 .btn-main{width:100%;padding:13px;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;border:none;border-radius:12px;font-weight:700;font-size:0.9rem;cursor:pointer;font-family:inherit;margin-bottom:8px}
 .btn-cyan{width:100%;padding:13px;background:linear-gradient(135deg,#0099cc,var(--cyan));color:#000;border:none;border-radius:12px;font-weight:700;font-size:0.9rem;cursor:pointer;font-family:inherit}
 .btn-green{width:100%;padding:12px;background:linear-gradient(135deg,#00b866,var(--green));color:#000;border:none;border-radius:12px;font-weight:700;font-size:0.85rem;cursor:pointer;font-family:inherit;margin-top:8px}
-.result{background:rgba(10,10,22,0.8);border:1px solid var(--border);border-radius:12px;padding:13px;font-size:0.78rem;margin-top:10px;display:none;word-break:break-all}
+.result{background:rgba(10,10,22,0.8);border:1px solid var(--border);border-radius:12px;padding:13px;font-size:0.78rem;margin-top:10px;display:none;word-break:break-all;line-height:1.7}
 .result.ok{border-color:rgba(0,232,122,0.35);color:var(--green);display:block}
 .result.err{border-color:rgba(255,80,80,0.35);color:#ff6b6b;display:block}
 .result.warn{border-color:rgba(255,200,50,0.35);color:#ffc832;display:block}
@@ -1380,48 +1357,27 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 
 <div class="panel" id="tab1">
 <div class="card">
-<div class="card-title">🔄 Converter</div>
+<div class="card-title">🔄 Converter RBXL → RBXM</div>
 
-<div class="modal-tabs" style="margin-bottom:14px">
-  <button id="convModeToModel" class="on" onclick="convSetMode('toModel')">RBXL → RBXM</button>
+<div class="fmt-box">
+<b style="color:var(--yellow)">Cara pakai:</b><br>
+1. Buka file <span class="field">.rbxl</span> di <b>Roblox Studio</b><br>
+2. Di Explorer, klik service (Workspace / ReplicatedStorage / dll)<br>
+3. <b>Ctrl+A</b> → pilih semua<br>
+4. <b>Klik kanan → Save to File</b> → simpan <span class="field">.rbxm</span><br>
+5. Selesai
 </div>
 
-<div id="convToModelWrap">
-  <div class="fmt-box">
-    Upload <span class="field">.rbxl / .rbxlx</span> → extract jadi <span class="field">.rbxm</span>.<br>
-    Max file: <span class="field">4 MB</span>. Lebih dari itu, pakai Roblox Studio.
-  </div>
-
-  <label style="font-size:.75rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:1px;display:block;margin:12px 0 6px">Target Service</label>
-  <select class="inp" id="convTargetSvc">
-    <option value="Workspace">Workspace (paling umum)</option>
-    <option value="ReplicatedStorage">ReplicatedStorage</option>
-    <option value="ServerStorage">ServerStorage</option>
-    <option value="StarterGui">StarterGui</option>
-    <option value="StarterPack">StarterPack</option>
-    <option value="ServerScriptService">ServerScriptService</option>
-    <option value="Lighting">Lighting</option>
-    <option value="SoundService">SoundService</option>
-    <option value="All">🎯 Semua service (digabung 1 folder)</option>
-  </select>
-
-  <label style="font-size:.75rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:1px;display:block;margin:12px 0 6px">Struktur Hasil</label>
-  <div class="upload-mode-tabs" style="margin-bottom:12px">
-    <button id="convGroupOn" class="on" onclick="convSetGroup(true)">📁 Subfolder per Service</button>
-    <button id="convGroupOff" onclick="convSetGroup(false)">📄 Flat Langsung di Root</button>
-  </div>
-
-  <label style="font-size:.75rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:1px;display:block;margin:12px 0 6px">Preview Struktur</label>
-  <div class="tree-box" id="convTreePreview">📁 Extracted
-  └─ (pilih target service)</div>
-
-  <input type="text" class="inp" id="convModelName" placeholder="Nama root folder" value="Extracted" style="margin-top:12px" oninput="convUpdateTree()">
+<div class="fmt-box">
+<b style="color:var(--pink)">Convert binary → XML:</b><br>
+1. Buka file di <b>Roblox Studio</b><br>
+2. <b>File → Save to File As...</b><br>
+3. Pilih <span class="field">.rbxlx</span> (XML)
 </div>
 
-<input type="file" id="convFile" accept=".rbxl,.rbxm,.rbxlx,.rbxmx" style="display:none" onchange="doConvert()">
-<button class="btn-cyan" onclick="document.getElementById('convFile').click()" style="margin-top:12px">📁 Pilih File</button>
-<div class="progress-bar" id="convProgressWrap" style="display:none"><div class="progress-bar-fill" id="convProgressFill"></div></div>
-<div class="result" id="convResult"></div>
+<div style="padding:14px;background:rgba(255,200,50,.05);border:1px solid rgba(255,200,50,.25);border-radius:12px;font-size:.75rem;color:var(--yellow);line-height:1.7">
+⚠️ <b>Converter otomatis di web gak tersedia</b> — library Python (`rbxfile`) gak bisa jalan di Vercel. Pakai Studio (cara di atas), itu paling reliable & professional.
+</div>
 </div>
 </div>
 
@@ -1469,6 +1425,9 @@ Limit web: max <span class="field">15 MB</span>
 <div id="upGroupWrap" class="hidden">
   <input type="text" class="inp" id="upGroupId" placeholder="Group ID (contoh: 7654321)" inputmode="numeric">
   <div class="hint" id="upGroupHint">Masukkan ID grup komunitas lu</div>
+  <div class="fmt-box" style="font-size:.7rem;line-height:1.7">
+    <b style="color:var(--yellow)">⚠️ Penting:</b> API key harus dari <b>akun yang jadi member grup</b> dengan role yang bisa bikin asset.
+  </div>
 </div>
 </div>
 <div class="card">
@@ -1629,7 +1588,6 @@ let MY_STORE = { price: 500, wa: "", dana: "", name: "", active: false, qr: "" }
 let _qrData = "";
 let _upAssetType = "Model";
 let _upMode = "personal";
-let _convGroup = true;
 const MAX_FREE_MB = 8;
 
 function $(id){return document.getElementById(id);}
@@ -2079,116 +2037,6 @@ async function doOwnerGen(){
     box.className='result ok';
     box.innerHTML = '<b>'+esc(d.username||'Unknown')+'</b><span class="role-badge owner">owner</span><div class="key-line">'+esc(d.key)+'</div><div style="font-size:.75rem;color:var(--muted)">Expires: '+esc(d.expires)+'</div>';
   } catch(e) { box.className='result err'; box.innerHTML='Error: '+esc(e.message); }
-}
-
-function convSetMode(m){}
-function convSetGroup(g){
-  _convGroup = g;
-  $('convGroupOn').classList.toggle('on', g === true);
-  $('convGroupOff').classList.toggle('on', g === false);
-  convUpdateTree();
-}
-function convUpdateTree(){
-  const name = ($('convModelName').value.trim() || 'Extracted');
-  const target = $('convTargetSvc').value;
-  const svcList = target === 'All'
-    ? ['Workspace', 'ReplicatedStorage', 'ServerScriptService', '...']
-    : [target];
-  let tree = '📁 ' + name + '\\n';
-  if (_convGroup) {
-    svcList.forEach((svc, i) => {
-      const isLast = i === svcList.length - 1;
-      tree += '  ' + (isLast ? '└─' : '├─') + ' 📁 ' + svc + '\\n';
-      if (svc === '...') return;
-      tree += '       ' + (isLast ? '   ' : '│  ') + ' ├─ Part\\n';
-      tree += '       ' + (isLast ? '   ' : '│  ') + ' └─ Model\\n';
-    });
-  } else {
-    tree += '  ├─ Part\\n  ├─ Model\\n  └─ ...\\n';
-  }
-  $('convTreePreview').textContent = tree.trimEnd();
-}
-function _convProgress(pct){
-  const wrap = $('convProgressWrap');
-  const fill = $('convProgressFill');
-  if(!wrap || !fill) return;
-  if(pct <= 0){ wrap.style.display = 'none'; return; }
-  wrap.style.display = 'block';
-  fill.style.width = Math.min(100, pct) + '%';
-}
-
-async function doConvert(){
-  const input=$('convFile');
-  const box=$('convResult');
-  if(!input.files||!input.files[0])return;
-  const file=input.files[0];
-
-  if(file.size > 4 * 1024 * 1024){
-    box.className='result err';
-    box.style.display='block';
-    box.innerHTML='❌ File > 4 MB. Vercel limit body 4.5 MB.<br><br><b style="color:var(--yellow)">Cara manual (recommended):</b><br>1. Buka file di <b>Roblox Studio</b><br>2. Explorer → klik service<br>3. Ctrl+A → Klik kanan → Save to File → .rbxm';
-    return;
-  }
-
-  box.style.display='block';box.className='result info';
-  box.innerHTML='<span class="spinner"></span>Memproses '+esc(file.name)+' ('+(file.size/1024/1024).toFixed(2)+' MB)...';
-  _convProgress(30);
-
-  try{
-    const target = $('convTargetSvc').value;
-    const name = $('convModelName').value.trim() || 'Extracted';
-    const group = _convGroup ? '1' : '0';
-    const url = '/?api=convert-to-model&target=' + encodeURIComponent(target) + '&name=' + encodeURIComponent(name) + '&group=' + group;
-
-    _convProgress(60);
-    const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body: file});
-    const txt = await r.text();
-    let d;
-    try { d = JSON.parse(txt); } catch(e) {
-      _convProgress(0);
-      box.className='result err';
-      box.innerHTML='Server error (' + r.status + '): <small style="color:var(--muted)">' + esc(txt.slice(0,200)) + '</small>';
-      return;
-    }
-
-    if (d.error) {
-      _convProgress(0);
-      box.className='result err';
-      box.innerHTML='Gagal: '+esc(d.error)+(d.hint?'<br><small style="color:var(--muted)">'+esc(d.hint)+'</small>':'')+(d.trace?'<br><small style="color:var(--muted);font-size:.65rem">'+esc(d.trace)+'</small>':'');
-      return;
-    }
-    if (!d.ok || !d.file) {
-      _convProgress(0);
-      box.className='result err';
-      box.innerHTML='Response server tidak valid';
-      return;
-    }
-
-    const bin = atob(d.file);
-    const arr = new Uint8Array(bin.length);
-    for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
-    const blob = new Blob([arr], {type:'application/octet-stream'});
-    const dl = URL.createObjectURL(blob);
-
-    const svcList = (d.extracted || []).map(s => '<span style="background:rgba(0,232,122,.1);color:var(--green);padding:2px 8px;border-radius:6px;font-size:.7rem;margin:2px;display:inline-block">'+esc(s)+'</span>').join('');
-
-    _convProgress(100);
-    box.className='result ok';
-    box.innerHTML =
-      '<div style="font-weight:800;color:var(--green);margin-bottom:8px">✓ Convert selesai</div>'+
-      '<div style="font-size:.8rem;line-height:1.8;margin-bottom:8px">'+
-        '<div>Root: <b style="color:var(--cyan)">'+esc(name)+'</b></div>'+
-        '<div>Struktur: <b>'+(d.grouped ? 'Subfolder per Service' : 'Flat')+'</b></div>'+
-        '<div>Total object: <b>'+esc(String(d.totalObjects || 0))+'</b></div>'+
-        '<div>Service: '+svcList+'</div>'+
-      '</div>'+
-      '<div class="key-line"><a href="'+dl+'" download="'+esc(d.fileName)+'" style="color:#00d4ff;text-decoration:none;font-weight:700">⬇ Download '+esc(d.fileName)+' ('+(d.size/1024).toFixed(1)+' KB)</a></div>';
-    setTimeout(()=>_convProgress(0), 800);
-  } catch(e){
-    _convProgress(0);
-    box.className='result err';
-    box.innerHTML='Error: '+esc(e.message);
-  }
 }
 
 let _upFile=null;
@@ -2659,13 +2507,10 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   try { await checkSession(); } catch(e){}
   nangLoaderSetStatus('Preparing UI');
   _upLoadFields();
-  convUpdateTree();
   ['upUsername','upApiKey','upName','upDesc','upGroupId'].forEach(id=>{
     $(id).addEventListener('input', _upSaveFields);
     $(id).addEventListener('change', _upSaveFields);
   });
-  const _convSvc = $('convTargetSvc');
-  if(_convSvc) _convSvc.addEventListener('change', convUpdateTree);
   ['lwUser','lwPass'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')lwDoLogin();}));
   ['lwRegUser','lwRegEmail','lwRegPass','lwRegPass2'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')lwDoRegister();}));
   ['oPw'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doOwnerLogin();}));
