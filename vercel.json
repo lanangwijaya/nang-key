@@ -1,8 +1,0 @@
-{
-  "functions": {
-    "api/conv.py": {
-      "runtime": "python@3.12",
-      "maxDuration": 60
-    }
-  }
-}
