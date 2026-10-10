@@ -1,4 +1,4 @@
-const BUILD = "77.0";
+const BUILD = "78.0";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -351,7 +351,6 @@ function _readRawBody(req) {
   });
 }
 
-// ==== CORE: convert binary <-> XML ====
 async function _convertBinaryToXml(buffer) {
   const head8 = buffer.subarray(0, 8).toString("latin1");
   const headXml = buffer.subarray(0, 64).toString("utf8").trim().toLowerCase();
@@ -362,149 +361,7 @@ async function _convertBinaryToXml(buffer) {
   if (head8 !== "<roblox!") {
     return { ok: false, error: "File bukan RBXM/RBXL/RBXMX/RBXLX valid" };
   }
-
-  try {
-    const mod = await import("rbx-dom");
-    const BinaryFormat = mod.BinaryFormat || (mod.default && mod.default.BinaryFormat);
-    const XmlFormat = mod.XmlFormat || (mod.default && mod.default.XmlFormat);
-    if (!BinaryFormat || !XmlFormat) throw new Error("rbx-dom tidak punya BinaryFormat/XmlFormat");
-    const deserialized = BinaryFormat.deserialize(buffer);
-    const xml = XmlFormat.serialize(deserialized);
-    return { ok: true, xml };
-  } catch (e) {
-    return {
-      ok: false,
-      error: "Server belum install paket 'rbx-dom'. Jalankan: npm install rbx-dom lalu redeploy.",
-      detail: String(e.message || e)
-    };
-  }
-}
-
-// ==== CORE: extract services dari RBXL → RBXM ====
-async function _extractRbxm(fullBuffer, target, modelName, groupByService) {
-  const head8 = fullBuffer.subarray(0, 8).toString("latin1");
-  const headXml = fullBuffer.subarray(0, 64).toString("utf8").trim().toLowerCase();
-  const isBinary = head8 === "<roblox!";
-  const isXml = headXml.startsWith("<?xml") || headXml.startsWith("<roblox");
-  if (!isBinary && !isXml) return { ok: false, error: "File bukan RBXL/RBXLX valid" };
-
-  try {
-    const mod = await import("rbx-dom");
-    const BinaryFormat = mod.BinaryFormat || (mod.default && mod.default.BinaryFormat);
-    const XmlFormat = mod.XmlFormat || (mod.default && mod.default.XmlFormat);
-    const Instance = mod.Instance || (mod.default && mod.default.Instance);
-    if (!BinaryFormat || !XmlFormat || !Instance) throw new Error("rbx-dom tidak lengkap");
-
-    const dataModel = isBinary
-      ? BinaryFormat.deserialize(fullBuffer)
-      : XmlFormat.deserialize(fullBuffer.toString("utf8"));
-
-    const SERVICES = ["Workspace", "ReplicatedStorage", "ServerStorage", "StarterGui", "StarterPack", "ServerScriptService", "Lighting", "SoundService"];
-    const targets = target === "All" ? SERVICES : [target];
-
-    const rootFolder = new Instance("Folder");
-    rootFolder.Name = modelName;
-
-    function setParent(child, newParent) {
-      try { if (typeof child.parent === "function") { child.parent(newParent); return; } } catch(e) {}
-      try { if ("Parent" in child) { child.Parent = newParent; return; } } catch(e) {}
-      try { child.Parent = newParent; } catch(e) {}
-    }
-    function findChildByName(dm, name) {
-      try { if (typeof dm.findChild === "function") { const r = dm.findChild(name); if (r) return r; } } catch(e) {}
-      try { if (typeof dm.findChildOfClass === "function") { const r = dm.findChildOfClass(name); if (r) return r; } } catch(e) {}
-      try {
-        const kids = typeof dm.getChildren === "function" ? dm.getChildren() : (dm.children || []);
-        for (const k of kids) { const kn = k.name || (typeof k.Name === "string" ? k.Name : null); if (kn === name) return k; }
-      } catch(e) {}
-      return null;
-    }
-    function getChildrenSafe(node) {
-      try { if (typeof node.getChildren === "function") return node.getChildren(); } catch(e) {}
-      return node.children || [];
-    }
-
-    const extracted = [];
-    let totalMoved = 0;
-    for (const svcName of targets) {
-      const svc = findChildByName(dataModel, svcName);
-      if (!svc) continue;
-      let container = rootFolder;
-      if (groupByService) {
-        container = new Instance("Folder");
-        container.Name = svcName;
-        setParent(container, rootFolder);
-      }
-      const kids = getChildrenSafe(svc);
-      let moved = 0;
-      for (const child of kids) { setParent(child, container); moved++; }
-      if (moved > 0) { extracted.push(svcName + "(" + moved + ")"); totalMoved += moved; }
-      else if (groupByService) { try { setParent(container, null); } catch(e) {} }
-    }
-
-    if (extracted.length === 0) return { ok: false, error: "Tidak ada object yang bisa di-extract dari service: " + targets.join(", ") };
-
-    const newDm = new Instance("DataModel");
-    setParent(rootFolder, newDm);
-    const outBuffer = BinaryFormat.serialize(newDm);
-    const outBytes = outBuffer instanceof Uint8Array ? outBuffer : new Uint8Array(outBuffer);
-
-    return {
-      ok: true,
-      fileName: modelName + ".rbxm",
-      size: outBytes.length,
-      extracted,
-      totalObjects: totalMoved,
-      grouped: groupByService,
-      file: Buffer.from(outBytes).toString("base64")
-    };
-  } catch (e) {
-    return {
-      ok: false,
-      error: "Gagal convert: " + String(e.message || e),
-      hint: "Kalau error terus, pakai manual di Studio: buka RBXL → pilih → Right-click → Save to File"
-    };
-  }
-}
-
-async function handleRawUpload(req, res) {
-  res.setHeader("Content-Type", "application/json");
-  const apiKey = String(req.headers["x-nang-apikey"] || "").trim();
-  const userId = String(req.headers["x-nang-userid"] || "").trim();
-  const groupId = String(req.headers["x-nang-groupid"] || "").trim();
-  const fileName = String(req.headers["x-nang-filename"] || "file.bin").slice(0, 128);
-  const displayName = String(req.headers["x-nang-display"] || "Asset").slice(0, 50);
-  const description = String(req.headers["x-nang-desc"] || "").slice(0, 1000);
-  const assetType = String(req.headers["x-nang-assettype"] || "Model").trim();
-
-  if (!apiKey) return res.status(200).json({ ok: false, error: "API key kosong" });
-  if (groupId) {
-    if (!/^\d+$/.test(groupId)) return res.status(200).json({ ok: false, error: "groupId invalid" });
-  } else {
-    if (!userId || !/^\d+$/.test(userId)) return res.status(200).json({ ok: false, error: "userId invalid" });
-  }
-
-  const buffer = await _readRawBody(req);
-  if (!buffer) return res.status(200).json({ ok: false, error: "Gagal baca body" });
-  if (!buffer.length) return res.status(200).json({ ok: false, error: "File kosong" });
-
-  const ext = fileName.toLowerCase().split(".").pop();
-  let allowed;
-  if (assetType === "Audio") allowed = ["mp3","ogg","wav","flac"];
-  else if (assetType === "Decal") allowed = ["png","jpg","jpeg","bmp","tga"];
-  else allowed = ["rbxm","rbxmx"];
-  if (!allowed.includes(ext)) {
-    const errMsg = assetType === "Audio" ? "Audio harus .mp3/.ogg/.wav/.flac"
-                 : assetType === "Decal" ? "Gambar harus .png/.jpg/.jpeg/.bmp/.tga"
-                 : "Model harus .rbxm/.rbxmx";
-    return res.status(200).json({ ok: false, error: errMsg });
-  }
-
-  const result = await _robloxUploadDirect({ apiKey, userId, groupId, buffer, fileName, assetType, displayName, description });
-  if (!result.ok) {
-    return res.status(200).json({ ok: false, error: result.error, debug: { fileName, size: buffer.length, userId, groupId: groupId || null, status: result.status, assetType } });
-  }
-  return res.status(200).json({ ok: true, operationId: result.operationId, groupId: groupId || null });
+  return { ok: false, error: "Binary → XML perlu pakai Studio (manual)" };
 }
 
 async function _robloxUploadDirect({ apiKey, userId, groupId, buffer, fileName, assetType, displayName, description }) {
@@ -559,6 +416,46 @@ async function _robloxUploadDirect({ apiKey, userId, groupId, buffer, fileName, 
   return { ok: true, operationId };
 }
 
+async function handleRawUpload(req, res) {
+  res.setHeader("Content-Type", "application/json");
+  const apiKey = String(req.headers["x-nang-apikey"] || "").trim();
+  const userId = String(req.headers["x-nang-userid"] || "").trim();
+  const groupId = String(req.headers["x-nang-groupid"] || "").trim();
+  const fileName = String(req.headers["x-nang-filename"] || "file.bin").slice(0, 128);
+  const displayName = String(req.headers["x-nang-display"] || "Asset").slice(0, 50);
+  const description = String(req.headers["x-nang-desc"] || "").slice(0, 1000);
+  const assetType = String(req.headers["x-nang-assettype"] || "Model").trim();
+
+  if (!apiKey) return res.status(200).json({ ok: false, error: "API key kosong" });
+  if (groupId) {
+    if (!/^\d+$/.test(groupId)) return res.status(200).json({ ok: false, error: "groupId invalid" });
+  } else {
+    if (!userId || !/^\d+$/.test(userId)) return res.status(200).json({ ok: false, error: "userId invalid" });
+  }
+
+  const buffer = await _readRawBody(req);
+  if (!buffer) return res.status(200).json({ ok: false, error: "Gagal baca body" });
+  if (!buffer.length) return res.status(200).json({ ok: false, error: "File kosong" });
+
+  const ext = fileName.toLowerCase().split(".").pop();
+  let allowed;
+  if (assetType === "Audio") allowed = ["mp3","ogg","wav","flac"];
+  else if (assetType === "Decal") allowed = ["png","jpg","jpeg","bmp","tga"];
+  else allowed = ["rbxm","rbxmx"];
+  if (!allowed.includes(ext)) {
+    const errMsg = assetType === "Audio" ? "Audio harus .mp3/.ogg/.wav/.flac"
+                 : assetType === "Decal" ? "Gambar harus .png/.jpg/.jpeg/.bmp/.tga"
+                 : "Model harus .rbxm/.rbxmx";
+    return res.status(200).json({ ok: false, error: errMsg });
+  }
+
+  const result = await _robloxUploadDirect({ apiKey, userId, groupId, buffer, fileName, assetType, displayName, description });
+  if (!result.ok) {
+    return res.status(200).json({ ok: false, error: result.error, debug: { fileName, size: buffer.length, userId, groupId: groupId || null, status: result.status, assetType } });
+  }
+  return res.status(200).json({ ok: true, operationId: result.operationId, groupId: groupId || null });
+}
+
 async function handleApi(req, res, path, method, params, ctx) {
   const { ADMIN_PW } = ctx;
   const route = path.replace(/^\/api\//, "").replace(/\/$/, "");
@@ -567,129 +464,14 @@ async function handleApi(req, res, path, method, params, ctx) {
     return await handleRawUpload(req, res);
   }
 
-  // ==== CONVERT binary → XML (small file direct) ====
   if (route === "convert" && method === "POST") {
-    const buffer = await _readRawBody(req);
-    if (!buffer || !buffer.length) { res.setHeader("Content-Type","application/json"); return res.status(200).json({ ok: false, error: "File kosong" }); }
-
-    const result = await _convertBinaryToXml(buffer);
-    if (!result.ok) {
-      res.setHeader("Content-Type", "application/json");
-      return res.status(200).json(result);
-    }
-    res.setHeader("Content-Type", "text/xml; charset=utf-8");
-    return res.status(200).send(result.xml);
-  }
-
-  // ==== CONVERT binary → XML (chunked) ====
-  if (route === "convert-chunk" && method === "POST") {
-    res.setHeader("Content-Type", "application/json");
-    const sid = String(params.get("sid") || "").trim();
-    const idx = parseInt(params.get("idx") || "-1", 10);
-    const total = parseInt(params.get("total") || "0", 10);
-    if (!sid || !/^[a-f0-9]+$/i.test(sid)) return res.status(200).json({ ok: false, error: "sid invalid" });
-    if (isNaN(idx) || idx < 0 || idx >= 500) return res.status(200).json({ ok: false, error: "idx invalid" });
-    if (isNaN(total) || total < 1 || total > 500) return res.status(200).json({ ok: false, error: "total invalid" });
-
-    const buffer = await _readRawBody(req);
-    if (!buffer || !buffer.length) return res.status(200).json({ ok: false, error: "chunk kosong" });
-    const b64 = buffer.toString("base64");
-    const ok1 = await storeSet("nang:cvxml:" + sid + ":" + String(idx).padStart(4, "0"), b64, 1800);
-    if (idx === 0) await storeSet("nang:cvxml:" + sid + ":meta", { total, ts: Date.now() }, 1800);
-    return res.status(200).json({ ok: ok1, idx, bytes: buffer.length });
-  }
-
-  if (route === "convert-commit" && method === "POST") {
-    res.setHeader("Content-Type", "application/json");
-    let raw = "";
-    await new Promise(r => { req.on("data", c => raw += c); req.on("end", r); });
-    let b = null; try { b = JSON.parse(raw); } catch {}
-    const sid = String((b && b.sid) || "").trim();
-    if (!sid) return res.status(200).json({ ok: false, error: "sid kosong" });
-
-    const meta = await storeGet("nang:cvxml:" + sid + ":meta");
-    if (!meta || !meta.total) return res.status(200).json({ ok: false, error: "Session kadaluarsa" });
-
-    const buffers = [];
-    for (let i = 0; i < meta.total; i++) {
-      const key = "nang:cvxml:" + sid + ":" + String(i).padStart(4, "0");
-      const b64 = await storeGet(key);
-      if (typeof b64 !== "string" || !b64.length) return res.status(200).json({ ok: false, error: "Bagian " + (i+1) + " hilang" });
-      buffers.push(Buffer.from(b64, "base64"));
-    }
-    const fullBuffer = Buffer.concat(buffers);
-    for (let i = 0; i < meta.total; i++) storeDel("nang:cvxml:" + sid + ":" + String(i).padStart(4, "0")).catch(() => {});
-    storeDel("nang:cvxml:" + sid + ":meta").catch(() => {});
-
-    const result = await _convertBinaryToXml(fullBuffer);
-    if (!result.ok) return res.status(200).json(result);
-    return res.status(200).json({ ok: true, xml: result.xml });
-  }
-
-  // ==== CONVERT RBXL → RBXM (small direct) ====
-  if (route === "convert-to-model" && method === "POST") {
     const buffer = await _readRawBody(req);
     res.setHeader("Content-Type", "application/json");
     if (!buffer || !buffer.length) return res.status(200).json({ ok: false, error: "File kosong" });
-
-    const target = String(params.get("target") || "Workspace");
-    const modelName = String(params.get("name") || "Extracted").slice(0, 60);
-    const groupByService = String(params.get("group") || "1") === "1";
-
-    const result = await _extractRbxm(buffer, target, modelName, groupByService);
-    return res.status(200).json(result);
-  }
-
-  // ==== CONVERT RBXL → RBXM (chunked) ====
-  if (route === "convert-to-model-chunk" && method === "POST") {
-    res.setHeader("Content-Type", "application/json");
-    const sid = String(params.get("sid") || "").trim();
-    const idx = parseInt(params.get("idx") || "-1", 10);
-    const total = parseInt(params.get("total") || "0", 10);
-
-    if (!sid || !/^[a-f0-9]+$/i.test(sid)) return res.status(200).json({ ok: false, error: "sid invalid" });
-    if (isNaN(idx) || idx < 0 || idx >= 500) return res.status(200).json({ ok: false, error: "idx invalid" });
-    if (isNaN(total) || total < 1 || total > 500) return res.status(200).json({ ok: false, error: "total invalid" });
-
-    const buffer = await _readRawBody(req);
-    if (!buffer || !buffer.length) return res.status(200).json({ ok: false, error: "chunk kosong" });
-
-    const b64 = buffer.toString("base64");
-    const ok1 = await storeSet("nang:cvchunk:" + sid + ":" + String(idx).padStart(4, "0"), b64, 1800);
-    if (idx === 0) await storeSet("nang:cvchunk:" + sid + ":meta", { total, ts: Date.now() }, 1800);
-    return res.status(200).json({ ok: ok1, idx, bytes: buffer.length });
-  }
-
-  if (route === "convert-to-model-commit" && method === "POST") {
-    res.setHeader("Content-Type", "application/json");
-    let raw = "";
-    await new Promise(r => { req.on("data", c => raw += c); req.on("end", r); });
-    let body = null; try { body = JSON.parse(raw); } catch {}
-
-    const sid = String((body && body.sid) || "").trim();
-    const target = String((body && body.target) || "Workspace");
-    const modelName = String((body && body.name) || "Extracted").slice(0, 60);
-    const groupByService = (body && body.group !== undefined) ? !!body.group : true;
-
-    if (!sid) return res.status(200).json({ ok: false, error: "sid kosong" });
-
-    const meta = await storeGet("nang:cvchunk:" + sid + ":meta");
-    if (!meta || !meta.total) return res.status(200).json({ ok: false, error: "Session kadaluarsa" });
-
-    const buffers = [];
-    for (let i = 0; i < meta.total; i++) {
-      const key = "nang:cvchunk:" + sid + ":" + String(i).padStart(4, "0");
-      const b64 = await storeGet(key);
-      if (typeof b64 !== "string" || !b64.length) return res.status(200).json({ ok: false, error: "Bagian " + (i+1) + "/" + meta.total + " hilang" });
-      buffers.push(Buffer.from(b64, "base64"));
-    }
-    const fullBuffer = Buffer.concat(buffers);
-
-    for (let i = 0; i < meta.total; i++) storeDel("nang:cvchunk:" + sid + ":" + String(i).padStart(4, "0")).catch(() => {});
-    storeDel("nang:cvchunk:" + sid + ":meta").catch(() => {});
-
-    const result = await _extractRbxm(fullBuffer, target, modelName, groupByService);
-    return res.status(200).json(result);
+    const result = await _convertBinaryToXml(buffer);
+    if (!result.ok) return res.status(200).json(result);
+    res.setHeader("Content-Type", "text/xml; charset=utf-8");
+    return res.status(200).send(result.xml);
   }
 
   if (route === "upload-chunk" && method === "POST") {
@@ -755,6 +537,38 @@ async function handleApi(req, res, path, method, params, ctx) {
     const result = await _robloxUploadDirect({ apiKey, userId, groupId: finalGroupId, buffer: fullBuffer, fileName: meta.fileName, assetType: meta.assetType, displayName, description });
     if (!result.ok) return res.status(200).json({ ok: false, error: result.error, debug: { fileName: meta.fileName, size: fullBuffer.length, userId, groupId: finalGroupId, status: result.status, assetType: meta.assetType } });
     return res.status(200).json({ ok: true, operationId: result.operationId, size: fullBuffer.length, groupId: finalGroupId });
+  }
+
+  if (route === "convert-to-model" && method === "POST") {
+    const buffer = await _readRawBody(req);
+    res.setHeader("Content-Type", "application/json");
+    if (!buffer || !buffer.length) return res.status(200).json({ ok: false, error: "File kosong" });
+
+    const target = String(params.get("target") || "Workspace");
+    const name = String(params.get("name") || "Extracted").slice(0, 60);
+    const group = String(params.get("group") || "1");
+
+    try {
+      const proto = req.headers["x-forwarded-proto"] || "https";
+      const host = req.headers.host || "localhost";
+      const pyUrl = proto + "://" + host + "/api/convert?target="
+        + encodeURIComponent(target) + "&name=" + encodeURIComponent(name)
+        + "&group=" + encodeURIComponent(group);
+
+      const r = await fetch(pyUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: buffer
+      });
+      const d = await r.json();
+      return res.status(200).json(d);
+    } catch (e) {
+      return res.status(200).json({
+        ok: false,
+        error: "Gagal konek Python function: " + String(e.message || e),
+        hint: "Pastikan api/convert.py dan requirements.txt ada di repo, lalu redeploy."
+      });
+    }
   }
 
   let body = null;
@@ -905,39 +719,24 @@ async function handleApi(req, res, path, method, params, ctx) {
       try { data = JSON.parse(text); } catch { data = { raw: text }; }
 
       if (r.status === 401) return res.status(200).json({ ok: false, error: "API key invalid/expired", code: 401 });
-      if (r.status === 403) return res.status(200).json({ ok: false, error: "Forbidden — API key gak punya akses baca asset ini", code: 403 });
-      if (r.status === 404) return res.status(200).json({ ok: false, error: "Asset belum kebaca Roblox (delay) / tidak ada", code: 404 });
-      if (!r.ok) return res.status(200).json({ ok: false, error: "HTTP " + r.status + " — " + _flatRobloxErrors(data), code: r.status });
+      if (r.status === 403) return res.status(200).json({ ok: false, error: "Forbidden", code: 403 });
+      if (r.status === 404) return res.status(200).json({ ok: false, error: "Asset belum kebaca (delay)", code: 404 });
+      if (!r.ok) return res.status(200).json({ ok: false, error: "HTTP " + r.status, code: r.status });
 
-      const mod =
-        data.moderationResult ||
-        data.moderation ||
-        (data.asset && data.asset.moderationResult) ||
-        null;
-
-      let state = "Unknown";
-      let reason = null;
-      let createdAt = data.createdAt || (data.asset && data.asset.createdAt) || null;
-
+      const mod = data.moderationResult || data.moderation || (data.asset && data.asset.moderationResult) || null;
+      let state = "Unknown", reason = null;
       if (mod) {
         state = mod.state || mod.moderationState || mod.status || "Unknown";
-        reason =
-          (mod.moderationDetails && (mod.moderationDetails.message || mod.moderationDetails.reason)) ||
-          mod.reason || mod.message || null;
-      } else if (data.assetState) {
-        state = data.assetState;
-      }
+        reason = (mod.moderationDetails && (mod.moderationDetails.message || mod.moderationDetails.reason)) || mod.reason || mod.message || null;
+      } else if (data.assetState) state = data.assetState;
 
       const normalized = String(state).toLowerCase();
       let level = "pending";
       if (normalized.includes("approv")) level = "approved";
       else if (normalized.includes("reject")) level = "rejected";
-      else if (normalized.includes("review") || normalized.includes("pending")) level = "pending";
 
-      return res.status(200).json({ ok: true, assetId, state, level, reason, createdAt, raw: mod || null });
-    } catch (e) {
-      return res.status(200).json({ ok: false, error: "Gagal cek moderasi: " + String(e.message || e) });
-    }
+      return res.status(200).json({ ok: true, assetId, state, level, reason });
+    } catch (e) { return res.status(200).json({ ok: false, error: String(e.message || e) }); }
   }
 
   if (route === "free/list" && method === "GET") {
@@ -973,12 +772,6 @@ async function handleApi(req, res, path, method, params, ctx) {
     list.unshift(id);
     if (list.length > 200) list.length = 200;
     await storeSet("nang:freelist", list);
-    sendWebhook([
-      { name: "Event", value: "Free Model Uploaded", inline: false },
-      { name: "Name", value: name, inline: true },
-      { name: "Author", value: u.username, inline: true },
-      { name: "Size", value: (size/1024).toFixed(1) + " KB", inline: true },
-    ]);
     return res.status(200).json({ ok: true, id });
   }
 
@@ -1019,7 +812,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     for (let i = 0; i < meta.total; i++) {
       const key = "nang:fmchunk:" + sid + ":" + String(i).padStart(4, "0");
       const b64 = await storeGet(key);
-      if (typeof b64 !== "string" || !b64.length) return res.status(200).json({ error: "Bagian " + (i+1) + "/" + meta.total + " hilang" });
+      if (typeof b64 !== "string" || !b64.length) return res.status(200).json({ error: "Bagian " + (i+1) + " hilang" });
       buffers.push(Buffer.from(b64, "base64"));
     }
     const fullBuffer = Buffer.concat(buffers);
@@ -1041,12 +834,6 @@ async function handleApi(req, res, path, method, params, ctx) {
     for (let i = 0; i < meta.total; i++) storeDel("nang:fmchunk:" + sid + ":" + String(i).padStart(4, "0")).catch(() => {});
     storeDel("nang:fmchunk:" + sid + ":meta").catch(() => {});
 
-    sendWebhook([
-      { name: "Event", value: "Free Model Uploaded (chunked)", inline: false },
-      { name: "Name", value: meta.name, inline: true },
-      { name: "Author", value: u.username, inline: true },
-      { name: "Size", value: (fullBuffer.length/1024).toFixed(1) + " KB", inline: true },
-    ]);
     return res.status(200).json({ ok: true, id });
   }
 
@@ -1088,11 +875,6 @@ async function handleApi(req, res, path, method, params, ctx) {
     u.salt = salt;
     u.passwordHash = hashPw(newPw, salt);
     await saveUser(u);
-    sendWebhook([
-      { name: "Event", value: "Password Changed", inline: false },
-      { name: "Username", value: u.username, inline: true },
-      { name: "IP", value: _getClientIP(req), inline: true },
-    ]);
     return res.status(200).json({ ok: true, message: "Password berhasil diganti" });
   }
 
@@ -1143,13 +925,6 @@ async function handleApi(req, res, path, method, params, ctx) {
     };
     await saveUser(user);
     await storeSet(emailKey, username);
-    sendWebhook([
-      { name: "Event", value: isAutoOwner ? "New OWNER Registered" : "New Member Registered", inline: false },
-      { name: "Username", value: username, inline: true },
-      { name: "Email", value: email, inline: true },
-      { name: "Role", value: isAutoOwner ? "owner" : "member", inline: true },
-      { name: "IP", value: _getClientIP(req), inline: true },
-    ]);
     return res.status(200).json({ ok: true, message: isAutoOwner ? "Terdaftar sebagai OWNER." : "Terdaftar sebagai member.", role: user.role });
   }
 
@@ -1251,15 +1026,6 @@ async function handleApi(req, res, path, method, params, ctx) {
     const canActive = active && wa.length >= 8 && hasPay;
     u.store = { price, wa, dana, name: name || u.username, active: canActive, qr };
     await saveUser(u);
-    sendWebhook([
-      { name: "Event", value: "Store Updated", inline: false },
-      { name: "Username", value: u.username, inline: true },
-      { name: "Price", value: "Rp" + price, inline: true },
-      { name: "WA", value: wa || "-", inline: true },
-      { name: "DANA", value: dana || "-", inline: true },
-      { name: "Active", value: u.store.active ? "Ya" : "Tidak", inline: true },
-      { name: "QR", value: qr ? "Ada" : "Tidak" , inline: true },
-    ]);
     return res.status(200).json({ ok: true, store: u.store });
   }
 
@@ -1650,14 +1416,14 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 <div id="convToXmlWrap">
   <div class="fmt-box">
     Upload <span class="field">.rbxl / .rbxm</span> (binary) → hasil <span class="field">.rbxlx</span> XML.<br><br>
-    <b style="color:var(--yellow)">Butuh paket <code style="color:var(--cyan)">rbx-dom</code> di server.</b>
+    <b style="color:var(--yellow)">Cara lain: buka di Roblox Studio → File → Save As → .rbxlx</b>
   </div>
 </div>
 
 <div id="convToModelWrap" class="hidden">
   <div class="fmt-box">
-    Upload <span class="field">.rbxl / .rbxlx</span> → extract jadi <span class="field">.rbxm</span> (1 file, root folder nama custom).<br>
-    Tinggal insert ke Studio → pindahin subfolder ke service yang sesuai.
+    Upload <span class="field">.rbxl / .rbxlx</span> → extract jadi <span class="field">.rbxm</span>.<br>
+    Max file: <span class="field">4 MB</span>. Lebih dari itu, pakai Roblox Studio.
   </div>
 
   <label style="font-size:.75rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:1px;display:block;margin:12px 0 6px">Target Service</label>
@@ -1708,7 +1474,7 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 1. Bikin akun Roblox khusus automation<br>
 2. Invite akun ke grup + role min bikin asset<br>
 3. Login pakai akun itu → bikin API key<br>
-4. <b style="color:var(--pink)">Jangan pakai akun utama</b> — key bisa akses semua akun itu
+4. <b style="color:var(--pink)">Jangan pakai akun utama</b>
 </div>
 </div>
 <div class="card">
@@ -1738,7 +1504,7 @@ Limit web: max <span class="field">15 MB</span>
   <input type="text" class="inp" id="upGroupId" placeholder="Group ID (contoh: 7654321)" inputmode="numeric">
   <div class="hint" id="upGroupHint">Masukkan ID grup komunitas lu</div>
   <div class="fmt-box" style="font-size:.7rem;line-height:1.7">
-    <b style="color:var(--yellow)">⚠️ Penting:</b> API key harus dari <b>akun yang jadi member grup</b> dengan role yang bisa bikin asset. Kalau bukan, upload bakal kena <b>403</b>.
+    <b style="color:var(--yellow)">⚠️ Penting:</b> API key harus dari <b>akun yang jadi member grup</b> dengan role yang bisa bikin asset.
   </div>
 </div>
 </div>
@@ -2353,7 +2119,6 @@ async function doOwnerGen(){
   } catch(e) { box.className='result err'; box.innerHTML='Error: '+esc(e.message); }
 }
 
-// ==== CONVERT ====
 function convSetMode(m){
   _convMode = m;
   $('convModeToXml').classList.toggle('on', m === 'toXml');
@@ -2362,14 +2127,12 @@ function convSetMode(m){
   $('convToModelWrap').classList.toggle('hidden', m !== 'toModel');
   convUpdateTree();
 }
-
 function convSetGroup(g){
   _convGroup = g;
   $('convGroupOn').classList.toggle('on', g === true);
   $('convGroupOff').classList.toggle('on', g === false);
   convUpdateTree();
 }
-
 function convUpdateTree(){
   const name = ($('convModelName').value.trim() || 'Extracted');
   const target = $('convTargetSvc').value;
@@ -2390,7 +2153,6 @@ function convUpdateTree(){
   }
   $('convTreePreview').textContent = tree.trimEnd();
 }
-
 function _convProgress(pct){
   const wrap = $('convProgressWrap');
   const fill = $('convProgressFill');
@@ -2405,83 +2167,46 @@ async function doConvert(){
   const box=$('convResult');
   if(!input.files||!input.files[0])return;
   const file=input.files[0];
-  if(file.size>200*1024*1024){box.className='result err';box.innerHTML='File > 200 MB.';box.style.display='block';return;}
+
+  if(_convMode === 'toModel' && file.size > 4 * 1024 * 1024){
+    box.className='result err';
+    box.style.display='block';
+    box.innerHTML='❌ File > 4 MB. Vercel gak bisa handle file gede.<br><br><b style="color:var(--yellow)">Cara manual:</b><br>1. Buka file di <b>Roblox Studio</b><br>2. Explorer → klik service<br>3. Ctrl+A → Klik kanan → Save to File → .rbxm';
+    return;
+  }
+  if(_convMode === 'toXml' && file.size > 4 * 1024 * 1024){
+    box.className='result err';
+    box.style.display='block';
+    box.innerHTML='❌ File > 4 MB.<br><br><b style="color:var(--yellow)">Cara manual:</b><br>Buka di Roblox Studio → File → Save to File As → .rbxlx';
+    return;
+  }
 
   box.style.display='block';box.className='result info';
   box.innerHTML='<span class="spinner"></span>Memproses '+esc(file.name)+' ('+(file.size/1024/1024).toFixed(2)+' MB)...';
-  _convProgress(1);
+  _convProgress(30);
 
   try{
     if (_convMode === 'toModel') {
-      // === RBXL → RBXM ===
       const target = $('convTargetSvc').value;
       const name = $('convModelName').value.trim() || 'Extracted';
-      const group = _convGroup;
-      const CHUNK_SIZE = 1 * 1024 * 1024;
+      const group = _convGroup ? '1' : '0';
+      const url = '/api/convert?target=' + encodeURIComponent(target) + '&name=' + encodeURIComponent(name) + '&group=' + group;
+
+      _convProgress(60);
+      const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body: file});
+      const txt = await r.text();
       let d;
-
-      if (file.size < 3 * 1024 * 1024) {
-        // Direct upload
-        const url = '/?api=convert-to-model&target=' + encodeURIComponent(target) + '&name=' + encodeURIComponent(name) + '&group=' + (group ? '1' : '0');
-        const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body: file});
-        const txt = await r.text();
-        if (r.status === 413 || txt.includes("Request En") || txt.includes("too large")) {
-          box.className='result err';
-          box.innerHTML='File terlalu besar untuk direct upload. Coba lagi — otomatis pakai chunked upload di percobaan berikut.';
-          _convProgress(0);
-          return;
-        }
-        try { d = JSON.parse(txt); } catch(e) {
-          box.className='result err';
-          box.innerHTML='Server error (' + r.status + '): <small style="color:var(--muted)">' + esc(txt.slice(0,150)) + '</small>';
-          _convProgress(0);
-          return;
-        }
-      } else {
-        // Chunked upload
-        const sid = _randHex(16);
-        const total = Math.ceil(file.size / CHUNK_SIZE);
-        for (let i = 0; i < total; i++) {
-          const start = i * CHUNK_SIZE;
-          const end = Math.min(start + CHUNK_SIZE, file.size);
-          const chunk = file.slice(start, end);
-          const pct = Math.round((end / file.size) * 80);
-          box.className = 'result info';
-          box.innerHTML = '<span class="spinner"></span>Upload ' + (i+1) + '/' + total + ' (' + pct + '%)...';
-          _convProgress(pct);
-
-          const url = '/?api=convert-to-model-chunk&sid=' + encodeURIComponent(sid) + '&idx=' + i + '&total=' + total;
-          const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: chunk });
-          let cd;
-          try { cd = await r.json(); } catch(e) {
-            box.className='result err';
-            box.innerHTML='Gagal kirim bagian '+(i+1)+': response bukan JSON';
-            _convProgress(0);
-            return;
-          }
-          if (!cd.ok) {
-            box.className='result err';
-            box.innerHTML='Gagal kirim bagian '+(i+1)+': '+esc(cd.error||'unknown');
-            _convProgress(0);
-            return;
-          }
-        }
-        box.className = 'result info';
-        box.innerHTML = '<span class="spinner"></span>Proses convert di server...';
-        _convProgress(90);
-
-        const commit = await apiCall('/?api=convert-to-model-commit', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sid, target, name, group })
-        });
-        d = commit;
+      try { d = JSON.parse(txt); } catch(e) {
+        _convProgress(0);
+        box.className='result err';
+        box.innerHTML='Server error (' + r.status + '): <small style="color:var(--muted)">' + esc(txt.slice(0,200)) + '</small>';
+        return;
       }
 
       if (d.error) {
         _convProgress(0);
         box.className='result err';
-        box.innerHTML='Gagal: '+esc(d.error)+(d.hint?'<br><small style="color:var(--muted)">'+esc(d.hint)+'</small>':'');
+        box.innerHTML='Gagal: '+esc(d.error)+(d.hint?'<br><small style="color:var(--muted)">'+esc(d.hint)+'</small>':'')+(d.trace?'<br><small style="color:var(--muted);font-size:.65rem">'+esc(d.trace)+'</small>':'');
         return;
       }
       if (!d.ok || !d.file) {
@@ -2514,69 +2239,24 @@ async function doConvert(){
       return;
     }
 
-    // === Binary → XML (default) ===
-    const CHUNK_SIZE = 1 * 1024 * 1024;
-    let xmlText = null;
-    let errObj = null;
-
-    if (file.size < 3 * 1024 * 1024) {
-      const r = await fetch('/?api=convert', {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body: file});
-      const ct = r.headers.get("content-type") || "";
-      if (ct.includes("xml")) {
-        xmlText = await r.text();
-      } else {
-        const txt = await r.text();
-        try { errObj = JSON.parse(txt); } catch(e) { errObj = { error: txt.slice(0,200) }; }
-      }
-    } else {
-      const sid = _randHex(16);
-      const total = Math.ceil(file.size / CHUNK_SIZE);
-      for (let i = 0; i < total; i++) {
-        const start = i * CHUNK_SIZE;
-        const end = Math.min(start + CHUNK_SIZE, file.size);
-        const chunk = file.slice(start, end);
-        const pct = Math.round((end / file.size) * 80);
-        box.className = 'result info';
-        box.innerHTML = '<span class="spinner"></span>Upload ' + (i+1) + '/' + total + ' (' + pct + '%)...';
-        _convProgress(pct);
-        const url = '/?api=convert-chunk&sid=' + encodeURIComponent(sid) + '&idx=' + i + '&total=' + total;
-        const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: chunk });
-        let cd;
-        try { cd = await r.json(); } catch(e) { box.className='result err'; box.innerHTML='Gagal kirim bagian '+(i+1); _convProgress(0); return; }
-        if (!cd.ok) { box.className='result err'; box.innerHTML='Gagal bagian '+(i+1)+': '+esc(cd.error||'unknown'); _convProgress(0); return; }
-      }
-      box.className = 'result info';
-      box.innerHTML = '<span class="spinner"></span>Proses convert...';
-      _convProgress(90);
-      const commit = await apiCall('/?api=convert-commit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sid })
-      });
-      if (commit.ok && commit.xml) xmlText = commit.xml;
-      else errObj = commit;
-    }
-
-    if (errObj) {
-      _convProgress(0);
-      box.className='result err';
-      box.innerHTML = 'Gagal: ' + esc(errObj.error || 'unknown') + (errObj.detail ? '<br><small style="color:var(--muted)">'+esc(errObj.detail)+'</small>' : '');
+    // to XML
+    _convProgress(60);
+    const r=await fetch('/?api=convert',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:file});
+    const ct = r.headers.get("content-type") || "";
+    if (ct.includes("xml")) {
+      const xml = await r.text();
+      const outName = file.name.replace(/\\.(rbxl|rbxm)$/i,'.rbxlx') || 'converted.rbxlx';
+      const blob = new Blob([xml], {type:'text/xml'});
+      const url = URL.createObjectURL(blob);
+      _convProgress(100);
+      box.className='result ok';
+      box.innerHTML='Berhasil!<div class="key-line"><a href="'+url+'" download="'+outName+'" style="color:#00d4ff;text-decoration:none">⬇ Download '+outName+'</a></div>';
+      setTimeout(()=>_convProgress(0), 800);
       return;
     }
-    if (!xmlText) {
-      _convProgress(0);
-      box.className='result err';
-      box.innerHTML = 'Response server tidak valid';
-      return;
-    }
-
-    const outName = file.name.replace(/\\.(rbxl|rbxm)$/i,'.rbxlx') || 'converted.rbxlx';
-    const blob = new Blob([xmlText], {type:'text/xml'});
-    const url = URL.createObjectURL(blob);
-    _convProgress(100);
-    box.className='result ok';
-    box.innerHTML='Berhasil!<div class="key-line"><a href="'+url+'" download="'+outName+'" style="color:#00d4ff;text-decoration:none">⬇ Download '+outName+'</a></div>';
-    setTimeout(()=>_convProgress(0), 800);
+    _convProgress(0);
+    box.className='result err';
+    box.innerHTML='Binary → XML butuh install package. Pakai Roblox Studio: File → Save to File As → .rbxlx';
   } catch(e){
     _convProgress(0);
     box.className='result err';
@@ -2642,7 +2322,6 @@ function _upLoadFields(){
     }
   }catch(e){}
 }
-
 function upSetMode(mode, silent){
   _upMode = mode;
   $('upModePersonal').classList.toggle('on', mode === 'personal');
@@ -2650,7 +2329,6 @@ function upSetMode(mode, silent){
   $('upGroupWrap').classList.toggle('hidden', mode !== 'group');
   if(!silent) _upSaveFields();
 }
-
 upDrop.addEventListener('click',()=>upFileInput.click());
 upDrop.addEventListener('dragover',e=>{e.preventDefault();upDrop.classList.add('over');});
 upDrop.addEventListener('dragleave',()=>upDrop.classList.remove('over'));
@@ -2689,7 +2367,6 @@ function upSetType(t){
     }
   } else { upDrop.querySelector('.drop-icon').textContent = icon; }
 }
-
 function _upHandleFile(f){
   const n=f.name.toLowerCase();
   const isAudio = _upAssetType === 'Audio';
@@ -2735,16 +2412,12 @@ function _upBigShowSuccess(assetId, assetName, assetType, groupId, apiKey){
     '<button class="cp" onclick="navigator.clipboard.writeText(\\''+assetId+'\\');this.textContent=\\'✓ COPIED\\';setTimeout(()=>this.textContent=\\'📋 COPY ID\\',1500)">📋 COPY ID</button>';
   startModerationPoll(assetId, apiKey, assetType);
 }
-
-// ==== MODERATION POLL ====
 let _modTimer = null;
 let _modAttempts = 0;
-
 function _modStopPoll(){
   if(_modTimer){ clearInterval(_modTimer); _modTimer = null; }
   _modAttempts = 0;
 }
-
 function _modRender(level, extra){
   const box = $('upModBox');
   if(!box) return;
@@ -2755,19 +2428,17 @@ function _modRender(level, extra){
     '<div class="mod-title">' + (levelIcons[level] || '❔') + ' ' + (levelLabels[level] || 'UNKNOWN') + '</div>' +
     (extra ? '<div class="mod-sub">' + esc(extra) + '</div>' : '');
 }
-
 async function startModerationPoll(assetId, apiKey, assetType){
   _modStopPoll();
   const wrap = $('upModWrap');
   if(!wrap) return;
   wrap.classList.remove('hidden');
   _modRender('pending', 'Baru di-upload. Cek tiap 15 detik...');
-
   const tick = async () => {
     _modAttempts++;
     if(_modAttempts > 60){
       _modStopPoll();
-      _modRender('pending', 'Masih pending setelah 15 menit. Cek manual di Creator Dashboard → Development Items.');
+      _modRender('pending', 'Masih pending setelah 15 menit. Cek manual di Creator Dashboard.');
       return;
     }
     try {
@@ -2780,7 +2451,7 @@ async function startModerationPoll(assetId, apiKey, assetType){
       if(lv === 'approved'){ _modStopPoll(); _modRender('approved', 'Asset udah lulus moderasi Roblox. Siap dipakai.'); return; }
       if(lv === 'rejected'){
         _modStopPoll();
-        _modRender('rejected', d.reason ? ('Alasan: ' + d.reason) : 'Roblox tolak asset ini. Cek Creator Dashboard buat detail.');
+        _modRender('rejected', d.reason ? ('Alasan: ' + d.reason) : 'Roblox tolak asset ini. Cek Creator Dashboard.');
         return;
       }
       const suffix = assetType === 'Audio' ? 'Audio biasanya 5-30 menit.'
@@ -2789,11 +2460,9 @@ async function startModerationPoll(assetId, apiKey, assetType){
       _modRender('pending', 'Cek ke-'+_modAttempts+' · masih nunggu. '+suffix);
     } catch(e){ _modRender('unknown', 'Error: ' + e.message); }
   };
-
   tick();
   _modTimer = setInterval(tick, 15000);
 }
-
 function _upStep(n, state){
   const el = $('step'+n);
   if(!el) return;
@@ -2804,7 +2473,6 @@ function _upShowStep3(text){
   const el = $('step3');
   if (el) el.innerHTML = '<span class="spinner"></span>' + esc(text);
 }
-
 async function doUploadRbxm(){
   const username=$('upUsername').value.trim();
   const apiKey=$('upApiKey').value.trim();
@@ -2907,15 +2575,13 @@ async function doUploadRbxm(){
   finally{ btn.disabled=false; btn.textContent='UPLOAD KE ROBLOX'; }
 }
 
-// ==== FREE MODELS ====
 let _fmFile = null;
-
 function fmOnFile(e){
   const f = e.target.files[0];
   if(!f) return;
   if(f.size > MAX_FREE_MB * 1024 * 1024){
     $('fmFileHint').className = 'hint err';
-    $('fmFileHint').textContent = '✗ File > ' + MAX_FREE_MB + ' MB (' + (f.size/1024/1024).toFixed(2) + ' MB)';
+    $('fmFileHint').textContent = '✗ File > ' + MAX_FREE_MB + ' MB';
     _fmFile = null; return;
   }
   _fmFile = f;
@@ -2923,7 +2589,6 @@ function fmOnFile(e){
   $('fmFileHint').textContent = '✓ ' + f.name + ' (' + (f.size/1024).toFixed(1) + ' KB)';
   e.target.value = '';
 }
-
 async function fmUpload(){
   const box = $('fmResult');
   const name = $('fmName').value.trim();
@@ -2971,7 +2636,6 @@ async function fmUpload(){
   } catch(e) { box.className='result err'; box.innerHTML='Error: '+esc(e.message); }
   finally { btn.disabled = false; btn.textContent = '⬆ UPLOAD FREE MODEL'; }
 }
-
 async function loadFreeModels(){
   const box = $('fmList');
   if(!TOKEN){ box.innerHTML='<div style="color:var(--muted);font-size:.8rem">Login dulu</div>'; return; }
@@ -2995,7 +2659,6 @@ async function loadFreeModels(){
     }).join('');
   } catch(e){ box.innerHTML='<div style="color:var(--red);font-size:.8rem">Error: '+esc(e.message)+'</div>'; }
 }
-
 async function fmDownload(id, name, ext){
   const d = await apiCall('/?api=free/download&id='+encodeURIComponent(id)+'&token='+encodeURIComponent(TOKEN));
   if(d.error){ alert(d.error); return; }
@@ -3009,7 +2672,6 @@ async function fmDownload(id, name, ext){
   setTimeout(()=>URL.revokeObjectURL(url), 2000);
   loadFreeModels();
 }
-
 async function fmDelete(id){
   if(!confirm('Hapus model ini?')) return;
   const d = await apiCall('/?api=free/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ token:TOKEN, id }) });
@@ -3017,7 +2679,6 @@ async function fmDelete(id){
   loadFreeModels();
 }
 
-// ==== PROFILE ====
 async function loadProfile(){
   if(!ME) return;
   $('pfUsername').textContent = ME.username || '—';
@@ -3027,7 +2688,6 @@ async function loadProfile(){
   $('pfPwResult').className = 'result'; $('pfPwResult').innerHTML = '';
   $('pfEmailResult').className = 'result'; $('pfEmailResult').innerHTML = '';
 }
-
 async function pfChangePassword(){
   const box = $('pfPwResult');
   const current = $('pfOldPw').value;
@@ -3047,7 +2707,6 @@ async function pfChangePassword(){
     $('pfOldPw').value=''; $('pfNewPw').value=''; $('pfNewPw2').value='';
   } catch(e){ box.className='result err'; box.innerHTML='Error: '+esc(e.message); }
 }
-
 async function pfChangeEmail(){
   const box = $('pfEmailResult');
   const password = $('pfEmailPw').value;
@@ -3070,28 +2729,22 @@ async function pfChangeEmail(){
 document.addEventListener('DOMContentLoaded', async ()=>{
   nangLoaderSetStatus('Checking session');
   if(!TOKEN){ const ck = getCookie('nang_session'); if(ck){ TOKEN = ck; localStorage.setItem('nang_session', ck); } }
-
   nangLoaderSetStatus('Loading data');
   try { await checkSession(); } catch(e){}
-
   nangLoaderSetStatus('Preparing UI');
   _upLoadFields();
   convUpdateTree();
-
   ['upUsername','upApiKey','upName','upDesc','upGroupId'].forEach(id=>{
     $(id).addEventListener('input', _upSaveFields);
     $(id).addEventListener('change', _upSaveFields);
   });
-
   const _convSvc = $('convTargetSvc');
   if(_convSvc) _convSvc.addEventListener('change', convUpdateTree);
-
   ['lwUser','lwPass'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')lwDoLogin();}));
   ['lwRegUser','lwRegEmail','lwRegPass','lwRegPass2'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')lwDoRegister();}));
   ['oPw'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doOwnerLogin();}));
   ['oGenUid'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doOwnerGen();}));
   ['mkUid'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doMyKeysGenerate();}));
-
   let _upUserT;
   $('upUsername').addEventListener('input',()=>{
     clearTimeout(_upUserT);
@@ -3105,7 +2758,6 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       else{ h.className='hint err'; h.textContent='✗ '+(d.error||'tidak ditemukan'); }
     },500);
   });
-
   let _upGroupT;
   $('upGroupId').addEventListener('input',()=>{
     clearTimeout(_upGroupT);
@@ -3120,7 +2772,6 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       else{ h.className='hint err'; h.textContent='✗ '+(d.error||'Grup tidak ditemukan'); }
     },500);
   });
-
   $('upApiKey').addEventListener('blur',async()=>{
     const k=$('upApiKey').value.trim();
     const h=$('upKeyHint');
@@ -3130,11 +2781,9 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     if(d.ok){ h.className='hint ok'; h.textContent='✓ API key valid'; }
     else { h.className='hint err'; h.textContent='✗ '+(d.error||'tidak valid'); }
   });
-
   checkKvStatus();
   setTimeout(nangLoaderHide, 600);
 });
-
 setTimeout(()=>{ const el = $('nangLoader'); if(el && !el.classList.contains('hide')) nangLoaderHide(); }, 3000);
 </script></body></html>`;
 }
