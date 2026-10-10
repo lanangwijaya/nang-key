@@ -351,19 +351,6 @@ function _readRawBody(req) {
   });
 }
 
-async function _convertBinaryToXml(buffer) {
-  const head8 = buffer.subarray(0, 8).toString("latin1");
-  const headXml = buffer.subarray(0, 64).toString("utf8").trim().toLowerCase();
-
-  if (headXml.startsWith("<?xml") || headXml.startsWith("<roblox")) {
-    return { ok: true, xml: buffer.toString("utf8"), already: "xml" };
-  }
-  if (head8 !== "<roblox!") {
-    return { ok: false, error: "File bukan RBXM/RBXL/RBXMX/RBXLX valid" };
-  }
-  return { ok: false, error: "Binary → XML perlu pakai Studio (manual)" };
-}
-
 async function _robloxUploadDirect({ apiKey, userId, groupId, buffer, fileName, assetType, displayName, description }) {
   const ext = fileName.toLowerCase().split(".").pop();
   const MIME_MAP = {
@@ -464,16 +451,6 @@ async function handleApi(req, res, path, method, params, ctx) {
     return await handleRawUpload(req, res);
   }
 
-  if (route === "convert" && method === "POST") {
-    const buffer = await _readRawBody(req);
-    res.setHeader("Content-Type", "application/json");
-    if (!buffer || !buffer.length) return res.status(200).json({ ok: false, error: "File kosong" });
-    const result = await _convertBinaryToXml(buffer);
-    if (!result.ok) return res.status(200).json(result);
-    res.setHeader("Content-Type", "text/xml; charset=utf-8");
-    return res.status(200).send(result.xml);
-  }
-
   if (route === "upload-chunk" && method === "POST") {
     res.setHeader("Content-Type", "application/json");
     const sid = String(params.get("sid") || "").trim();
@@ -526,7 +503,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     for (let i = 0; i < meta.total; i++) {
       const key = "nang:up:" + sid + ":" + String(i).padStart(4, "0");
       const b64 = await storeGet(key);
-      if (typeof b64 !== "string" || !b64.length) return res.status(200).json({ ok: false, error: "Bagian " + (i + 1) + " dari " + meta.total + " hilang — coba upload ulang" });
+      if (typeof b64 !== "string" || !b64.length) return res.status(200).json({ ok: false, error: "Bagian " + (i + 1) + " dari " + meta.total + " hilang" });
       buffers.push(Buffer.from(b64, "base64"));
     }
     const fullBuffer = Buffer.concat(buffers);
@@ -566,7 +543,7 @@ async function handleApi(req, res, path, method, params, ctx) {
       return res.status(200).json({
         ok: false,
         error: "Gagal konek Python function: " + String(e.message || e),
-        hint: "Pastikan api/convert.py dan requirements.txt ada di repo, lalu redeploy."
+        hint: "Pastikan api/convert.py + requirements.txt ada di repo, lalu redeploy."
       });
     }
   }
@@ -1265,9 +1242,6 @@ select.inp{cursor:pointer}
 .drop-icon{font-size:2rem;margin-bottom:8px;opacity:.7}
 .drop-text{font-size:0.85rem;margin-bottom:4px;word-break:break-all}
 .drop-hint{font-size:0.7rem;color:var(--muted)}
-.warn-box{padding:11px 14px;background:rgba(255,200,50,0.05);border:1px solid rgba(255,200,50,0.2);border-radius:11px;font-size:0.75rem;color:var(--yellow);margin-bottom:12px;line-height:1.7}
-.warn-box b{color:#fff}
-.warn-box a{color:var(--yellow)}
 .qr-wrap{display:flex;gap:14px;align-items:flex-start;margin-bottom:14px}
 .qr-img{width:100px;height:100px;border-radius:12px;border:2px solid var(--border2);object-fit:cover;flex-shrink:0;background:#fff}
 .qr-img-placeholder{width:100px;height:100px;border-radius:12px;border:2px dashed rgba(255,255,255,0.1);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:0.7rem;text-align:center;flex-shrink:0;background:rgba(255,255,255,0.02)}
@@ -1409,18 +1383,10 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 <div class="card-title">🔄 Converter</div>
 
 <div class="modal-tabs" style="margin-bottom:14px">
-  <button id="convModeToXml" class="on" onclick="convSetMode('toXml')">Binary → XML</button>
-  <button id="convModeToModel" onclick="convSetMode('toModel')">RBXL → RBXM</button>
+  <button id="convModeToModel" class="on" onclick="convSetMode('toModel')">RBXL → RBXM</button>
 </div>
 
-<div id="convToXmlWrap">
-  <div class="fmt-box">
-    Upload <span class="field">.rbxl / .rbxm</span> (binary) → hasil <span class="field">.rbxlx</span> XML.<br><br>
-    <b style="color:var(--yellow)">Cara lain: buka di Roblox Studio → File → Save As → .rbxlx</b>
-  </div>
-</div>
-
-<div id="convToModelWrap" class="hidden">
+<div id="convToModelWrap">
   <div class="fmt-box">
     Upload <span class="field">.rbxl / .rbxlx</span> → extract jadi <span class="field">.rbxm</span>.<br>
     Max file: <span class="field">4 MB</span>. Lebih dari itu, pakai Roblox Studio.
@@ -1503,9 +1469,6 @@ Limit web: max <span class="field">15 MB</span>
 <div id="upGroupWrap" class="hidden">
   <input type="text" class="inp" id="upGroupId" placeholder="Group ID (contoh: 7654321)" inputmode="numeric">
   <div class="hint" id="upGroupHint">Masukkan ID grup komunitas lu</div>
-  <div class="fmt-box" style="font-size:.7rem;line-height:1.7">
-    <b style="color:var(--yellow)">⚠️ Penting:</b> API key harus dari <b>akun yang jadi member grup</b> dengan role yang bisa bikin asset.
-  </div>
 </div>
 </div>
 <div class="card">
@@ -1666,7 +1629,6 @@ let MY_STORE = { price: 500, wa: "", dana: "", name: "", active: false, qr: "" }
 let _qrData = "";
 let _upAssetType = "Model";
 let _upMode = "personal";
-let _convMode = 'toXml';
 let _convGroup = true;
 const MAX_FREE_MB = 8;
 
@@ -2119,14 +2081,7 @@ async function doOwnerGen(){
   } catch(e) { box.className='result err'; box.innerHTML='Error: '+esc(e.message); }
 }
 
-function convSetMode(m){
-  _convMode = m;
-  $('convModeToXml').classList.toggle('on', m === 'toXml');
-  $('convModeToModel').classList.toggle('on', m === 'toModel');
-  $('convToXmlWrap').classList.toggle('hidden', m !== 'toXml');
-  $('convToModelWrap').classList.toggle('hidden', m !== 'toModel');
-  convUpdateTree();
-}
+function convSetMode(m){}
 function convSetGroup(g){
   _convGroup = g;
   $('convGroupOn').classList.toggle('on', g === true);
@@ -2168,16 +2123,10 @@ async function doConvert(){
   if(!input.files||!input.files[0])return;
   const file=input.files[0];
 
-  if(_convMode === 'toModel' && file.size > 4 * 1024 * 1024){
+  if(file.size > 4 * 1024 * 1024){
     box.className='result err';
     box.style.display='block';
-    box.innerHTML='❌ File > 4 MB. Vercel gak bisa handle file gede.<br><br><b style="color:var(--yellow)">Cara manual:</b><br>1. Buka file di <b>Roblox Studio</b><br>2. Explorer → klik service<br>3. Ctrl+A → Klik kanan → Save to File → .rbxm';
-    return;
-  }
-  if(_convMode === 'toXml' && file.size > 4 * 1024 * 1024){
-    box.className='result err';
-    box.style.display='block';
-    box.innerHTML='❌ File > 4 MB.<br><br><b style="color:var(--yellow)">Cara manual:</b><br>Buka di Roblox Studio → File → Save to File As → .rbxlx';
+    box.innerHTML='❌ File > 4 MB. Vercel limit body 4.5 MB.<br><br><b style="color:var(--yellow)">Cara manual (recommended):</b><br>1. Buka file di <b>Roblox Studio</b><br>2. Explorer → klik service<br>3. Ctrl+A → Klik kanan → Save to File → .rbxm';
     return;
   }
 
@@ -2186,77 +2135,55 @@ async function doConvert(){
   _convProgress(30);
 
   try{
-    if (_convMode === 'toModel') {
-      const target = $('convTargetSvc').value;
-      const name = $('convModelName').value.trim() || 'Extracted';
-      const group = _convGroup ? '1' : '0';
-      const url = '/api/convert?target=' + encodeURIComponent(target) + '&name=' + encodeURIComponent(name) + '&group=' + group;
+    const target = $('convTargetSvc').value;
+    const name = $('convModelName').value.trim() || 'Extracted';
+    const group = _convGroup ? '1' : '0';
+    const url = '/?api=convert-to-model&target=' + encodeURIComponent(target) + '&name=' + encodeURIComponent(name) + '&group=' + group;
 
-      _convProgress(60);
-      const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body: file});
-      const txt = await r.text();
-      let d;
-      try { d = JSON.parse(txt); } catch(e) {
-        _convProgress(0);
-        box.className='result err';
-        box.innerHTML='Server error (' + r.status + '): <small style="color:var(--muted)">' + esc(txt.slice(0,200)) + '</small>';
-        return;
-      }
-
-      if (d.error) {
-        _convProgress(0);
-        box.className='result err';
-        box.innerHTML='Gagal: '+esc(d.error)+(d.hint?'<br><small style="color:var(--muted)">'+esc(d.hint)+'</small>':'')+(d.trace?'<br><small style="color:var(--muted);font-size:.65rem">'+esc(d.trace)+'</small>':'');
-        return;
-      }
-      if (!d.ok || !d.file) {
-        _convProgress(0);
-        box.className='result err';
-        box.innerHTML='Response server tidak valid';
-        return;
-      }
-
-      const bin = atob(d.file);
-      const arr = new Uint8Array(bin.length);
-      for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
-      const blob = new Blob([arr], {type:'application/octet-stream'});
-      const dl = URL.createObjectURL(blob);
-
-      const svcList = (d.extracted || []).map(s => '<span style="background:rgba(0,232,122,.1);color:var(--green);padding:2px 8px;border-radius:6px;font-size:.7rem;margin:2px;display:inline-block">'+esc(s)+'</span>').join('');
-
-      _convProgress(100);
-      box.className='result ok';
-      box.innerHTML =
-        '<div style="font-weight:800;color:var(--green);margin-bottom:8px">✓ Convert selesai</div>'+
-        '<div style="font-size:.8rem;line-height:1.8;margin-bottom:8px">'+
-          '<div>Root: <b style="color:var(--cyan)">'+esc(name)+'</b></div>'+
-          '<div>Struktur: <b>'+(d.grouped ? 'Subfolder per Service' : 'Flat')+'</b></div>'+
-          '<div>Total object: <b>'+esc(String(d.totalObjects || 0))+'</b></div>'+
-          '<div>Service: '+svcList+'</div>'+
-        '</div>'+
-        '<div class="key-line"><a href="'+dl+'" download="'+esc(d.fileName)+'" style="color:#00d4ff;text-decoration:none;font-weight:700">⬇ Download '+esc(d.fileName)+' ('+(d.size/1024).toFixed(1)+' KB)</a></div>';
-      setTimeout(()=>_convProgress(0), 800);
-      return;
-    }
-
-    // to XML
     _convProgress(60);
-    const r=await fetch('/?api=convert',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:file});
-    const ct = r.headers.get("content-type") || "";
-    if (ct.includes("xml")) {
-      const xml = await r.text();
-      const outName = file.name.replace(/\\.(rbxl|rbxm)$/i,'.rbxlx') || 'converted.rbxlx';
-      const blob = new Blob([xml], {type:'text/xml'});
-      const url = URL.createObjectURL(blob);
-      _convProgress(100);
-      box.className='result ok';
-      box.innerHTML='Berhasil!<div class="key-line"><a href="'+url+'" download="'+outName+'" style="color:#00d4ff;text-decoration:none">⬇ Download '+outName+'</a></div>';
-      setTimeout(()=>_convProgress(0), 800);
+    const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body: file});
+    const txt = await r.text();
+    let d;
+    try { d = JSON.parse(txt); } catch(e) {
+      _convProgress(0);
+      box.className='result err';
+      box.innerHTML='Server error (' + r.status + '): <small style="color:var(--muted)">' + esc(txt.slice(0,200)) + '</small>';
       return;
     }
-    _convProgress(0);
-    box.className='result err';
-    box.innerHTML='Binary → XML butuh install package. Pakai Roblox Studio: File → Save to File As → .rbxlx';
+
+    if (d.error) {
+      _convProgress(0);
+      box.className='result err';
+      box.innerHTML='Gagal: '+esc(d.error)+(d.hint?'<br><small style="color:var(--muted)">'+esc(d.hint)+'</small>':'')+(d.trace?'<br><small style="color:var(--muted);font-size:.65rem">'+esc(d.trace)+'</small>':'');
+      return;
+    }
+    if (!d.ok || !d.file) {
+      _convProgress(0);
+      box.className='result err';
+      box.innerHTML='Response server tidak valid';
+      return;
+    }
+
+    const bin = atob(d.file);
+    const arr = new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+    const blob = new Blob([arr], {type:'application/octet-stream'});
+    const dl = URL.createObjectURL(blob);
+
+    const svcList = (d.extracted || []).map(s => '<span style="background:rgba(0,232,122,.1);color:var(--green);padding:2px 8px;border-radius:6px;font-size:.7rem;margin:2px;display:inline-block">'+esc(s)+'</span>').join('');
+
+    _convProgress(100);
+    box.className='result ok';
+    box.innerHTML =
+      '<div style="font-weight:800;color:var(--green);margin-bottom:8px">✓ Convert selesai</div>'+
+      '<div style="font-size:.8rem;line-height:1.8;margin-bottom:8px">'+
+        '<div>Root: <b style="color:var(--cyan)">'+esc(name)+'</b></div>'+
+        '<div>Struktur: <b>'+(d.grouped ? 'Subfolder per Service' : 'Flat')+'</b></div>'+
+        '<div>Total object: <b>'+esc(String(d.totalObjects || 0))+'</b></div>'+
+        '<div>Service: '+svcList+'</div>'+
+      '</div>'+
+      '<div class="key-line"><a href="'+dl+'" download="'+esc(d.fileName)+'" style="color:#00d4ff;text-decoration:none;font-weight:700">⬇ Download '+esc(d.fileName)+' ('+(d.size/1024).toFixed(1)+' KB)</a></div>';
+    setTimeout(()=>_convProgress(0), 800);
   } catch(e){
     _convProgress(0);
     box.className='result err';
@@ -2264,7 +2191,6 @@ async function doConvert(){
   }
 }
 
-// ==== UPLOAD ====
 let _upFile=null;
 const upDrop=$('upDrop');
 const upFileInput=$('upFileInput');
