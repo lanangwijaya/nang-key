@@ -123,22 +123,23 @@ const _EXPIRE_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_QUOTA = 10;
 const SESSION_MS = 30 * 24 * 3600 * 1000;
 function _simpleHash(str) { let h = 0; for (let i = 0; i < str.length; i++) h = ((h * 31) + str.charCodeAt(i)) % 1000000007; return h; }
-function _getWindow() { return Math.floor(Date.now() / 86400000); }
-function _makeKeyAt(uid, w) {
-  const h = _simpleHash(_SECRET + String(uid) + String(w));
+function _makeKeyAt(uid, ts) {
+  const code = Math.floor(ts / 60000) % 10000;
+  const h = _simpleHash(_SECRET + String(uid) + String(code));
   const p1 = String(uid).slice(0, 5).padEnd(5, "0");
   return "NANG-" + p1 + "-" + String(h % 10000).padStart(4, "0") + "-" + String(Math.floor(h / 10000) % 10000).padStart(4, "0");
 }
-function _makeKey(uid) { return _makeKeyAt(uid, _getWindow()); }
+function _makeKey(uid) { return _makeKeyAt(uid, Date.now()); }
 function _verifyKey(uid, key) {
   const k = String(key || "").toUpperCase().replace(/\s+/g, "");
   if (!k) return { valid: false, remainingMs: 0 };
-  const w = _getWindow();
   const now = Date.now();
-  const endOfToday = (w + 1) * 86400000;
-  if (_makeKeyAt(uid, w) === k || _makeKeyAt(uid, w - 1) === k) {
-    const rem = Math.max(0, endOfToday - now);
-    return { valid: rem > 0, remainingMs: rem };
+  for (let delta = 0; delta < 1440; delta++) {
+    const ts = now - delta * 60000;
+    if (_makeKeyAt(uid, ts) === k) {
+      const rem = Math.max(0, (ts + _EXPIRE_MS) - now);
+      return { valid: rem > 0, remainingMs: rem };
+    }
   }
   return { valid: false, remainingMs: 0 };
 }
@@ -150,261 +151,6 @@ function _expiryStr(uid, key) {
   const r = _verifyKey(uid, key);
   return r.valid ? _fmtRemaining(r.remainingMs) : null;
 }
-
-// ═══════════════════════════════════════════════════════
-// DEOBF — Pure JS, no fengari
-// ═══════════════════════════════════════════════════════
-
-function detectObfuscator(src) {
-  const s = String(src || "");
-  const len = s.length;
-  if (len < 50) return { type: "plain", confidence: 1, reason: "terlalu pendek" };
-
-  if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(s.slice(0, 200))) {
-    return { type: "bytecode", confidence: 0.9, reason: "binary header" };
-  }
-
-  const sig = [
-    { type: "IronBrew2",     re: /IronBrew|AztupBrew|ironbrew/i, conf: 0.9 },
-    { type: "MoonSec",       re: /Moonsec|MoonsecV\d|MoonsecVM/i, conf: 0.95 },
-    { type: "MoonSec",       re: /Moonsec\s*V?\d|moonsec\s*[Vv]\d/i, conf: 0.9 },
-    { type: "Luraph",        re: /Luraph|LPH_\d|LPH_no_vm/i, conf: 0.95 },
-    { type: "Psu",           re: /Psu|PSU_|_psu_/i, conf: 0.9 },
-    { type: "WeAreDevs",     re: /WeAreDevs|WAD_OBFUSCATOR/i, conf: 0.9 },
-    { type: "Obfuscator.io", re: /obfuscator\.io|obfuscator_io/i, conf: 0.9 },
-    { type: "SynapseBC",     re: /Synapse|synapse_load|syn_load/i, conf: 0.9 },
-    { type: "Prometheus",    re: /Prometheus|prometheus_v/i, conf: 0.9 },
-    { type: "AztupBrew",     re: /AztupBrew|aztupbrew/i, conf: 0.9 },
-  ];
-
-  for (const x of sig) if (x.re.test(s)) return { type: x.type, confidence: x.conf };
-
-  const printable = (s.match(/[\x20-\x7e\n\r\t]/g) || []).length;
-  if (printable / s.length < 0.4) return { type: "bytecode-or-encrypted", confidence: 0.7 };
-
-  const shortIds = (s.match(/\b[a-zA-Z]{1,2}\b/g) || []).length;
-  if (shortIds / s.length > 0.15) return { type: "minified", confidence: 0.5 };
-
-  return { type: "plain", confidence: 0.4 };
-}
-
-// decode base64 (Lua-compatible, supports +/-, padding optional)
-function _b64decode(str) {
-  let s = String(str).replace(/[^A-Za-z0-9+/=]/g, "").replace(/-/g, "+").replace(/_/g, "/");
-  while (s.length % 4) s += "=";
-  try { return Buffer.from(s, "base64").toString("utf8"); } catch { return null; }
-}
-
-// decode Lua string literal "\x41\x42" or "ABC"
-function _decodeLuaString(raw) {
-  let out = "";
-  for (let i = 0; i < raw.length; i++) {
-    const c = raw[i];
-    if (c === "\\") {
-      const n = raw[i + 1];
-      if (n === "n") { out += "\n"; i++; }
-      else if (n === "t") { out += "\t"; i++; }
-      else if (n === "r") { out += "\r"; i++; }
-      else if (n === "\\") { out += "\\"; i++; }
-      else if (n === '"') { out += '"'; i++; }
-      else if (n === "'") { out += "'"; i++; }
-      else if (n === "a") { out += String.fromCharCode(7); i++; }
-      else if (n === "b") { out += "\b"; i++; }
-      else if (n === "f") { out += "\f"; i++; }
-      else if (n === "v") { out += "\v"; i++; }
-      else if (n === "x") {
-        const hex = raw.slice(i + 2, i + 4);
-        if (/^[0-9a-f]{2}$/i.test(hex)) { out += String.fromCharCode(parseInt(hex, 16)); i += 3; }
-        else { out += "x"; i++; }
-      }
-      else if (/[0-9]/.test(n)) {
-        let num = n, j = i + 2;
-        while (j < raw.length && /[0-9]/.test(raw[j]) && num.length < 3) { num += raw[j]; j++; }
-        out += String.fromCharCode(parseInt(num, 10) & 0xff);
-        i = j - 1;
-      }
-      else { out += n; i++; }
-    } else out += c;
-  }
-  return out;
-}
-
-// ekstrak string literal dari Lua source
-function _extractLuaString(expr) {
-  expr = expr.trim();
-  // "..." atau '...'
-  let m = expr.match(/^"((?:[^"\\]|\\.)*)"$/s);
-  if (m) return _decodeLuaString(m[1]);
-  m = expr.match(/^'((?:[^'\\]|\\.)*)'$/s);
-  if (m) return _decodeLuaString(m[1]);
-  m = expr.match(/^\[\[([\s\S]*?)\]\]$/);
-  if (m) return m[1];
-  return null;
-}
-
-// evaluate string.char(n1, n2, ...)
-function _evalStringChar(expr) {
-  const m = expr.match(/^\s*(?:string\.)?char\s*\(([\s\S]+)\)\s*$/);
-  if (!m) return null;
-  const args = m[1].split(",").map(x => x.trim());
-  let out = "";
-  for (const a of args) {
-    const n = Number(a);
-    if (!isNaN(n)) out += String.fromCharCode(n & 0xff);
-    else return null;
-  }
-  return out;
-}
-
-// evaluate table.concat({...}, sep)
-function _evalTableConcat(expr) {
-  const m = expr.match(/^\s*table\.concat\s*\(\s*\{([\s\S]*?)\}\s*(?:,\s*(.+?))?\s*\)\s*$/);
-  if (!m) return null;
-  const items = m[1].split(",").map(x => x.trim());
-  const sep = m[2] ? (_extractLuaString(m[2]) || "") : "";
-  let out = [];
-  for (const it of items) {
-    let v = _extractLuaString(it);
-    if (v === null) v = _evalStringChar(it);
-    if (v === null) return null;
-    out.push(v);
-  }
-  return out.join(sep);
-}
-
-// recursive evaluator untuk expression string
-function _evalLuaStringExpr(expr, depth) {
-  depth = depth || 0;
-  if (depth > 10) return null;
-  expr = String(expr || "").trim();
-
-  // unwrap outer parens
-  while (expr.startsWith("(") && expr.endsWith(")")) {
-    let balanced = 0, ok = true;
-    for (let i = 0; i < expr.length; i++) {
-      if (expr[i] === "(") balanced++;
-      else if (expr[i] === ")") { balanced--; if (balanced === 0 && i < expr.length - 1) { ok = false; break; } }
-    }
-    if (ok) expr = expr.slice(1, -1).trim();
-    else break;
-  }
-
-  // direct string literal
-  let s = _extractLuaString(expr);
-  if (s !== null) return s;
-
-  // string.char(...)
-  s = _evalStringChar(expr);
-  if (s !== null) return s;
-
-  // table.concat({...}, sep)
-  s = _evalTableConcat(expr);
-  if (s !== null) return s;
-
-  // base64 decode via various functions
-  const b64re = /^(?:base64[_]?decode|base64|b64d|atob)\s*\(\s*([\s\S]+)\s*\)\s*$/i;
-  const bm = expr.match(b64re);
-  if (bm) {
-    const inner = _evalLuaStringExpr(bm[1], depth + 1);
-    if (inner !== null) return _b64decode(inner);
-  }
-
-  // string.rep(s, n)
-  const rm = expr.match(/^string\.rep\s*\(\s*([\s\S]+?)\s*,\s*(\d+)\s*\)\s*$/);
-  if (rm) {
-    const inner = _evalLuaStringExpr(rm[1], depth + 1);
-    if (inner !== null) return inner.repeat(Number(rm[2]));
-  }
-
-  // string.reverse
-  const revm = expr.match(/^string\.reverse\s*\(\s*([\s\S]+)\s*\)\s*$/);
-  if (revm) {
-    const inner = _evalLuaStringExpr(revm[1], depth + 1);
-    if (inner !== null) return inner.split("").reverse().join("");
-  }
-
-  // string.gsub(s, pat, rep) — handle simple cases
-  const gsm = expr.match(/^string\.gsub\s*\(\s*([\s\S]+?)\s*,\s*(.+?)\s*,\s*(.+?)\s*\)\s*$/);
-  if (gsm) {
-    const inner = _evalLuaStringExpr(gsm[1], depth + 1);
-    const pat = _extractLuaString(gsm[2]);
-    const rep = _extractLuaString(gsm[3]);
-    if (inner !== null && pat !== null && rep !== null) {
-      try { return inner.replace(new RegExp(pat.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), rep); }
-      catch { return inner.split(pat).join(rep); }
-    }
-  }
-
-  // concatenation a .. b .. c
-  if (expr.includes("..")) {
-    // split on .. not inside quotes
-    const parts = [];
-    let cur = "", depth2 = 0, inStr = null;
-    for (let i = 0; i < expr.length; i++) {
-      const c = expr[i];
-      if (inStr) {
-        cur += c;
-        if (c === inStr && expr[i - 1] !== "\\") inStr = null;
-      } else if (c === '"' || c === "'") {
-        inStr = c; cur += c;
-      } else if (c === "(") { depth2++; cur += c; }
-      else if (c === ")") { depth2--; cur += c; }
-      else if (c === "." && expr[i + 1] === "." && depth2 === 0) {
-        parts.push(cur); cur = ""; i++;
-      } else cur += c;
-    }
-    parts.push(cur);
-    if (parts.length > 1) {
-      const vals = parts.map(p => _evalLuaStringExpr(p, depth + 1));
-      if (vals.every(v => v !== null)) return vals.join("");
-    }
-  }
-
-  return null;
-}
-
-// main deobf function
-function deobfuscate(src) {
-  const s = String(src || "");
-  const trimmed = s.trim();
-
-  // pattern 1: file cuma loadstring(EXPR)() di akhir, atau ada prefix kode lain
-  // cari loadstring(...)() — yang terakhir
-  const m = trimmed.match(/loadstring\s*\(\s*([\s\S]+?)\s*\)\s*\(\s*\)\s*;?\s*$/);
-  if (m) {
-    const expr = m[1];
-    const result = _evalLuaStringExpr(expr);
-    if (result !== null && result.length > 0) return { ok: true, code: result, method: "loadstring-expr" };
-  }
-
-  // pattern 2: pcall(loadstring, EXPR) atau load(EXPR)
-  const m2 = trimmed.match(/(?:loadstring|load)\s*\(\s*([\s\S]+?)\s*\)/);
-  if (m2) {
-    const result = _evalLuaStringExpr(m2[1]);
-    if (result !== null && result.length > 0) return { ok: true, code: result, method: "load" };
-  }
-
-  // pattern 3: return EXPR di mana EXPR adalah string concat
-  const m3 = trimmed.match(/^return\s+([\s\S]+)$/);
-  if (m3) {
-    const result = _evalLuaStringExpr(m3[1]);
-    if (result !== null && result.length > 0) return { ok: true, code: result, method: "return" };
-  }
-
-  // pattern 4: file cuma string literal (base64 dll)
-  const direct = _extractLuaString(trimmed);
-  if (direct !== null && direct.length > 20) {
-    // coba decode sebagai base64
-    const decoded = _b64decode(direct);
-    if (decoded && decoded.length > 10 && /[\x20-\x7e\n\r\t]/.test(decoded.slice(0, 100))) {
-      return { ok: true, code: decoded, method: "base64-literal" };
-    }
-    return { ok: true, code: direct, method: "string-literal" };
-  }
-
-  return { ok: false };
-}
-
 async function _getRobloxUser(uid) {
   try { const r = await fetch("https://users.roblox.com/v1/users/" + uid); if (!r.ok) return null; return (await r.json()).name || null; }
   catch { return null; }
@@ -558,12 +304,10 @@ async function handle(req, res) {
     const gameName = String(params.get("game") || "Unknown").slice(0, 64);
     const placeId = String(params.get("place") || "0").slice(0, 20);
     const jobId = String(params.get("job") || "").slice(0, 40);
-    const role = String(params.get("role") || "").slice(0, 32);
     sendWebhook([
       { name: "Event", value: event, inline: false },
       { name: "Username", value: user, inline: true },
       { name: "User ID", value: uid, inline: true },
-      { name: "Role", value: role || "-", inline: true },
       { name: "Executor", value: exec, inline: true },
       { name: "Game", value: gameName, inline: true },
       { name: "Place ID", value: placeId, inline: true },
@@ -697,37 +441,6 @@ async function handleApi(req, res, path, method, params, ctx) {
 
   if (route === "upload-rbxm-raw" && method === "POST") {
     return await handleRawUpload(req, res);
-  }
-
-  if (route === "deobf/detect" && method === "POST") {
-    const buf = await _readRawBody(req);
-    res.setHeader("Content-Type", "application/json");
-    if (!buf || !buf.length) return res.status(200).json({ ok: false, error: "kosong" });
-    const src = buf.toString("utf8");
-    return res.status(200).json({ ok: true, detected: detectObfuscator(src), size: src.length });
-  }
-
-  if (route === "deobf/run" && method === "POST") {
-    const buf = await _readRawBody(req);
-    res.setHeader("Content-Type", "application/json");
-    if (!buf || !buf.length) return res.status(200).json({ ok: false, error: "kosong" });
-    const src = buf.toString("utf8");
-    const det = detectObfuscator(src);
-    const out = { detected: det, size: src.length, deobf: null, deobfErr: null, method: null };
-
-    const result = deobfuscate(src);
-    if (result.ok) {
-      out.deobf = result.code;
-      out.method = result.method;
-    } else {
-      if (det.confidence >= 0.9) {
-        out.deobfErr = "Tipe " + det.type + " pakai VM/interpreter runtime. Gak bisa deobf statically — butuh runtime trace.";
-      } else {
-        out.deobfErr = "Pola wrapper gak ketemu. Kemungkinan obfuscator custom atau VM.";
-      }
-    }
-
-    return res.status(200).json({ ok: true, ...out });
   }
 
   if (route === "convert" && method === "POST") {
@@ -961,6 +674,70 @@ async function handleApi(req, res, path, method, params, ctx) {
       }
       return res.status(200).json({ ok: true, done: false });
     } catch (e) { return res.status(200).json({ ok: false, error: String(e.message || e) }); }
+  }
+
+  if (route === "moderation-status" && method === "GET") {
+    const assetId = String(params.get("id") || "").trim();
+    const apiKey = String(params.get("k") || "").trim();
+    if (!assetId || !/^\d+$/.test(assetId)) return res.status(200).json({ ok: false, error: "assetId invalid" });
+    if (!apiKey) return res.status(200).json({ ok: false, error: "apiKey kosong" });
+    try {
+      const r = await fetch("https://apis.roblox.com/assets/v1/assets/" + encodeURIComponent(assetId), {
+        method: "GET",
+        headers: { "x-api-key": apiKey },
+      });
+      const text = await r.text();
+      let data;
+      try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+      if (r.status === 401) return res.status(200).json({ ok: false, error: "API key invalid/expired", code: 401 });
+      if (r.status === 403) return res.status(200).json({ ok: false, error: "Forbidden — API key gak punya akses baca asset ini", code: 403 });
+      if (r.status === 404) return res.status(200).json({ ok: false, error: "Asset belum kebaca Roblox (delay) / tidak ada", code: 404 });
+      if (!r.ok) return res.status(200).json({ ok: false, error: "HTTP " + r.status + " — " + _flatRobloxErrors(data), code: r.status });
+
+      const mod =
+        data.moderationResult ||
+        data.moderation ||
+        (data.asset && data.asset.moderationResult) ||
+        null;
+
+      let state = "Unknown";
+      let reason = null;
+      let createdAt = data.createdAt || (data.asset && data.asset.createdAt) || null;
+
+      if (mod) {
+        state =
+          mod.state ||
+          mod.moderationState ||
+          mod.status ||
+          "Unknown";
+        reason =
+          (mod.moderationDetails && (mod.moderationDetails.message || mod.moderationDetails.reason)) ||
+          mod.reason ||
+          mod.message ||
+          null;
+      } else if (data.assetState) {
+        state = data.assetState;
+      }
+
+      const normalized = String(state).toLowerCase();
+      let level = "pending";
+      if (normalized.includes("approv")) level = "approved";
+      else if (normalized.includes("reject")) level = "rejected";
+      else if (normalized.includes("review") || normalized.includes("pending")) level = "pending";
+
+      return res.status(200).json({
+        ok: true,
+        assetId,
+        state,
+        level,
+        reason,
+        createdAt,
+        raw: mod || null,
+      });
+    } catch (e) {
+      return res.status(200).json({ ok: false, error: "Gagal cek moderasi: " + String(e.message || e) });
+    }
   }
 
   if (route === "free/list" && method === "GET") {
@@ -1562,6 +1339,13 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 .upload-mode-tabs{display:flex;gap:4px;background:rgba(10,10,22,0.8);border-radius:10px;padding:4px;border:1px solid var(--border);margin-bottom:14px}
 .upload-mode-tabs button{flex:1;padding:8px;border:none;border-radius:7px;background:transparent;color:var(--muted);font-family:inherit;font-weight:600;font-size:.8rem;cursor:pointer}
 .upload-mode-tabs button.on{background:linear-gradient(135deg,rgba(224,60,138,.25),rgba(155,77,224,.2));color:#fff}
+.mod-box{padding:14px;border-radius:12px;margin-top:6px;line-height:1.7;border-width:1px;border-style:solid}
+.mod-box.pending{background:rgba(255,200,50,.05);border-color:rgba(255,200,50,.3);color:var(--yellow)}
+.mod-box.approved{background:rgba(0,232,122,.06);border-color:rgba(0,232,122,.35);color:var(--green)}
+.mod-box.rejected{background:rgba(255,80,80,.06);border-color:rgba(255,80,80,.35);color:#ff9090}
+.mod-box.unknown{background:rgba(255,255,255,.02);border-color:var(--border);color:var(--muted)}
+.mod-box .mod-title{font-size:1rem;font-weight:800;margin-bottom:6px}
+.mod-box .mod-sub{font-size:.75rem;opacity:.85}
 </style></head><body>
 
 <div id="nangLoader">
@@ -1659,13 +1443,6 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 <button class="btn-cyan" onclick="document.getElementById('convFile').click()">Pilih File</button>
 <div class="result" id="convResult"></div>
 </div>
-<div class="card">
-<div class="card-title">Deobf Detector</div>
-<div class="fmt-box">Deteksi tipe obfuscator + coba deobf kalau wrapper-only (loadstring / base64 / string.char).</div>
-<input type="file" id="deobfFile" accept=".lua,.txt" style="display:none" onchange="doDeobf()">
-<button class="btn-cyan" onclick="document.getElementById('deobfFile').click()">Pilih File Lua</button>
-<div class="result" id="deobfResult"></div>
-</div>
 </div>
 
 <div class="panel" id="tab2">
@@ -1683,8 +1460,7 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 1. Bikin akun Roblox khusus automation<br>
 2. Invite akun ke grup + role min bikin asset<br>
 3. Login pakai akun itu → bikin API key<br>
-4. Sama kayak di atas, tapi key punya akses grup<br>
-5. <b style="color:var(--pink)">Jangan pakai akun utama</b> — key bisa akses semua akun itu
+4. <b style="color:var(--pink)">Jangan pakai akun utama</b> — key bisa akses semua akun itu
 </div>
 </div>
 <div class="card">
@@ -1733,6 +1509,12 @@ Limit web: max <span class="field">15 MB</span>
 <input type="text" class="inp" id="upDesc" placeholder="Deskripsi (opsional)">
 <button class="btn-cyan" id="upBtn" onclick="doUploadRbxm()">UPLOAD KE ROBLOX</button>
 <div class="result" id="upBigResult"></div>
+<div class="card hidden" id="upModWrap" style="margin-top:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border)">
+  <div class="card-title">🛡️ Status Moderasi Roblox</div>
+  <div id="upModBox" class="mod-box unknown">
+    <div class="mod-sub">Menunggu upload selesai...</div>
+  </div>
+</div>
 <div id="upProgress" style="margin-top:12px;display:none">
   <div style="font-size:.82rem;padding:6px 0;color:var(--muted)" id="step1">1. Cari akun Roblox</div>
   <div style="font-size:.82rem;padding:6px 0;color:var(--muted)" id="step2">2. Verifikasi API Key</div>
@@ -2346,43 +2128,7 @@ async function doConvert(){
   }catch(e){box.className='result err';box.innerHTML='Error: '+esc(e.message);}
 }
 
-async function doDeobf(){
-  const input = $('deobfFile');
-  const box = $('deobfResult');
-  if(!input.files || !input.files[0]) return;
-  const f = input.files[0];
-  if(f.size > 5*1024*1024){ box.className='result err'; box.innerHTML='File > 5 MB'; return; }
-  box.className='result info';
-  box.innerHTML='<span class="spinner"></span>Analisis...';
-  try {
-    const buf = await f.arrayBuffer();
-    const r = await fetch('/?api=deobf/run', { method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:buf });
-    const d = await r.json();
-    if(!d.ok){ box.className='result err'; box.innerHTML='Gagal: '+esc(d.error); return; }
-    const t = d.detected;
-    let html = '<b>Tipe:</b> '+esc(t.type)+' ('+Math.round((t.confidence||0)*100)+'%)<br>';
-    html += '<b>Size:</b> '+d.size.toLocaleString('id-ID')+' bytes';
-    if(d.deobf){
-      html += '<br><b style="color:var(--green)">✓ Deobf berhasil!</b> ('+esc(d.method||'-')+')';
-      html += '<br>Output: '+d.deobf.length.toLocaleString('id-ID')+' bytes';
-      html += '<br><button class="btn-green" style="margin-top:8px" onclick="downloadDeobf()">⬇ Download .lua</button>';
-      window.__deobfOut = d.deobf;
-    } else if(d.deobfErr){
-      html += '<br><span style="color:var(--yellow)">⚠️</span> '+esc(d.deobfErr);
-    }
-    box.className='result ok';
-    box.innerHTML = html;
-  } catch(e){ box.className='result err'; box.innerHTML='Error: '+esc(e.message); }
-}
-function downloadDeobf(){
-  const s = window.__deobfOut || '';
-  const blob = new Blob([s], {type:'text/plain'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'deobfuscated.lua';
-  a.click();
-}
-
+// ==== UPLOAD ====
 let _upFile=null;
 const upDrop=$('upDrop');
 const upFileInput=$('upFileInput');
@@ -2492,13 +2238,20 @@ function _upHandleFile(f){
   upDrop.querySelector('.drop-hint').textContent=(f.size/1024).toFixed(1)+' KB';
   _upHideBig();
 }
-function _upHideBig(){ upBigResult.className='result'; upBigResult.innerHTML=''; }
+function _upHideBig(){
+  upBigResult.className='result'; upBigResult.innerHTML='';
+  _modStopPoll();
+  const wrap = $('upModWrap');
+  if(wrap){ wrap.classList.add('hidden'); }
+  const box = $('upModBox');
+  if(box){ box.className = 'mod-box unknown'; box.innerHTML = '<div class="mod-sub">Menunggu upload selesai...</div>'; }
+}
 function _upBigShowFail(msg, hint){
   $('upProgress').style.display='none';
   upBigResult.className='result err';
   upBigResult.innerHTML = '❌ '+esc(msg)+(hint ? '<br><small>💡 '+esc(hint)+'</small>' : '');
 }
-function _upBigShowSuccess(assetId, assetName, assetType, groupId){
+function _upBigShowSuccess(assetId, assetName, assetType, groupId, apiKey){
   $('upProgress').style.display='none';
   const ico = assetType === 'Audio' ? '🎵' : '📦';
   const target = groupId ? 'Grup #' + groupId : 'Akun pribadi';
@@ -2506,7 +2259,71 @@ function _upBigShowSuccess(assetId, assetName, assetType, groupId){
   upBigResult.innerHTML = '✅ UPLOAD BERHASIL ke <b>'+esc(target)+'</b><br>'+ico+' <b>'+esc(assetName||'Asset')+'</b><br><div class="key-line">Asset ID: '+esc(assetId)+'</div>'+
     '<a href="https://www.roblox.com/library/'+encodeURIComponent(assetId)+'" target="_blank" style="color:var(--cyan)">🌐 Buka di Roblox</a> '+
     '<button class="cp" onclick="navigator.clipboard.writeText(\\''+assetId+'\\');this.textContent=\\'✓ COPIED\\';setTimeout(()=>this.textContent=\\'📋 COPY ID\\',1500)">📋 COPY ID</button>';
+  startModerationPoll(assetId, apiKey, assetType);
 }
+
+// ==== MODERATION POLL ====
+let _modTimer = null;
+let _modAttempts = 0;
+
+function _modStopPoll(){
+  if(_modTimer){ clearInterval(_modTimer); _modTimer = null; }
+  _modAttempts = 0;
+}
+
+function _modRender(level, extra){
+  const box = $('upModBox');
+  if(!box) return;
+  const levelIcons = { approved: '✅', rejected: '❌', pending: '⏳', unknown: '❔' };
+  const levelLabels = { approved: 'LULUS MODERASI', rejected: 'DITOLAK MODERASI', pending: 'SEDANG DICEK ROBLOX', unknown: 'STATUS BELUM JELAS' };
+  box.className = 'mod-box ' + (level || 'unknown');
+  box.innerHTML =
+    '<div class="mod-title">' + (levelIcons[level] || '❔') + ' ' + (levelLabels[level] || 'UNKNOWN') + '</div>' +
+    (extra ? '<div class="mod-sub">' + esc(extra) + '</div>' : '');
+}
+
+async function startModerationPoll(assetId, apiKey, assetType){
+  _modStopPoll();
+  const wrap = $('upModWrap');
+  if(!wrap) return;
+  wrap.classList.remove('hidden');
+  _modRender('pending', 'Baru di-upload. Cek tiap 15 detik...');
+
+  const tick = async () => {
+    _modAttempts++;
+    if(_modAttempts > 60){
+      _modStopPoll();
+      _modRender('pending', 'Masih pending setelah 15 menit. Cek manual di Creator Dashboard → Development Items.');
+      return;
+    }
+    try {
+      const d = await apiCall('/?api=moderation-status&id='+encodeURIComponent(assetId)+'&k='+encodeURIComponent(apiKey));
+      if(!d.ok){
+        _modRender('unknown', (d.error || 'Gagal cek. Retry...'));
+        return;
+      }
+      const lv = d.level || 'unknown';
+      if(lv === 'approved'){
+        _modStopPoll();
+        _modRender('approved', 'Asset udah lulus moderasi Roblox. Siap dipakai.');
+        return;
+      }
+      if(lv === 'rejected'){
+        _modStopPoll();
+        _modRender('rejected', d.reason ? ('Alasan: ' + d.reason) : 'Roblox tolak asset ini. Cek Creator Dashboard buat detail.');
+        return;
+      }
+      const suffix = assetType === 'Audio' ? 'Audio biasanya 5-30 menit.' : 'Model biasanya lebih cepat.';
+      _modRender('pending', 'Cek ke-'+_modAttempts+' · masih nunggu. '+suffix);
+    } catch(e){
+      _modRender('unknown', 'Error: ' + e.message);
+    }
+  };
+
+  tick();
+  _modTimer = setInterval(tick, 15000);
+}
+
 function _upStep(n, state){
   const el = $('step'+n);
   if(!el) return;
@@ -2614,12 +2431,13 @@ async function doUploadRbxm(){
     }
     if(!assetId){ _upStep(4,'err'); throw new Error(lastErr || 'Timeout. Cek dashboard Roblox.'); }
     _upStep(4,'done');
-    _upBigShowSuccess(assetId, name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac)$/i,''), _upAssetType, groupId);
+    _upBigShowSuccess(assetId, name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac)$/i,''), _upAssetType, groupId, apiKey);
   }
   catch(e){ _upBigShowFail(e.message || 'Error tidak diketahui'); }
   finally{ btn.disabled=false; btn.textContent='UPLOAD KE ROBLOX'; }
 }
 
+// ==== FREE MODELS ====
 let _fmFile = null;
 
 function fmOnFile(e){
@@ -2729,6 +2547,7 @@ async function fmDelete(id){
   loadFreeModels();
 }
 
+// ==== PROFILE ====
 async function loadProfile(){
   if(!ME) return;
   $('pfUsername').textContent = ME.username || '—';
