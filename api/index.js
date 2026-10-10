@@ -1,4 +1,4 @@
-const BUILD = "75.0";
+const BUILD = "76.0";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -451,6 +451,7 @@ async function handleApi(req, res, path, method, params, ctx) {
     return await handleRawUpload(req, res);
   }
 
+  // ==== CONVERT: binary <-> XML ====
   if (route === "convert" && method === "POST") {
     const buffer = await _readRawBody(req);
     res.setHeader("Content-Type", "application/json");
@@ -482,6 +483,126 @@ async function handleApi(req, res, path, method, params, ctx) {
         ok: false,
         error: "Server belum install paket 'rbx-dom'. Jalankan: npm install rbx-dom lalu redeploy.",
         detail: String(e.message || e)
+      });
+    }
+  }
+
+  // ==== CONVERT: RBXL/RBXLX place -> RBXM model pack ====
+  if (route === "convert-to-model" && method === "POST") {
+    const buffer = await _readRawBody(req);
+    res.setHeader("Content-Type", "application/json");
+    if (!buffer || !buffer.length) return res.status(200).json({ ok: false, error: "File kosong" });
+
+    const target = String(params.get("target") || "Workspace");
+    const modelName = String(params.get("name") || "Extracted").slice(0, 60);
+    const groupByService = String(params.get("group") || "1") === "1";
+
+    const head8 = buffer.subarray(0, 8).toString("latin1");
+    const headXml = buffer.subarray(0, 64).toString("utf8").trim().toLowerCase();
+    const isBinary = head8 === "<roblox!";
+    const isXml = headXml.startsWith("<?xml") || headXml.startsWith("<roblox");
+
+    if (!isBinary && !isXml) {
+      return res.status(200).json({ ok: false, error: "File bukan RBXL/RBXLX valid" });
+    }
+
+    try {
+      const mod = await import("rbx-dom");
+      const BinaryFormat = mod.BinaryFormat || (mod.default && mod.default.BinaryFormat);
+      const XmlFormat = mod.XmlFormat || (mod.default && mod.default.XmlFormat);
+      const Instance = mod.Instance || (mod.default && mod.default.Instance);
+      if (!BinaryFormat || !XmlFormat || !Instance) throw new Error("rbx-dom tidak lengkap (butuh BinaryFormat, XmlFormat, Instance)");
+
+      const dataModel = isBinary
+        ? BinaryFormat.deserialize(buffer)
+        : XmlFormat.deserialize(buffer.toString("utf8"));
+
+      const SERVICES = ["Workspace", "ReplicatedStorage", "ServerStorage", "StarterGui", "StarterPack", "ServerScriptService", "Lighting", "SoundService"];
+      const targets = target === "All" ? SERVICES : [target];
+
+      const rootFolder = new Instance("Folder");
+      rootFolder.Name = modelName;
+
+      function setParent(child, newParent) {
+        try {
+          if (typeof child.parent === "function") { child.parent(newParent); return; }
+        } catch(e) {}
+        try { if ("Parent" in child) { child.Parent = newParent; return; } } catch(e) {}
+        try { child.Parent = newParent; } catch(e) {}
+      }
+
+      function findChildByName(dm, name) {
+        try { if (typeof dm.findChild === "function") { const r = dm.findChild(name); if (r) return r; } } catch(e) {}
+        try { if (typeof dm.findChildOfClass === "function") { const r = dm.findChildOfClass(name); if (r) return r; } } catch(e) {}
+        try {
+          const kids = typeof dm.getChildren === "function" ? dm.getChildren() : (dm.children || []);
+          for (const k of kids) {
+            const kn = k.name || (typeof k.Name === "string" ? k.Name : null);
+            if (kn === name) return k;
+          }
+        } catch(e) {}
+        return null;
+      }
+
+      function getChildrenSafe(node) {
+        try { if (typeof node.getChildren === "function") return node.getChildren(); } catch(e) {}
+        return node.children || [];
+      }
+
+      const extracted = [];
+      let totalMoved = 0;
+
+      for (const svcName of targets) {
+        const svc = findChildByName(dataModel, svcName);
+        if (!svc) continue;
+
+        let container = rootFolder;
+        if (groupByService) {
+          container = new Instance("Folder");
+          container.Name = svcName;
+          setParent(container, rootFolder);
+        }
+
+        const kids = getChildrenSafe(svc);
+        let moved = 0;
+        for (const child of kids) {
+          setParent(child, container);
+          moved++;
+        }
+
+        if (moved > 0) {
+          extracted.push(svcName + "(" + moved + ")");
+          totalMoved += moved;
+        } else if (groupByService) {
+          // gak ada isi, buang subfolder kosong
+          try { setParent(container, null); } catch(e) {}
+        }
+      }
+
+      if (extracted.length === 0) {
+        return res.status(200).json({ ok: false, error: "Tidak ada object yang bisa di-extract dari service: " + targets.join(", ") });
+      }
+
+      const newDm = new Instance("DataModel");
+      setParent(rootFolder, newDm);
+
+      const outBuffer = BinaryFormat.serialize(newDm);
+      const outBytes = outBuffer instanceof Uint8Array ? outBuffer : new Uint8Array(outBuffer);
+
+      return res.status(200).json({
+        ok: true,
+        fileName: modelName + ".rbxm",
+        size: outBytes.length,
+        extracted,
+        totalObjects: totalMoved,
+        grouped: groupByService,
+        file: Buffer.from(outBytes).toString("base64")
+      });
+    } catch (e) {
+      return res.status(200).json({
+        ok: false,
+        error: "Gagal convert: " + String(e.message || e),
+        hint: "Kalau rbx-dom error, pakai cara manual di Studio: buka RBXL → pilih service/objects → Right-click → Save to File (.rbxm)"
       });
     }
   }
@@ -1354,6 +1475,7 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 .mod-box.unknown{background:rgba(255,255,255,.02);border-color:var(--border);color:var(--muted)}
 .mod-box .mod-title{font-size:1rem;font-weight:800;margin-bottom:6px}
 .mod-box .mod-sub{font-size:.75rem;opacity:.85}
+.tree-box{background:rgba(0,0,0,0.35);border:1px solid var(--border);border-radius:10px;padding:12px;font-family:'JetBrains Mono',monospace;font-size:.72rem;color:var(--muted);line-height:1.7;white-space:pre;overflow-x:auto;margin:8px 0}
 </style></head><body>
 
 <div id="nangLoader">
@@ -1445,10 +1567,54 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 
 <div class="panel" id="tab1">
 <div class="card">
-<div class="card-title">RBXL / RBXM → RBXLX</div>
-<div class="fmt-box">Upload <span class="field">.rbxl / .rbxm</span> (binary) atau <span class="field">.rbxlx / .rbxmx</span> (XML). Hasil: <span class="field">.rbxlx</span>.<br><br><b style="color:var(--yellow)">Butuh paket <code style="color:var(--cyan)">rbx-dom</code> di server.</b></div>
+<div class="card-title">🔄 Converter</div>
+
+<div class="modal-tabs" style="margin-bottom:14px">
+  <button id="convModeToXml" class="on" onclick="convSetMode('toXml')">Binary → XML</button>
+  <button id="convModeToModel" onclick="convSetMode('toModel')">RBXL → RBXM</button>
+</div>
+
+<div id="convToXmlWrap">
+  <div class="fmt-box">
+    Upload <span class="field">.rbxl / .rbxm</span> (binary) → hasil <span class="field">.rbxlx</span> XML.<br><br>
+    <b style="color:var(--yellow)">Butuh paket <code style="color:var(--cyan)">rbx-dom</code> di server.</b>
+  </div>
+</div>
+
+<div id="convToModelWrap" class="hidden">
+  <div class="fmt-box">
+    Upload <span class="field">.rbxl / .rbxlx</span> → extract jadi <span class="field">.rbxm</span> (1 file, root folder nama custom).<br>
+    Tinggal insert ke Studio → pindahin subfolder ke service yang sesuai.
+  </div>
+
+  <label style="font-size:.75rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:1px;display:block;margin:12px 0 6px">Target Service</label>
+  <select class="inp" id="convTargetSvc">
+    <option value="Workspace">Workspace (paling umum)</option>
+    <option value="ReplicatedStorage">ReplicatedStorage</option>
+    <option value="ServerStorage">ServerStorage</option>
+    <option value="StarterGui">StarterGui</option>
+    <option value="StarterPack">StarterPack</option>
+    <option value="ServerScriptService">ServerScriptService</option>
+    <option value="Lighting">Lighting</option>
+    <option value="SoundService">SoundService</option>
+    <option value="All">🎯 Semua service (digabung 1 folder)</option>
+  </select>
+
+  <label style="font-size:.75rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:1px;display:block;margin:12px 0 6px">Struktur Hasil</label>
+  <div class="upload-mode-tabs" style="margin-bottom:12px">
+    <button id="convGroupOn" class="on" onclick="convSetGroup(true)">📁 Subfolder per Service</button>
+    <button id="convGroupOff" onclick="convSetGroup(false)">📄 Flat Langsung di Root</button>
+  </div>
+
+  <label style="font-size:.75rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:1px;display:block;margin:12px 0 6px">Preview Struktur</label>
+  <div class="tree-box" id="convTreePreview">📁 Extracted
+  └─ (pilih target service)</div>
+
+  <input type="text" class="inp" id="convModelName" placeholder="Nama root folder" value="Extracted" style="margin-top:12px" oninput="convUpdateTree()">
+</div>
+
 <input type="file" id="convFile" accept=".rbxl,.rbxm,.rbxlx,.rbxmx" style="display:none" onchange="doConvert()">
-<button class="btn-cyan" onclick="document.getElementById('convFile').click()">Pilih File</button>
+<button class="btn-cyan" onclick="document.getElementById('convFile').click()" style="margin-top:12px">📁 Pilih File</button>
 <div class="result" id="convResult"></div>
 </div>
 </div>
@@ -1660,6 +1826,8 @@ let MY_STORE = { price: 500, wa: "", dana: "", name: "", active: false, qr: "" }
 let _qrData = "";
 let _upAssetType = "Model";
 let _upMode = "personal";
+let _convMode = 'toXml';
+let _convGroup = true;
 const MAX_FREE_MB = 8;
 
 function $(id){return document.getElementById(id);}
@@ -2111,15 +2279,95 @@ async function doOwnerGen(){
   } catch(e) { box.className='result err'; box.innerHTML='Error: '+esc(e.message); }
 }
 
+// ==== CONVERT ====
+function convSetMode(m){
+  _convMode = m;
+  $('convModeToXml').classList.toggle('on', m === 'toXml');
+  $('convModeToModel').classList.toggle('on', m === 'toModel');
+  $('convToXmlWrap').classList.toggle('hidden', m !== 'toXml');
+  $('convToModelWrap').classList.toggle('hidden', m !== 'toModel');
+}
+
+function convSetGroup(g){
+  _convGroup = g;
+  $('convGroupOn').classList.toggle('on', g === true);
+  $('convGroupOff').classList.toggle('on', g === false);
+  convUpdateTree();
+}
+
+function convUpdateTree(){
+  const name = ($('convModelName').value.trim() || 'Extracted');
+  const target = $('convTargetSvc').value;
+  const svcList = target === 'All'
+    ? ['Workspace', 'ReplicatedStorage', 'ServerScriptService', '...']
+    : [target];
+  let tree = '📁 ' + name + '\\n';
+  if (_convGroup) {
+    svcList.forEach((svc, i) => {
+      const isLast = i === svcList.length - 1;
+      tree += '  ' + (isLast ? '└─' : '├─') + ' 📁 ' + svc + '\\n';
+      if (svc === '...') return;
+      tree += '       ' + (isLast ? '   ' : '│  ') + ' ├─ Part\\n';
+      tree += '       ' + (isLast ? '   ' : '│  ') + ' └─ Model\\n';
+    });
+  } else {
+    tree += '  ├─ Part\\n  ├─ Model\\n  └─ ...\\n';
+  }
+  $('convTreePreview').textContent = tree.trimEnd();
+}
+
 async function doConvert(){
   const input=$('convFile');
   const box=$('convResult');
   if(!input.files||!input.files[0])return;
   const file=input.files[0];
-  if(file.size>50*1024*1024){box.style.display='block';box.className='result err';box.innerHTML='File > 50 MB.';return;}
-  box.style.display='block';box.className='result info';box.innerHTML='<span class="spinner"></span>Mengkonversi '+esc(file.name)+'...';
+  if(file.size>50*1024*1024){box.className='result err';box.innerHTML='File > 50 MB.';box.style.display='block';return;}
+
+  box.style.display='block';box.className='result info';
+  box.innerHTML='<span class="spinner"></span>Memproses '+esc(file.name)+'...';
+
   try{
-    const buf=await file.arrayBuffer();
+    const buf = await file.arrayBuffer();
+
+    if (_convMode === 'toModel') {
+      const target = $('convTargetSvc').value;
+      const name = $('convModelName').value.trim() || 'Extracted';
+      const group = _convGroup ? '1' : '0';
+      const url = '/?api=convert-to-model'
+        + '&target=' + encodeURIComponent(target)
+        + '&name=' + encodeURIComponent(name)
+        + '&group=' + group;
+
+      const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:buf});
+      const d = await r.json();
+      if(d.error){
+        box.className='result err';
+        box.innerHTML='Gagal: '+esc(d.error)+(d.hint?'<br><small style="color:var(--muted)">'+esc(d.hint)+'</small>':'');
+        return;
+      }
+
+      const bin = atob(d.file);
+      const arr = new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+      const blob = new Blob([arr], {type:'application/octet-stream'});
+      const dl = URL.createObjectURL(blob);
+
+      const svcList = (d.extracted || []).map(s => '<span style="background:rgba(0,232,122,.1);color:var(--green);padding:2px 8px;border-radius:6px;font-size:.7rem;margin:2px;display:inline-block">'+esc(s)+'</span>').join('');
+
+      box.className='result ok';
+      box.innerHTML =
+        '<div style="font-weight:800;color:var(--green);margin-bottom:8px">✓ Convert selesai</div>'+
+        '<div style="font-size:.8rem;line-height:1.8;margin-bottom:8px">'+
+          '<div>Root: <b style="color:var(--cyan)">'+esc(name)+'</b></div>'+
+          '<div>Struktur: <b>'+(d.grouped ? 'Subfolder per Service' : 'Flat')+'</b></div>'+
+          '<div>Total object: <b>'+esc(String(d.totalObjects || 0))+'</b></div>'+
+          '<div>Service: '+svcList+'</div>'+
+        '</div>'+
+        '<div class="key-line"><a href="'+dl+'" download="'+esc(d.fileName)+'" style="color:#00d4ff;text-decoration:none;font-weight:700">⬇ Download '+esc(d.fileName)+' ('+(d.size/1024).toFixed(1)+' KB)</a></div>';
+      return;
+    }
+
+    // to XML (default)
     const r=await fetch('/?api=convert',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:buf});
     const ct = r.headers.get("content-type") || "";
     if (ct.includes("xml")) {
@@ -2290,7 +2538,6 @@ function _upBigShowSuccess(assetId, assetName, assetType, groupId, apiKey){
   startModerationPoll(assetId, apiKey, assetType);
 }
 
-// ==== MODERATION POLL ====
 let _modTimer = null;
 let _modAttempts = 0;
 
@@ -2331,11 +2578,7 @@ async function startModerationPoll(assetId, apiKey, assetType){
         return;
       }
       const lv = d.level || 'unknown';
-      if(lv === 'approved'){
-        _modStopPoll();
-        _modRender('approved', 'Asset udah lulus moderasi Roblox. Siap dipakai.');
-        return;
-      }
+      if(lv === 'approved'){ _modStopPoll(); _modRender('approved', 'Asset udah lulus moderasi Roblox. Siap dipakai.'); return; }
       if(lv === 'rejected'){
         _modStopPoll();
         _modRender('rejected', d.reason ? ('Alasan: ' + d.reason) : 'Roblox tolak asset ini. Cek Creator Dashboard buat detail.');
@@ -2345,9 +2588,7 @@ async function startModerationPoll(assetId, apiKey, assetType){
                    : assetType === 'Decal' ? 'Gambar biasanya 1-5 menit.'
                    : 'Model biasanya lebih cepat.';
       _modRender('pending', 'Cek ke-'+_modAttempts+' · masih nunggu. '+suffix);
-    } catch(e){
-      _modRender('unknown', 'Error: ' + e.message);
-    }
+    } catch(e){ _modRender('unknown', 'Error: ' + e.message); }
   };
 
   tick();
@@ -2636,11 +2877,15 @@ document.addEventListener('DOMContentLoaded', async ()=>{
 
   nangLoaderSetStatus('Preparing UI');
   _upLoadFields();
+  convUpdateTree();
 
   ['upUsername','upApiKey','upName','upDesc','upGroupId'].forEach(id=>{
     $(id).addEventListener('input', _upSaveFields);
     $(id).addEventListener('change', _upSaveFields);
   });
+
+  const _convSvc = $('convTargetSvc');
+  if(_convSvc) _convSvc.addEventListener('change', convUpdateTree);
 
   ['lwUser','lwPass'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')lwDoLogin();}));
   ['lwRegUser','lwRegEmail','lwRegPass','lwRegPass2'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')lwDoRegister();}));
