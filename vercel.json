@@ -1,7 +1,7 @@
 {
   "functions": {
-    "api/convert.py": {
-      "runtime": "python3.12",
+    "api/conv.py": {
+      "runtime": "python@3.12",
       "maxDuration": 60
     }
   }
