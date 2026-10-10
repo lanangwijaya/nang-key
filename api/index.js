@@ -1,4 +1,4 @@
-const BUILD = "74.0";
+const BUILD = "75.0";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -355,7 +355,9 @@ async function _robloxUploadDirect({ apiKey, userId, groupId, buffer, fileName, 
   const ext = fileName.toLowerCase().split(".").pop();
   const MIME_MAP = {
     rbxm: "model/x-rbxm", rbxmx: "model/x-rbxm",
-    mp3: "audio/mpeg", ogg: "audio/ogg", wav: "audio/wav", flac: "audio/flac"
+    mp3: "audio/mpeg", ogg: "audio/ogg", wav: "audio/wav", flac: "audio/flac",
+    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+    bmp: "image/bmp", tga: "image/x-tga"
   };
   const mime = MIME_MAP[ext] || "application/octet-stream";
 
@@ -423,9 +425,15 @@ async function handleRawUpload(req, res) {
   if (!buffer.length) return res.status(200).json({ ok: false, error: "File kosong" });
 
   const ext = fileName.toLowerCase().split(".").pop();
-  const allowed = assetType === "Audio" ? ["mp3","ogg","wav","flac"] : ["rbxm","rbxmx"];
+  let allowed;
+  if (assetType === "Audio") allowed = ["mp3","ogg","wav","flac"];
+  else if (assetType === "Decal") allowed = ["png","jpg","jpeg","bmp","tga"];
+  else allowed = ["rbxm","rbxmx"];
   if (!allowed.includes(ext)) {
-    return res.status(200).json({ ok: false, error: assetType === "Audio" ? "Audio harus .mp3/.ogg/.wav/.flac" : "Model harus .rbxm/.rbxmx" });
+    const errMsg = assetType === "Audio" ? "Audio harus .mp3/.ogg/.wav/.flac"
+                 : assetType === "Decal" ? "Gambar harus .png/.jpg/.jpeg/.bmp/.tga"
+                 : "Model harus .rbxm/.rbxmx";
+    return res.status(200).json({ ok: false, error: errMsg });
   }
 
   const result = await _robloxUploadDirect({ apiKey, userId, groupId, buffer, fileName, assetType, displayName, description });
@@ -1468,6 +1476,7 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 <div class="fmt-box">
 <b style="color:var(--pink)">📦 Model</b> — .rbxm / .rbxmx — max 20 MB<br>
 <b style="color:var(--cyan)">🎵 Audio</b> — .mp3 .ogg .wav .flac — max 7 menit<br>
+<b style="color:var(--yellow)">🖼️ Gambar/Decal</b> — .png .jpg .jpeg .bmp .tga — max 20 MB<br>
 Limit web: max <span class="field">15 MB</span>
 </div>
 </div>
@@ -1476,6 +1485,7 @@ Limit web: max <span class="field">15 MB</span>
 <div class="modal-tabs" style="margin-bottom:0">
   <button id="upTypeModel" class="on" onclick="upSetType('Model')">📦 Model</button>
   <button id="upTypeAudio" onclick="upSetType('Audio')">🎵 Audio</button>
+  <button id="upTypeDecal" onclick="upSetType('Decal')">🖼️ Gambar</button>
 </div>
 </div>
 <div class="card">
@@ -2175,7 +2185,7 @@ function _upLoadFields(){
     $('upUsername').value = u || ''; $('upApiKey').value = k || '';
     $('upName').value = n || ''; $('upDesc').value = d || '';
     $('upGroupId').value = g || '';
-    if(t === 'Audio' || t === 'Model') upSetType(t); else upSetType('Model');
+    if(t === 'Audio' || t === 'Model' || t === 'Decal') upSetType(t); else upSetType('Model');
     upSetMode(m === 'group' ? 'group' : 'personal', true);
     if(u){
       try { $('upUsername').dispatchEvent(new Event('input', { bubbles:true })); } catch(e){}
@@ -2206,15 +2216,24 @@ function upSetType(t){
   _upAssetType = t;
   $('upTypeModel').classList.toggle('on', t === 'Model');
   $('upTypeAudio').classList.toggle('on', t === 'Audio');
+  $('upTypeDecal').classList.toggle('on', t === 'Decal');
   const isAudio = t === 'Audio';
-  const accept = isAudio ? '.mp3,.ogg,.wav,.flac' : '.rbxm,.rbxmx';
-  const hint = isAudio ? '.mp3 / .ogg / .wav / .flac — max 15 MB' : '.rbxm / .rbxmx — max 15 MB';
-  const icon = isAudio ? '🎵' : '📦';
+  const isDecal = t === 'Decal';
+  const accept = isAudio ? '.mp3,.ogg,.wav,.flac'
+               : isDecal ? '.png,.jpg,.jpeg,.bmp,.tga'
+               : '.rbxm,.rbxmx';
+  const hint = isAudio ? '.mp3 / .ogg / .wav / .flac — max 15 MB'
+             : isDecal ? '.png / .jpg / .jpeg / .bmp / .tga — max 15 MB'
+             : '.rbxm / .rbxmx — max 15 MB';
+  const icon = isAudio ? '🎵' : isDecal ? '🖼️' : '📦';
+  const regex = isAudio ? /\.(mp3|ogg|wav|flac)$/
+              : isDecal ? /\.(png|jpg|jpeg|bmp|tga)$/
+              : /\.(rbxm|rbxmx)$/;
   upFileInput.setAttribute('accept', accept);
   upDrop.querySelector('.drop-hint').textContent = hint;
   if (_upFile) {
     const n = _upFile.name.toLowerCase();
-    const ok = isAudio ? /\.(mp3|ogg|wav|flac)$/.test(n) : /\.(rbxm|rbxmx)$/.test(n);
+    const ok = regex.test(n);
     if (!ok) {
       _upFile = null; upDrop.classList.remove('done');
       upDrop.querySelector('.drop-icon').textContent = icon;
@@ -2228,8 +2247,17 @@ function upSetType(t){
 function _upHandleFile(f){
   const n=f.name.toLowerCase();
   const isAudio = _upAssetType === 'Audio';
-  const valid = isAudio ? /\.(mp3|ogg|wav|flac)$/.test(n) : /\.(rbxm|rbxmx)$/.test(n);
-  if(!valid){ return _upBigShowFail(isAudio ? 'File harus .mp3 / .ogg / .wav / .flac' : 'File harus .rbxm atau .rbxmx'); }
+  const isDecal = _upAssetType === 'Decal';
+  const valid = isAudio ? /\.(mp3|ogg|wav|flac)$/.test(n)
+              : isDecal ? /\.(png|jpg|jpeg|bmp|tga)$/.test(n)
+              : /\.(rbxm|rbxmx)$/.test(n);
+  if(!valid){
+    return _upBigShowFail(
+      isAudio ? 'File harus .mp3 / .ogg / .wav / .flac'
+      : isDecal ? 'File harus .png / .jpg / .jpeg / .bmp / .tga'
+      : 'File harus .rbxm atau .rbxmx'
+    );
+  }
   if(f.size>15*1024*1024){ return _upBigShowFail('File > 15 MB'); }
   _upFile=f;
   upDrop.classList.add('done');
@@ -2253,7 +2281,7 @@ function _upBigShowFail(msg, hint){
 }
 function _upBigShowSuccess(assetId, assetName, assetType, groupId, apiKey){
   $('upProgress').style.display='none';
-  const ico = assetType === 'Audio' ? '🎵' : '📦';
+  const ico = assetType === 'Audio' ? '🎵' : assetType === 'Decal' ? '🖼️' : '📦';
   const target = groupId ? 'Grup #' + groupId : 'Akun pribadi';
   upBigResult.className='result ok';
   upBigResult.innerHTML = '✅ UPLOAD BERHASIL ke <b>'+esc(target)+'</b><br>'+ico+' <b>'+esc(assetName||'Asset')+'</b><br><div class="key-line">Asset ID: '+esc(assetId)+'</div>'+
@@ -2313,7 +2341,9 @@ async function startModerationPoll(assetId, apiKey, assetType){
         _modRender('rejected', d.reason ? ('Alasan: ' + d.reason) : 'Roblox tolak asset ini. Cek Creator Dashboard buat detail.');
         return;
       }
-      const suffix = assetType === 'Audio' ? 'Audio biasanya 5-30 menit.' : 'Model biasanya lebih cepat.';
+      const suffix = assetType === 'Audio' ? 'Audio biasanya 5-30 menit.'
+                   : assetType === 'Decal' ? 'Gambar biasanya 1-5 menit.'
+                   : 'Model biasanya lebih cepat.';
       _modRender('pending', 'Cek ke-'+_modAttempts+' · masih nunggu. '+suffix);
     } catch(e){
       _modRender('unknown', 'Error: ' + e.message);
@@ -2381,7 +2411,7 @@ async function doUploadRbxm(){
         'Content-Type': 'application/octet-stream',
         'x-nang-apikey': apiKey,
         'x-nang-filename': _upFile.name,
-        'x-nang-display': (name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac)$/i,'')).slice(0,50),
+        'x-nang-display': (name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac|png|jpg|jpeg|bmp|tga)$/i,'')).slice(0,50),
         'x-nang-desc': (desc || 'Upload via NANG web').slice(0,1000),
         'x-nang-assettype': _upAssetType
       };
@@ -2395,7 +2425,7 @@ async function doUploadRbxm(){
       operationId = up.operationId;
     } else {
       const sid = _randHex(16);
-      const displayName = (name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac)$/i,'')).slice(0,50);
+      const displayName = (name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac|png|jpg|jpeg|bmp|tga)$/i,'')).slice(0,50);
       for (let i = 0; i < totalChunks; i++) {
         const start = i * CHUNK_SIZE;
         const end = Math.min(start + CHUNK_SIZE, _upFile.size);
@@ -2431,7 +2461,7 @@ async function doUploadRbxm(){
     }
     if(!assetId){ _upStep(4,'err'); throw new Error(lastErr || 'Timeout. Cek dashboard Roblox.'); }
     _upStep(4,'done');
-    _upBigShowSuccess(assetId, name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac)$/i,''), _upAssetType, groupId, apiKey);
+    _upBigShowSuccess(assetId, name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac|png|jpg|jpeg|bmp|tga)$/i,''), _upAssetType, groupId, apiKey);
   }
   catch(e){ _upBigShowFail(e.message || 'Error tidak diketahui'); }
   finally{ btn.disabled=false; btn.textContent='UPLOAD KE ROBLOX'; }
