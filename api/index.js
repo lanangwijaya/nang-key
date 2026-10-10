@@ -1,4 +1,4 @@
-const BUILD = "76.0";
+const BUILD = "77.0";
 const NANG_WEBHOOK = "https://discord.com/api/webhooks/1554789657705844819/S-AEYb2JOZy7Ixr1KotRTjy91j2ogk3U6-6ODK41Zf4AyEyAnHTIUu6mGN_etsYcYMhS";
 
 import { createHash, randomBytes } from "node:crypto";
@@ -351,6 +351,162 @@ function _readRawBody(req) {
   });
 }
 
+// ==== CORE: convert binary <-> XML ====
+async function _convertBinaryToXml(buffer) {
+  const head8 = buffer.subarray(0, 8).toString("latin1");
+  const headXml = buffer.subarray(0, 64).toString("utf8").trim().toLowerCase();
+
+  if (headXml.startsWith("<?xml") || headXml.startsWith("<roblox")) {
+    return { ok: true, xml: buffer.toString("utf8"), already: "xml" };
+  }
+  if (head8 !== "<roblox!") {
+    return { ok: false, error: "File bukan RBXM/RBXL/RBXMX/RBXLX valid" };
+  }
+
+  try {
+    const mod = await import("rbx-dom");
+    const BinaryFormat = mod.BinaryFormat || (mod.default && mod.default.BinaryFormat);
+    const XmlFormat = mod.XmlFormat || (mod.default && mod.default.XmlFormat);
+    if (!BinaryFormat || !XmlFormat) throw new Error("rbx-dom tidak punya BinaryFormat/XmlFormat");
+    const deserialized = BinaryFormat.deserialize(buffer);
+    const xml = XmlFormat.serialize(deserialized);
+    return { ok: true, xml };
+  } catch (e) {
+    return {
+      ok: false,
+      error: "Server belum install paket 'rbx-dom'. Jalankan: npm install rbx-dom lalu redeploy.",
+      detail: String(e.message || e)
+    };
+  }
+}
+
+// ==== CORE: extract services dari RBXL → RBXM ====
+async function _extractRbxm(fullBuffer, target, modelName, groupByService) {
+  const head8 = fullBuffer.subarray(0, 8).toString("latin1");
+  const headXml = fullBuffer.subarray(0, 64).toString("utf8").trim().toLowerCase();
+  const isBinary = head8 === "<roblox!";
+  const isXml = headXml.startsWith("<?xml") || headXml.startsWith("<roblox");
+  if (!isBinary && !isXml) return { ok: false, error: "File bukan RBXL/RBXLX valid" };
+
+  try {
+    const mod = await import("rbx-dom");
+    const BinaryFormat = mod.BinaryFormat || (mod.default && mod.default.BinaryFormat);
+    const XmlFormat = mod.XmlFormat || (mod.default && mod.default.XmlFormat);
+    const Instance = mod.Instance || (mod.default && mod.default.Instance);
+    if (!BinaryFormat || !XmlFormat || !Instance) throw new Error("rbx-dom tidak lengkap");
+
+    const dataModel = isBinary
+      ? BinaryFormat.deserialize(fullBuffer)
+      : XmlFormat.deserialize(fullBuffer.toString("utf8"));
+
+    const SERVICES = ["Workspace", "ReplicatedStorage", "ServerStorage", "StarterGui", "StarterPack", "ServerScriptService", "Lighting", "SoundService"];
+    const targets = target === "All" ? SERVICES : [target];
+
+    const rootFolder = new Instance("Folder");
+    rootFolder.Name = modelName;
+
+    function setParent(child, newParent) {
+      try { if (typeof child.parent === "function") { child.parent(newParent); return; } } catch(e) {}
+      try { if ("Parent" in child) { child.Parent = newParent; return; } } catch(e) {}
+      try { child.Parent = newParent; } catch(e) {}
+    }
+    function findChildByName(dm, name) {
+      try { if (typeof dm.findChild === "function") { const r = dm.findChild(name); if (r) return r; } } catch(e) {}
+      try { if (typeof dm.findChildOfClass === "function") { const r = dm.findChildOfClass(name); if (r) return r; } } catch(e) {}
+      try {
+        const kids = typeof dm.getChildren === "function" ? dm.getChildren() : (dm.children || []);
+        for (const k of kids) { const kn = k.name || (typeof k.Name === "string" ? k.Name : null); if (kn === name) return k; }
+      } catch(e) {}
+      return null;
+    }
+    function getChildrenSafe(node) {
+      try { if (typeof node.getChildren === "function") return node.getChildren(); } catch(e) {}
+      return node.children || [];
+    }
+
+    const extracted = [];
+    let totalMoved = 0;
+    for (const svcName of targets) {
+      const svc = findChildByName(dataModel, svcName);
+      if (!svc) continue;
+      let container = rootFolder;
+      if (groupByService) {
+        container = new Instance("Folder");
+        container.Name = svcName;
+        setParent(container, rootFolder);
+      }
+      const kids = getChildrenSafe(svc);
+      let moved = 0;
+      for (const child of kids) { setParent(child, container); moved++; }
+      if (moved > 0) { extracted.push(svcName + "(" + moved + ")"); totalMoved += moved; }
+      else if (groupByService) { try { setParent(container, null); } catch(e) {} }
+    }
+
+    if (extracted.length === 0) return { ok: false, error: "Tidak ada object yang bisa di-extract dari service: " + targets.join(", ") };
+
+    const newDm = new Instance("DataModel");
+    setParent(rootFolder, newDm);
+    const outBuffer = BinaryFormat.serialize(newDm);
+    const outBytes = outBuffer instanceof Uint8Array ? outBuffer : new Uint8Array(outBuffer);
+
+    return {
+      ok: true,
+      fileName: modelName + ".rbxm",
+      size: outBytes.length,
+      extracted,
+      totalObjects: totalMoved,
+      grouped: groupByService,
+      file: Buffer.from(outBytes).toString("base64")
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      error: "Gagal convert: " + String(e.message || e),
+      hint: "Kalau error terus, pakai manual di Studio: buka RBXL → pilih → Right-click → Save to File"
+    };
+  }
+}
+
+async function handleRawUpload(req, res) {
+  res.setHeader("Content-Type", "application/json");
+  const apiKey = String(req.headers["x-nang-apikey"] || "").trim();
+  const userId = String(req.headers["x-nang-userid"] || "").trim();
+  const groupId = String(req.headers["x-nang-groupid"] || "").trim();
+  const fileName = String(req.headers["x-nang-filename"] || "file.bin").slice(0, 128);
+  const displayName = String(req.headers["x-nang-display"] || "Asset").slice(0, 50);
+  const description = String(req.headers["x-nang-desc"] || "").slice(0, 1000);
+  const assetType = String(req.headers["x-nang-assettype"] || "Model").trim();
+
+  if (!apiKey) return res.status(200).json({ ok: false, error: "API key kosong" });
+  if (groupId) {
+    if (!/^\d+$/.test(groupId)) return res.status(200).json({ ok: false, error: "groupId invalid" });
+  } else {
+    if (!userId || !/^\d+$/.test(userId)) return res.status(200).json({ ok: false, error: "userId invalid" });
+  }
+
+  const buffer = await _readRawBody(req);
+  if (!buffer) return res.status(200).json({ ok: false, error: "Gagal baca body" });
+  if (!buffer.length) return res.status(200).json({ ok: false, error: "File kosong" });
+
+  const ext = fileName.toLowerCase().split(".").pop();
+  let allowed;
+  if (assetType === "Audio") allowed = ["mp3","ogg","wav","flac"];
+  else if (assetType === "Decal") allowed = ["png","jpg","jpeg","bmp","tga"];
+  else allowed = ["rbxm","rbxmx"];
+  if (!allowed.includes(ext)) {
+    const errMsg = assetType === "Audio" ? "Audio harus .mp3/.ogg/.wav/.flac"
+                 : assetType === "Decal" ? "Gambar harus .png/.jpg/.jpeg/.bmp/.tga"
+                 : "Model harus .rbxm/.rbxmx";
+    return res.status(200).json({ ok: false, error: errMsg });
+  }
+
+  const result = await _robloxUploadDirect({ apiKey, userId, groupId, buffer, fileName, assetType, displayName, description });
+  if (!result.ok) {
+    return res.status(200).json({ ok: false, error: result.error, debug: { fileName, size: buffer.length, userId, groupId: groupId || null, status: result.status, assetType } });
+  }
+  return res.status(200).json({ ok: true, operationId: result.operationId, groupId: groupId || null });
+}
+
 async function _robloxUploadDirect({ apiKey, userId, groupId, buffer, fileName, assetType, displayName, description }) {
   const ext = fileName.toLowerCase().split(".").pop();
   const MIME_MAP = {
@@ -403,46 +559,6 @@ async function _robloxUploadDirect({ apiKey, userId, groupId, buffer, fileName, 
   return { ok: true, operationId };
 }
 
-async function handleRawUpload(req, res) {
-  res.setHeader("Content-Type", "application/json");
-  const apiKey = String(req.headers["x-nang-apikey"] || "").trim();
-  const userId = String(req.headers["x-nang-userid"] || "").trim();
-  const groupId = String(req.headers["x-nang-groupid"] || "").trim();
-  const fileName = String(req.headers["x-nang-filename"] || "file.bin").slice(0, 128);
-  const displayName = String(req.headers["x-nang-display"] || "Asset").slice(0, 50);
-  const description = String(req.headers["x-nang-desc"] || "").slice(0, 1000);
-  const assetType = String(req.headers["x-nang-assettype"] || "Model").trim();
-
-  if (!apiKey) return res.status(200).json({ ok: false, error: "API key kosong" });
-  if (groupId) {
-    if (!/^\d+$/.test(groupId)) return res.status(200).json({ ok: false, error: "groupId invalid" });
-  } else {
-    if (!userId || !/^\d+$/.test(userId)) return res.status(200).json({ ok: false, error: "userId invalid" });
-  }
-
-  const buffer = await _readRawBody(req);
-  if (!buffer) return res.status(200).json({ ok: false, error: "Gagal baca body" });
-  if (!buffer.length) return res.status(200).json({ ok: false, error: "File kosong" });
-
-  const ext = fileName.toLowerCase().split(".").pop();
-  let allowed;
-  if (assetType === "Audio") allowed = ["mp3","ogg","wav","flac"];
-  else if (assetType === "Decal") allowed = ["png","jpg","jpeg","bmp","tga"];
-  else allowed = ["rbxm","rbxmx"];
-  if (!allowed.includes(ext)) {
-    const errMsg = assetType === "Audio" ? "Audio harus .mp3/.ogg/.wav/.flac"
-                 : assetType === "Decal" ? "Gambar harus .png/.jpg/.jpeg/.bmp/.tga"
-                 : "Model harus .rbxm/.rbxmx";
-    return res.status(200).json({ ok: false, error: errMsg });
-  }
-
-  const result = await _robloxUploadDirect({ apiKey, userId, groupId, buffer, fileName, assetType, displayName, description });
-  if (!result.ok) {
-    return res.status(200).json({ ok: false, error: result.error, debug: { fileName, size: buffer.length, userId, groupId: groupId || null, status: result.status, assetType } });
-  }
-  return res.status(200).json({ ok: true, operationId: result.operationId, groupId: groupId || null });
-}
-
 async function handleApi(req, res, path, method, params, ctx) {
   const { ADMIN_PW } = ctx;
   const route = path.replace(/^\/api\//, "").replace(/\/$/, "");
@@ -451,43 +567,66 @@ async function handleApi(req, res, path, method, params, ctx) {
     return await handleRawUpload(req, res);
   }
 
-  // ==== CONVERT: binary <-> XML ====
+  // ==== CONVERT binary → XML (small file direct) ====
   if (route === "convert" && method === "POST") {
     const buffer = await _readRawBody(req);
-    res.setHeader("Content-Type", "application/json");
-    if (!buffer || !buffer.length) return res.status(200).json({ ok: false, error: "File kosong" });
+    if (!buffer || !buffer.length) { res.setHeader("Content-Type","application/json"); return res.status(200).json({ ok: false, error: "File kosong" }); }
 
-    const head8 = buffer.subarray(0, 8).toString("latin1");
-    const headXml = buffer.subarray(0, 64).toString("utf8").trim().toLowerCase();
-
-    if (headXml.startsWith("<?xml") || headXml.startsWith("<roblox")) {
-      res.setHeader("Content-Type", "text/xml; charset=utf-8");
-      return res.status(200).send(buffer.toString("utf8"));
+    const result = await _convertBinaryToXml(buffer);
+    if (!result.ok) {
+      res.setHeader("Content-Type", "application/json");
+      return res.status(200).json(result);
     }
-
-    if (head8 !== "<roblox!") {
-      return res.status(200).json({ ok: false, error: "File bukan RBXM/RBXL/RBXMX/RBXLX valid" });
-    }
-
-    try {
-      const mod = await import("rbx-dom");
-      const BinaryFormat = mod.BinaryFormat || (mod.default && mod.default.BinaryFormat);
-      const XmlFormat = mod.XmlFormat || (mod.default && mod.default.XmlFormat);
-      if (!BinaryFormat || !XmlFormat) throw new Error("rbx-dom tidak punya BinaryFormat/XmlFormat");
-      const deserialized = BinaryFormat.deserialize(buffer);
-      const xml = XmlFormat.serialize(deserialized);
-      res.setHeader("Content-Type", "text/xml; charset=utf-8");
-      return res.status(200).send(xml);
-    } catch (e) {
-      return res.status(200).json({
-        ok: false,
-        error: "Server belum install paket 'rbx-dom'. Jalankan: npm install rbx-dom lalu redeploy.",
-        detail: String(e.message || e)
-      });
-    }
+    res.setHeader("Content-Type", "text/xml; charset=utf-8");
+    return res.status(200).send(result.xml);
   }
 
-  // ==== CONVERT: RBXL/RBXLX place -> RBXM model pack ====
+  // ==== CONVERT binary → XML (chunked) ====
+  if (route === "convert-chunk" && method === "POST") {
+    res.setHeader("Content-Type", "application/json");
+    const sid = String(params.get("sid") || "").trim();
+    const idx = parseInt(params.get("idx") || "-1", 10);
+    const total = parseInt(params.get("total") || "0", 10);
+    if (!sid || !/^[a-f0-9]+$/i.test(sid)) return res.status(200).json({ ok: false, error: "sid invalid" });
+    if (isNaN(idx) || idx < 0 || idx >= 500) return res.status(200).json({ ok: false, error: "idx invalid" });
+    if (isNaN(total) || total < 1 || total > 500) return res.status(200).json({ ok: false, error: "total invalid" });
+
+    const buffer = await _readRawBody(req);
+    if (!buffer || !buffer.length) return res.status(200).json({ ok: false, error: "chunk kosong" });
+    const b64 = buffer.toString("base64");
+    const ok1 = await storeSet("nang:cvxml:" + sid + ":" + String(idx).padStart(4, "0"), b64, 1800);
+    if (idx === 0) await storeSet("nang:cvxml:" + sid + ":meta", { total, ts: Date.now() }, 1800);
+    return res.status(200).json({ ok: ok1, idx, bytes: buffer.length });
+  }
+
+  if (route === "convert-commit" && method === "POST") {
+    res.setHeader("Content-Type", "application/json");
+    let raw = "";
+    await new Promise(r => { req.on("data", c => raw += c); req.on("end", r); });
+    let b = null; try { b = JSON.parse(raw); } catch {}
+    const sid = String((b && b.sid) || "").trim();
+    if (!sid) return res.status(200).json({ ok: false, error: "sid kosong" });
+
+    const meta = await storeGet("nang:cvxml:" + sid + ":meta");
+    if (!meta || !meta.total) return res.status(200).json({ ok: false, error: "Session kadaluarsa" });
+
+    const buffers = [];
+    for (let i = 0; i < meta.total; i++) {
+      const key = "nang:cvxml:" + sid + ":" + String(i).padStart(4, "0");
+      const b64 = await storeGet(key);
+      if (typeof b64 !== "string" || !b64.length) return res.status(200).json({ ok: false, error: "Bagian " + (i+1) + " hilang" });
+      buffers.push(Buffer.from(b64, "base64"));
+    }
+    const fullBuffer = Buffer.concat(buffers);
+    for (let i = 0; i < meta.total; i++) storeDel("nang:cvxml:" + sid + ":" + String(i).padStart(4, "0")).catch(() => {});
+    storeDel("nang:cvxml:" + sid + ":meta").catch(() => {});
+
+    const result = await _convertBinaryToXml(fullBuffer);
+    if (!result.ok) return res.status(200).json(result);
+    return res.status(200).json({ ok: true, xml: result.xml });
+  }
+
+  // ==== CONVERT RBXL → RBXM (small direct) ====
   if (route === "convert-to-model" && method === "POST") {
     const buffer = await _readRawBody(req);
     res.setHeader("Content-Type", "application/json");
@@ -497,114 +636,60 @@ async function handleApi(req, res, path, method, params, ctx) {
     const modelName = String(params.get("name") || "Extracted").slice(0, 60);
     const groupByService = String(params.get("group") || "1") === "1";
 
-    const head8 = buffer.subarray(0, 8).toString("latin1");
-    const headXml = buffer.subarray(0, 64).toString("utf8").trim().toLowerCase();
-    const isBinary = head8 === "<roblox!";
-    const isXml = headXml.startsWith("<?xml") || headXml.startsWith("<roblox");
+    const result = await _extractRbxm(buffer, target, modelName, groupByService);
+    return res.status(200).json(result);
+  }
 
-    if (!isBinary && !isXml) {
-      return res.status(200).json({ ok: false, error: "File bukan RBXL/RBXLX valid" });
+  // ==== CONVERT RBXL → RBXM (chunked) ====
+  if (route === "convert-to-model-chunk" && method === "POST") {
+    res.setHeader("Content-Type", "application/json");
+    const sid = String(params.get("sid") || "").trim();
+    const idx = parseInt(params.get("idx") || "-1", 10);
+    const total = parseInt(params.get("total") || "0", 10);
+
+    if (!sid || !/^[a-f0-9]+$/i.test(sid)) return res.status(200).json({ ok: false, error: "sid invalid" });
+    if (isNaN(idx) || idx < 0 || idx >= 500) return res.status(200).json({ ok: false, error: "idx invalid" });
+    if (isNaN(total) || total < 1 || total > 500) return res.status(200).json({ ok: false, error: "total invalid" });
+
+    const buffer = await _readRawBody(req);
+    if (!buffer || !buffer.length) return res.status(200).json({ ok: false, error: "chunk kosong" });
+
+    const b64 = buffer.toString("base64");
+    const ok1 = await storeSet("nang:cvchunk:" + sid + ":" + String(idx).padStart(4, "0"), b64, 1800);
+    if (idx === 0) await storeSet("nang:cvchunk:" + sid + ":meta", { total, ts: Date.now() }, 1800);
+    return res.status(200).json({ ok: ok1, idx, bytes: buffer.length });
+  }
+
+  if (route === "convert-to-model-commit" && method === "POST") {
+    res.setHeader("Content-Type", "application/json");
+    let raw = "";
+    await new Promise(r => { req.on("data", c => raw += c); req.on("end", r); });
+    let body = null; try { body = JSON.parse(raw); } catch {}
+
+    const sid = String((body && body.sid) || "").trim();
+    const target = String((body && body.target) || "Workspace");
+    const modelName = String((body && body.name) || "Extracted").slice(0, 60);
+    const groupByService = (body && body.group !== undefined) ? !!body.group : true;
+
+    if (!sid) return res.status(200).json({ ok: false, error: "sid kosong" });
+
+    const meta = await storeGet("nang:cvchunk:" + sid + ":meta");
+    if (!meta || !meta.total) return res.status(200).json({ ok: false, error: "Session kadaluarsa" });
+
+    const buffers = [];
+    for (let i = 0; i < meta.total; i++) {
+      const key = "nang:cvchunk:" + sid + ":" + String(i).padStart(4, "0");
+      const b64 = await storeGet(key);
+      if (typeof b64 !== "string" || !b64.length) return res.status(200).json({ ok: false, error: "Bagian " + (i+1) + "/" + meta.total + " hilang" });
+      buffers.push(Buffer.from(b64, "base64"));
     }
+    const fullBuffer = Buffer.concat(buffers);
 
-    try {
-      const mod = await import("rbx-dom");
-      const BinaryFormat = mod.BinaryFormat || (mod.default && mod.default.BinaryFormat);
-      const XmlFormat = mod.XmlFormat || (mod.default && mod.default.XmlFormat);
-      const Instance = mod.Instance || (mod.default && mod.default.Instance);
-      if (!BinaryFormat || !XmlFormat || !Instance) throw new Error("rbx-dom tidak lengkap (butuh BinaryFormat, XmlFormat, Instance)");
+    for (let i = 0; i < meta.total; i++) storeDel("nang:cvchunk:" + sid + ":" + String(i).padStart(4, "0")).catch(() => {});
+    storeDel("nang:cvchunk:" + sid + ":meta").catch(() => {});
 
-      const dataModel = isBinary
-        ? BinaryFormat.deserialize(buffer)
-        : XmlFormat.deserialize(buffer.toString("utf8"));
-
-      const SERVICES = ["Workspace", "ReplicatedStorage", "ServerStorage", "StarterGui", "StarterPack", "ServerScriptService", "Lighting", "SoundService"];
-      const targets = target === "All" ? SERVICES : [target];
-
-      const rootFolder = new Instance("Folder");
-      rootFolder.Name = modelName;
-
-      function setParent(child, newParent) {
-        try {
-          if (typeof child.parent === "function") { child.parent(newParent); return; }
-        } catch(e) {}
-        try { if ("Parent" in child) { child.Parent = newParent; return; } } catch(e) {}
-        try { child.Parent = newParent; } catch(e) {}
-      }
-
-      function findChildByName(dm, name) {
-        try { if (typeof dm.findChild === "function") { const r = dm.findChild(name); if (r) return r; } } catch(e) {}
-        try { if (typeof dm.findChildOfClass === "function") { const r = dm.findChildOfClass(name); if (r) return r; } } catch(e) {}
-        try {
-          const kids = typeof dm.getChildren === "function" ? dm.getChildren() : (dm.children || []);
-          for (const k of kids) {
-            const kn = k.name || (typeof k.Name === "string" ? k.Name : null);
-            if (kn === name) return k;
-          }
-        } catch(e) {}
-        return null;
-      }
-
-      function getChildrenSafe(node) {
-        try { if (typeof node.getChildren === "function") return node.getChildren(); } catch(e) {}
-        return node.children || [];
-      }
-
-      const extracted = [];
-      let totalMoved = 0;
-
-      for (const svcName of targets) {
-        const svc = findChildByName(dataModel, svcName);
-        if (!svc) continue;
-
-        let container = rootFolder;
-        if (groupByService) {
-          container = new Instance("Folder");
-          container.Name = svcName;
-          setParent(container, rootFolder);
-        }
-
-        const kids = getChildrenSafe(svc);
-        let moved = 0;
-        for (const child of kids) {
-          setParent(child, container);
-          moved++;
-        }
-
-        if (moved > 0) {
-          extracted.push(svcName + "(" + moved + ")");
-          totalMoved += moved;
-        } else if (groupByService) {
-          // gak ada isi, buang subfolder kosong
-          try { setParent(container, null); } catch(e) {}
-        }
-      }
-
-      if (extracted.length === 0) {
-        return res.status(200).json({ ok: false, error: "Tidak ada object yang bisa di-extract dari service: " + targets.join(", ") });
-      }
-
-      const newDm = new Instance("DataModel");
-      setParent(rootFolder, newDm);
-
-      const outBuffer = BinaryFormat.serialize(newDm);
-      const outBytes = outBuffer instanceof Uint8Array ? outBuffer : new Uint8Array(outBuffer);
-
-      return res.status(200).json({
-        ok: true,
-        fileName: modelName + ".rbxm",
-        size: outBytes.length,
-        extracted,
-        totalObjects: totalMoved,
-        grouped: groupByService,
-        file: Buffer.from(outBytes).toString("base64")
-      });
-    } catch (e) {
-      return res.status(200).json({
-        ok: false,
-        error: "Gagal convert: " + String(e.message || e),
-        hint: "Kalau rbx-dom error, pakai cara manual di Studio: buka RBXL → pilih service/objects → Right-click → Save to File (.rbxm)"
-      });
-    }
+    const result = await _extractRbxm(fullBuffer, target, modelName, groupByService);
+    return res.status(200).json(result);
   }
 
   if (route === "upload-chunk" && method === "POST") {
@@ -835,16 +920,10 @@ async function handleApi(req, res, path, method, params, ctx) {
       let createdAt = data.createdAt || (data.asset && data.asset.createdAt) || null;
 
       if (mod) {
-        state =
-          mod.state ||
-          mod.moderationState ||
-          mod.status ||
-          "Unknown";
+        state = mod.state || mod.moderationState || mod.status || "Unknown";
         reason =
           (mod.moderationDetails && (mod.moderationDetails.message || mod.moderationDetails.reason)) ||
-          mod.reason ||
-          mod.message ||
-          null;
+          mod.reason || mod.message || null;
       } else if (data.assetState) {
         state = data.assetState;
       }
@@ -855,15 +934,7 @@ async function handleApi(req, res, path, method, params, ctx) {
       else if (normalized.includes("reject")) level = "rejected";
       else if (normalized.includes("review") || normalized.includes("pending")) level = "pending";
 
-      return res.status(200).json({
-        ok: true,
-        assetId,
-        state,
-        level,
-        reason,
-        createdAt,
-        raw: mod || null,
-      });
+      return res.status(200).json({ ok: true, assetId, state, level, reason, createdAt, raw: mod || null });
     } catch (e) {
       return res.status(200).json({ ok: false, error: "Gagal cek moderasi: " + String(e.message || e) });
     }
@@ -1476,6 +1547,8 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 .mod-box .mod-title{font-size:1rem;font-weight:800;margin-bottom:6px}
 .mod-box .mod-sub{font-size:.75rem;opacity:.85}
 .tree-box{background:rgba(0,0,0,0.35);border:1px solid var(--border);border-radius:10px;padding:12px;font-family:'JetBrains Mono',monospace;font-size:.72rem;color:var(--muted);line-height:1.7;white-space:pre;overflow-x:auto;margin:8px 0}
+.progress-bar{width:100%;height:6px;background:rgba(255,255,255,.06);border-radius:4px;overflow:hidden;margin:10px 0}
+.progress-bar-fill{height:100%;width:0;background:linear-gradient(90deg,var(--pink),var(--cyan));transition:width .3s ease;border-radius:4px}
 </style></head><body>
 
 <div id="nangLoader">
@@ -1615,6 +1688,7 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 
 <input type="file" id="convFile" accept=".rbxl,.rbxm,.rbxlx,.rbxmx" style="display:none" onchange="doConvert()">
 <button class="btn-cyan" onclick="document.getElementById('convFile').click()" style="margin-top:12px">📁 Pilih File</button>
+<div class="progress-bar" id="convProgressWrap" style="display:none"><div class="progress-bar-fill" id="convProgressFill"></div></div>
 <div class="result" id="convResult"></div>
 </div>
 </div>
@@ -2286,6 +2360,7 @@ function convSetMode(m){
   $('convModeToModel').classList.toggle('on', m === 'toModel');
   $('convToXmlWrap').classList.toggle('hidden', m !== 'toXml');
   $('convToModelWrap').classList.toggle('hidden', m !== 'toModel');
+  convUpdateTree();
 }
 
 function convSetGroup(g){
@@ -2316,33 +2391,103 @@ function convUpdateTree(){
   $('convTreePreview').textContent = tree.trimEnd();
 }
 
+function _convProgress(pct){
+  const wrap = $('convProgressWrap');
+  const fill = $('convProgressFill');
+  if(!wrap || !fill) return;
+  if(pct <= 0){ wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+  fill.style.width = Math.min(100, pct) + '%';
+}
+
 async function doConvert(){
   const input=$('convFile');
   const box=$('convResult');
   if(!input.files||!input.files[0])return;
   const file=input.files[0];
-  if(file.size>50*1024*1024){box.className='result err';box.innerHTML='File > 50 MB.';box.style.display='block';return;}
+  if(file.size>200*1024*1024){box.className='result err';box.innerHTML='File > 200 MB.';box.style.display='block';return;}
 
   box.style.display='block';box.className='result info';
-  box.innerHTML='<span class="spinner"></span>Memproses '+esc(file.name)+'...';
+  box.innerHTML='<span class="spinner"></span>Memproses '+esc(file.name)+' ('+(file.size/1024/1024).toFixed(2)+' MB)...';
+  _convProgress(1);
 
   try{
-    const buf = await file.arrayBuffer();
-
     if (_convMode === 'toModel') {
+      // === RBXL → RBXM ===
       const target = $('convTargetSvc').value;
       const name = $('convModelName').value.trim() || 'Extracted';
-      const group = _convGroup ? '1' : '0';
-      const url = '/?api=convert-to-model'
-        + '&target=' + encodeURIComponent(target)
-        + '&name=' + encodeURIComponent(name)
-        + '&group=' + group;
+      const group = _convGroup;
+      const CHUNK_SIZE = 1 * 1024 * 1024;
+      let d;
 
-      const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:buf});
-      const d = await r.json();
-      if(d.error){
+      if (file.size < 3 * 1024 * 1024) {
+        // Direct upload
+        const url = '/?api=convert-to-model&target=' + encodeURIComponent(target) + '&name=' + encodeURIComponent(name) + '&group=' + (group ? '1' : '0');
+        const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body: file});
+        const txt = await r.text();
+        if (r.status === 413 || txt.includes("Request En") || txt.includes("too large")) {
+          box.className='result err';
+          box.innerHTML='File terlalu besar untuk direct upload. Coba lagi — otomatis pakai chunked upload di percobaan berikut.';
+          _convProgress(0);
+          return;
+        }
+        try { d = JSON.parse(txt); } catch(e) {
+          box.className='result err';
+          box.innerHTML='Server error (' + r.status + '): <small style="color:var(--muted)">' + esc(txt.slice(0,150)) + '</small>';
+          _convProgress(0);
+          return;
+        }
+      } else {
+        // Chunked upload
+        const sid = _randHex(16);
+        const total = Math.ceil(file.size / CHUNK_SIZE);
+        for (let i = 0; i < total; i++) {
+          const start = i * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE, file.size);
+          const chunk = file.slice(start, end);
+          const pct = Math.round((end / file.size) * 80);
+          box.className = 'result info';
+          box.innerHTML = '<span class="spinner"></span>Upload ' + (i+1) + '/' + total + ' (' + pct + '%)...';
+          _convProgress(pct);
+
+          const url = '/?api=convert-to-model-chunk&sid=' + encodeURIComponent(sid) + '&idx=' + i + '&total=' + total;
+          const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: chunk });
+          let cd;
+          try { cd = await r.json(); } catch(e) {
+            box.className='result err';
+            box.innerHTML='Gagal kirim bagian '+(i+1)+': response bukan JSON';
+            _convProgress(0);
+            return;
+          }
+          if (!cd.ok) {
+            box.className='result err';
+            box.innerHTML='Gagal kirim bagian '+(i+1)+': '+esc(cd.error||'unknown');
+            _convProgress(0);
+            return;
+          }
+        }
+        box.className = 'result info';
+        box.innerHTML = '<span class="spinner"></span>Proses convert di server...';
+        _convProgress(90);
+
+        const commit = await apiCall('/?api=convert-to-model-commit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sid, target, name, group })
+        });
+        d = commit;
+      }
+
+      if (d.error) {
+        _convProgress(0);
         box.className='result err';
         box.innerHTML='Gagal: '+esc(d.error)+(d.hint?'<br><small style="color:var(--muted)">'+esc(d.hint)+'</small>':'');
+        return;
+      }
+      if (!d.ok || !d.file) {
+        _convProgress(0);
+        box.className='result err';
+        box.innerHTML='Response server tidak valid';
         return;
       }
 
@@ -2354,6 +2499,7 @@ async function doConvert(){
 
       const svcList = (d.extracted || []).map(s => '<span style="background:rgba(0,232,122,.1);color:var(--green);padding:2px 8px;border-radius:6px;font-size:.7rem;margin:2px;display:inline-block">'+esc(s)+'</span>').join('');
 
+      _convProgress(100);
       box.className='result ok';
       box.innerHTML =
         '<div style="font-weight:800;color:var(--green);margin-bottom:8px">✓ Convert selesai</div>'+
@@ -2364,26 +2510,78 @@ async function doConvert(){
           '<div>Service: '+svcList+'</div>'+
         '</div>'+
         '<div class="key-line"><a href="'+dl+'" download="'+esc(d.fileName)+'" style="color:#00d4ff;text-decoration:none;font-weight:700">⬇ Download '+esc(d.fileName)+' ('+(d.size/1024).toFixed(1)+' KB)</a></div>';
+      setTimeout(()=>_convProgress(0), 800);
       return;
     }
 
-    // to XML (default)
-    const r=await fetch('/?api=convert',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:buf});
-    const ct = r.headers.get("content-type") || "";
-    if (ct.includes("xml")) {
-      const xml = await r.text();
-      const outName = file.name.replace(/\\.(rbxl|rbxm)$/i,'.rbxlx') || 'converted.rbxlx';
-      const blob = new Blob([xml], {type:'text/xml'});
-      const url = URL.createObjectURL(blob);
-      box.className='result ok';
-      box.innerHTML='Berhasil!<div class="key-line"><a href="'+url+'" download="'+outName+'" style="color:#00d4ff;text-decoration:none">⬇ Download '+outName+'</a></div>';
+    // === Binary → XML (default) ===
+    const CHUNK_SIZE = 1 * 1024 * 1024;
+    let xmlText = null;
+    let errObj = null;
+
+    if (file.size < 3 * 1024 * 1024) {
+      const r = await fetch('/?api=convert', {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body: file});
+      const ct = r.headers.get("content-type") || "";
+      if (ct.includes("xml")) {
+        xmlText = await r.text();
+      } else {
+        const txt = await r.text();
+        try { errObj = JSON.parse(txt); } catch(e) { errObj = { error: txt.slice(0,200) }; }
+      }
+    } else {
+      const sid = _randHex(16);
+      const total = Math.ceil(file.size / CHUNK_SIZE);
+      for (let i = 0; i < total; i++) {
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, file.size);
+        const chunk = file.slice(start, end);
+        const pct = Math.round((end / file.size) * 80);
+        box.className = 'result info';
+        box.innerHTML = '<span class="spinner"></span>Upload ' + (i+1) + '/' + total + ' (' + pct + '%)...';
+        _convProgress(pct);
+        const url = '/?api=convert-chunk&sid=' + encodeURIComponent(sid) + '&idx=' + i + '&total=' + total;
+        const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: chunk });
+        let cd;
+        try { cd = await r.json(); } catch(e) { box.className='result err'; box.innerHTML='Gagal kirim bagian '+(i+1); _convProgress(0); return; }
+        if (!cd.ok) { box.className='result err'; box.innerHTML='Gagal bagian '+(i+1)+': '+esc(cd.error||'unknown'); _convProgress(0); return; }
+      }
+      box.className = 'result info';
+      box.innerHTML = '<span class="spinner"></span>Proses convert...';
+      _convProgress(90);
+      const commit = await apiCall('/?api=convert-commit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sid })
+      });
+      if (commit.ok && commit.xml) xmlText = commit.xml;
+      else errObj = commit;
+    }
+
+    if (errObj) {
+      _convProgress(0);
+      box.className='result err';
+      box.innerHTML = 'Gagal: ' + esc(errObj.error || 'unknown') + (errObj.detail ? '<br><small style="color:var(--muted)">'+esc(errObj.detail)+'</small>' : '');
       return;
     }
-    const text = await r.text();
-    let d; try { d = JSON.parse(text); } catch(e) { d = { error: text.slice(0,200) }; }
+    if (!xmlText) {
+      _convProgress(0);
+      box.className='result err';
+      box.innerHTML = 'Response server tidak valid';
+      return;
+    }
+
+    const outName = file.name.replace(/\\.(rbxl|rbxm)$/i,'.rbxlx') || 'converted.rbxlx';
+    const blob = new Blob([xmlText], {type:'text/xml'});
+    const url = URL.createObjectURL(blob);
+    _convProgress(100);
+    box.className='result ok';
+    box.innerHTML='Berhasil!<div class="key-line"><a href="'+url+'" download="'+outName+'" style="color:#00d4ff;text-decoration:none">⬇ Download '+outName+'</a></div>';
+    setTimeout(()=>_convProgress(0), 800);
+  } catch(e){
+    _convProgress(0);
     box.className='result err';
-    box.innerHTML = 'Gagal: ' + esc(d.error || 'unknown') + (d.detail ? '<br><small style="color:var(--muted)">'+esc(d.detail)+'</small>' : '');
-  }catch(e){box.className='result err';box.innerHTML='Error: '+esc(e.message);}
+    box.innerHTML='Error: '+esc(e.message);
+  }
 }
 
 // ==== UPLOAD ====
@@ -2538,6 +2736,7 @@ function _upBigShowSuccess(assetId, assetName, assetType, groupId, apiKey){
   startModerationPoll(assetId, apiKey, assetType);
 }
 
+// ==== MODERATION POLL ====
 let _modTimer = null;
 let _modAttempts = 0;
 
