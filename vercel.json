@@ -1,5 +1,8 @@
 {
-  "rewrites": [
-    { "source": "/((?!api/).*)", "destination": "/api/index" }
-  ]
+  "functions": {
+    "api/convert.py": {
+      "runtime": "python3.12",
+      "maxDuration": 60
+    }
+  }
 }
