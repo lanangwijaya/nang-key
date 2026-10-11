@@ -318,6 +318,31 @@ async function handle(req, res) {
     return;
   }
 
+  if (params.has("chat")) {
+    const action = String(params.get("chat") || "");
+    if (action === "send") {
+      const user = String(params.get("user") || "anon").slice(0, 32);
+      const uid = String(params.get("uid") || "").slice(0, 20);
+      const text = String(params.get("text") || "").slice(0, 500);
+      if (!text) { res.status(200).json({ ok: false, error: "empty" }); return; }
+      const list = (await storeGet("nang:chat")) || [];
+      list.unshift({ user, uid, text, ts: Date.now() });
+      if (list.length > 200) list.length = 200;
+      await storeSet("nang:chat", list, 86400);
+      res.status(200).json({ ok: true });
+      return;
+    }
+    if (action === "get") {
+      const since = parseInt(params.get("since") || "0", 10) || 0;
+      const list = (await storeGet("nang:chat")) || [];
+      const msgs = list.filter(m => (m.ts || 0) > since).slice().reverse();
+      res.status(200).json({ ok: true, msgs });
+      return;
+    }
+    res.status(200).json({ ok: false, error: "unknown chat action" });
+    return;
+  }
+
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.status(200).send(mainPage(WA_NUMBER));
 }
