@@ -1401,7 +1401,7 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 </div>
 
 <div style="padding:14px;background:rgba(255,200,50,.05);border:1px solid rgba(255,200,50,.25);border-radius:12px;font-size:.75rem;color:var(--yellow);line-height:1.7">
-⚠️ <b>Converter otomatis di web gak tersedia</b> — library Python (`rbxfile`) gak bisa jalan di Vercel. Pakai Studio (cara di atas), itu paling reliable & professional.
+⚠️ <b>Converter otomatis di web gak tersedia</b> — library Python (<code>rbxfile</code>) gak bisa jalan di Vercel. Pakai Studio (cara di atas), itu paling reliable & professional.
 </div>
 </div>
 </div>
