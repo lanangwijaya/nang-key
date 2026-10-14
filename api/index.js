@@ -240,7 +240,7 @@ async function handle(req, res) {
   }
 
   // ─────────────────────────────────────────────
-  // YT → MP3 resolver via cobalt.tools (Vercel-only)
+  // YT → MP3 resolver via cobalt.tools
   // ─────────────────────────────────────────────
   if (params.has("yt")) {
     const action = String(params.get("yt") || "");
@@ -1483,15 +1483,13 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 </div>
 
 <div class="card">
-<div class="card-title">🎵 Dari YouTube</div>
+<div class="card-title">🎵 Dari YouTube (auto-upload)</div>
 <div class="fmt-box" style="font-size:.72rem;line-height:1.7">
-    Paste link YouTube → server resolve via cobalt.tools → browser download MP3 → otomatis masuk ke slot file di bawah.<br>
-    Habis itu upload normal pakai API key kamu.
-    <br><br>
+    Paste link YouTube → fetch → auto upload ke Roblox pakai API key di bawah.<br>
     <b style="color:var(--yellow)">⚠️</b> Roblox tolak audio ber-copyright. Yang lolos cuma CC / royalty-free / punya kamu sendiri.
 </div>
 <input type="text" class="inp" id="ytUrl" placeholder="https://youtube.com/watch?v=... atau https://youtu.be/...">
-<button class="btn-cyan" id="ytBtn" onclick="ytFetch()">🎵 FETCH DARI YOUTUBE</button>
+<button class="btn-cyan" id="ytBtn" onclick="ytFetch()">🎵 FETCH + AUTO-UPLOAD</button>
 <div class="result" id="ytResult"></div>
 </div>
 
@@ -2461,10 +2459,9 @@ async function ytFetch(){
     });
     if(!r.ok){ box.className='result err'; box.innerHTML='❌ '+esc(r.error||'gagal resolve'); return; }
 
-    box.className='result info';
     box.innerHTML = '<span class="spinner"></span>Download MP3 dari cobalt...';
     const audioResp = await fetch(r.direct);
-    if(!audioResp.ok){ box.className='result err'; box.innerHTML='❌ Cobalt CDN error: HTTP '+audioResp.status; return; }
+    if(!audioResp.ok){ box.className='result err'; box.innerHTML='❌ Cobalt CDN error: '+audioResp.status; return; }
     const blob = await audioResp.blob();
     if(!blob || blob.size < 4096){ box.className='result err'; box.innerHTML='File terlalu kecil / gagal'; return; }
 
@@ -2477,12 +2474,34 @@ async function ytFetch(){
     _upHideBig();
     upSetType('Audio');
     _upSaveFields();
-    box.className='result ok';
-    box.innerHTML='✓ Berhasil (' + (blob.size/1024).toFixed(1) + ' KB). File ada di slot bawah. Isi API key + klik UPLOAD KE ROBLOX.';
+
+    const username = $('upUsername').value.trim();
+    const apiKey = $('upApiKey').value.trim();
+    if(!username || !apiKey){
+      box.className='result warn';
+      box.innerHTML='⚠️ File siap (' + (blob.size/1024).toFixed(1) + ' KB). Isi dulu Username + API Key di atas, terus klik UPLOAD KE ROBLOX manual.';
+      return;
+    }
+
+    box.className='result info';
+    box.innerHTML='<span class="spinner"></span>File siap (' + (blob.size/1024).toFixed(1) + ' KB). Auto-upload...';
+    await doUploadRbxm();
+
+    const upRes = $('upBigResult');
+    if(upRes && upRes.innerHTML && upRes.classList.contains('err')){
+      box.className='result err';
+      box.innerHTML='❌ Auto-upload gagal. Cek pesan di kotak bawah.';
+    } else if(upRes && upRes.innerHTML && upRes.classList.contains('ok')){
+      box.className='result ok';
+      box.innerHTML='✓ Auto-upload selesai. Asset ID muncul di kotak bawah.';
+    } else {
+      box.className='result info';
+      box.innerHTML='Upload jalan, cek status di kotak bawah.';
+    }
   } catch(e){
     box.className='result err'; box.innerHTML='Error: '+esc(e.message);
   } finally {
-    btn.disabled=false; btn.textContent='🎵 FETCH DARI YOUTUBE';
+    btn.disabled=false; btn.textContent='🎵 FETCH + AUTO-UPLOAD';
   }
 }
 
