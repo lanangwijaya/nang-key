@@ -239,6 +239,63 @@ async function handle(req, res) {
     return await handleApi(req, res, path, method, params, { ADMIN_PW, AUTH_DOMAIN, WA_NUMBER });
   }
 
+  // ─────────────────────────────────────────────
+  // YT → MP3 resolver via cobalt.tools (Vercel-only)
+  // ─────────────────────────────────────────────
+  if (params.has("yt")) {
+    const action = String(params.get("yt") || "");
+    if (action === "resolve" && method === "POST") {
+      let raw = "";
+      await new Promise(r => { req.on("data", c => raw += c); req.on("end", r); });
+      let body = null;
+      try { body = JSON.parse(raw); } catch {}
+      const ytUrl = String((body && body.url) || "").trim();
+      if (!ytUrl || (!ytUrl.includes("youtube.com") && !ytUrl.includes("youtu.be"))) {
+        res.status(200).json({ ok: false, error: "Bukan link YouTube" });
+        return;
+      }
+      const cobaltEndpoints = [
+        "https://api.cobalt.tools/",
+        "https://co.wuk.sh/api/json",
+        "https://cobalt-api.kwiatekmiki.com/",
+      ];
+      let lastErr = null;
+      for (const endpoint of cobaltEndpoints) {
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 25000);
+          const r = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Accept": "application/json", "Content-Type": "application/json" },
+            body: JSON.stringify({
+              url: ytUrl,
+              downloadMode: "audio",
+              audioFormat: "mp3",
+              audioBitrate: "128",
+              filenameStyle: "basic",
+            }),
+            signal: ctrl.signal,
+          });
+          clearTimeout(t);
+          const text = await r.text();
+          let data;
+          try { data = JSON.parse(text); } catch { data = { raw: text }; }
+          if (r.ok && (data.url || data.status === "tunnel" || data.status === "redirect")) {
+            res.status(200).json({ ok: true, direct: data.url, source: endpoint });
+            return;
+          }
+          lastErr = data.text || (data.error && (data.error.code || data.error)) || data.message || ("HTTP " + r.status);
+        } catch (e) {
+          lastErr = String(e.message || e);
+        }
+      }
+      res.status(200).json({ ok: false, error: "Semua cobalt endpoint gagal: " + String(lastErr) });
+      return;
+    }
+    res.status(200).json({ ok: false, error: "unknown yt action" });
+    return;
+  }
+
   if (method === "POST") {
     let body = "";
     await new Promise(r => { req.on("data", c => body += c); req.on("end", r); });
@@ -1424,6 +1481,20 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 4. <b style="color:var(--pink)">Jangan pakai akun utama</b>
 </div>
 </div>
+
+<div class="card">
+<div class="card-title">🎵 Dari YouTube</div>
+<div class="fmt-box" style="font-size:.72rem;line-height:1.7">
+    Paste link YouTube → server resolve via cobalt.tools → browser download MP3 → otomatis masuk ke slot file di bawah.<br>
+    Habis itu upload normal pakai API key kamu.
+    <br><br>
+    <b style="color:var(--yellow)">⚠️</b> Roblox tolak audio ber-copyright. Yang lolos cuma CC / royalty-free / punya kamu sendiri.
+</div>
+<input type="text" class="inp" id="ytUrl" placeholder="https://youtube.com/watch?v=... atau https://youtu.be/...">
+<button class="btn-cyan" id="ytBtn" onclick="ytFetch()">🎵 FETCH DARI YOUTUBE</button>
+<div class="result" id="ytResult"></div>
+</div>
+
 <div class="card">
 <div class="card-title">📦 Format</div>
 <div class="fmt-box">
@@ -2372,6 +2443,47 @@ async function doUploadRbxm(){
   }
   catch(e){ _upBigShowFail(e.message || 'Error tidak diketahui'); }
   finally{ btn.disabled=false; btn.textContent='UPLOAD KE ROBLOX'; }
+}
+
+async function ytFetch(){
+  const url = $('ytUrl').value.trim();
+  const box = $('ytResult');
+  const btn = $('ytBtn');
+  if(!url){ box.className='result err'; box.innerHTML='Paste link YouTube dulu'; return; }
+  if(!/youtube\.com|youtu\.be/.test(url)){ box.className='result err'; box.innerHTML='Bukan link YouTube'; return; }
+  btn.disabled=true; btn.textContent='⏳ RESOLVING...';
+  box.className='result info'; box.innerHTML='<span class="spinner"></span>Minta cobalt.tools convert...';
+  try{
+    const r = await apiCall('/?yt=resolve', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ url })
+    });
+    if(!r.ok){ box.className='result err'; box.innerHTML='❌ '+esc(r.error||'gagal resolve'); return; }
+
+    box.className='result info';
+    box.innerHTML = '<span class="spinner"></span>Download MP3 dari cobalt...';
+    const audioResp = await fetch(r.direct);
+    if(!audioResp.ok){ box.className='result err'; box.innerHTML='❌ Cobalt CDN error: HTTP '+audioResp.status; return; }
+    const blob = await audioResp.blob();
+    if(!blob || blob.size < 4096){ box.className='result err'; box.innerHTML='File terlalu kecil / gagal'; return; }
+
+    const file = new File([blob], 'yt-music.mp3', { type:'audio/mpeg' });
+    _upFile = file;
+    upDrop.classList.add('done');
+    upDrop.querySelector('.drop-icon').textContent = '🎵';
+    upDrop.querySelector('.drop-text').textContent = file.name;
+    upDrop.querySelector('.drop-hint').textContent = (file.size/1024).toFixed(1) + ' KB  ·  dari YouTube';
+    _upHideBig();
+    upSetType('Audio');
+    _upSaveFields();
+    box.className='result ok';
+    box.innerHTML='✓ Berhasil (' + (blob.size/1024).toFixed(1) + ' KB). File ada di slot bawah. Isi API key + klik UPLOAD KE ROBLOX.';
+  } catch(e){
+    box.className='result err'; box.innerHTML='Error: '+esc(e.message);
+  } finally {
+    btn.disabled=false; btn.textContent='🎵 FETCH DARI YOUTUBE';
+  }
 }
 
 let _fmFile = null;
