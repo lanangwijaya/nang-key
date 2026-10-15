@@ -1,10 +1,6 @@
 {
   "name": "nang-key",
-  "version": "77.0.0",
+  "version": "78.1.0",
   "private": true,
-  "type": "module",
-  "dependencies": {
-    "fzstd": "^0.1.1",
-    "rbx-dom": "^0.10.0"
-  }
+  "type": "module"
 }
