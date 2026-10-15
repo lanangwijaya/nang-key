@@ -240,7 +240,7 @@ async function handle(req, res) {
   }
 
   // ─────────────────────────────────────────────
-  // YT → MP3 resolver via cobalt.tools
+  // YT → MP3 resolver via cobalt community instances
   // ─────────────────────────────────────────────
   if (params.has("yt")) {
     const action = String(params.get("yt") || "");
@@ -254,42 +254,65 @@ async function handle(req, res) {
         res.status(200).json({ ok: false, error: "Bukan link YouTube" });
         return;
       }
-      const cobaltEndpoints = [
-        "https://api.cobalt.tools/",
-        "https://co.wuk.sh/api/json",
-        "https://cobalt-api.kwiatekmiki.com/",
+
+      const instances = [
+        "https://cobalt-api.kwiatekmiki.com",
+        "https://cobalt.255x.ru",
+        "https://cobalt-api.drgns.space",
+        "https://api.cobalt.best",
+        "https://cobalt-api.ayo.tf",
+        "https://co.eepy.today",
+        "https://api.cobalt.tools",
       ];
-      let lastErr = null;
-      for (const endpoint of cobaltEndpoints) {
+
+      const errors = [];
+      for (const base of instances) {
         try {
+          const endpoint = base.replace(/\/$/, "");
           const ctrl = new AbortController();
           const t = setTimeout(() => ctrl.abort(), 25000);
           const r = await fetch(endpoint, {
             method: "POST",
-            headers: { "Accept": "application/json", "Content-Type": "application/json" },
+            headers: {
+              "Accept": "application/json",
+              "Content-Type": "application/json",
+              "User-Agent": "Mozilla/5.0 (compatible; NANG/1.0)",
+            },
             body: JSON.stringify({
               url: ytUrl,
               downloadMode: "audio",
               audioFormat: "mp3",
               audioBitrate: "128",
               filenameStyle: "basic",
+              vQuality: "128",
+              isAudioOnly: true,
             }),
             signal: ctrl.signal,
           });
           clearTimeout(t);
           const text = await r.text();
           let data;
-          try { data = JSON.parse(text); } catch { data = { raw: text }; }
-          if (r.ok && (data.url || data.status === "tunnel" || data.status === "redirect")) {
+          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 200) }; }
+
+          if (r.ok && data.url) {
             res.status(200).json({ ok: true, direct: data.url, source: endpoint });
             return;
           }
-          lastErr = data.text || (data.error && (data.error.code || data.error)) || data.message || ("HTTP " + r.status);
+          if (r.ok && Array.isArray(data.picker) && data.picker[0] && data.picker[0].url) {
+            res.status(200).json({ ok: true, direct: data.picker[0].url, source: endpoint });
+            return;
+          }
+          const errMsg = data.text || (data.error && (data.error.code || data.error)) || data.message || ("HTTP " + r.status);
+          errors.push(base.replace(/https?:\/\//, "") + ": " + errMsg);
         } catch (e) {
-          lastErr = String(e.message || e);
+          errors.push(base.replace(/https?:\/\//, "") + ": " + String(e.message || e).slice(0, 60));
         }
       }
-      res.status(200).json({ ok: false, error: "Semua cobalt endpoint gagal: " + String(lastErr) });
+      res.status(200).json({
+        ok: false,
+        error: "Semua cobalt instance gagal. Coba lagi nanti.",
+        detail: errors.slice(0, 4),
+      });
       return;
     }
     res.status(200).json({ ok: false, error: "unknown yt action" });
@@ -2450,15 +2473,24 @@ async function ytFetch(){
   if(!url){ box.className='result err'; box.innerHTML='Paste link YouTube dulu'; return; }
   if(!/youtube\.com|youtu\.be/.test(url)){ box.className='result err'; box.innerHTML='Bukan link YouTube'; return; }
   btn.disabled=true; btn.textContent='⏳ RESOLVING...';
-  box.className='result info'; box.innerHTML='<span class="spinner"></span>Minta cobalt.tools convert...';
+  box.className='result info'; box.innerHTML='<span class="spinner"></span>Minta cobalt convert...';
   try{
     const r = await apiCall('/?yt=resolve', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ url })
     });
-    if(!r.ok){ box.className='result err'; box.innerHTML='❌ '+esc(r.error||'gagal resolve'); return; }
+    if(!r.ok){
+      let detail = '';
+      if(Array.isArray(r.detail) && r.detail.length){
+        detail = '<br><small style="opacity:.7">' + r.detail.map(x=>esc(x)).join('<br>') + '</small>';
+      }
+      box.className='result err';
+      box.innerHTML='❌ '+esc(r.error||'gagal resolve')+detail;
+      return;
+    }
 
+    box.className='result info';
     box.innerHTML = '<span class="spinner"></span>Download MP3 dari cobalt...';
     const audioResp = await fetch(r.direct);
     if(!audioResp.ok){ box.className='result err'; box.innerHTML='❌ Cobalt CDN error: '+audioResp.status; return; }
