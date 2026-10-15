@@ -216,7 +216,7 @@ async function handle(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-nang-apikey, x-nang-userid, x-nang-groupid, x-nang-filename, x-nang-display, x-nang-desc, x-nang-assettype");
   if (method === "OPTIONS") { res.status(200).end(); return; }
 
-  if (params.has("version")) { res.status(200).json({ version: BUILD, ts: Date.now(), hasKv: _HAS_KV }); return; }
+  if (params.has("version")) { res.status(200).json({ version: BUILD, ts: Date.now(), hasKv: _HAS_KV, hasRapid: !!process.env.RAPIDAPI_KEY }); return; }
 
   if (params.has("kvtest")) {
     if (!_HAS_KV) return res.status(200).json({ ok: false, error: "KV env vars tidak ada", hasKv: false });
@@ -240,7 +240,7 @@ async function handle(req, res) {
   }
 
   // ─────────────────────────────────────────────
-  // YT → MP3 resolver via cobalt community instances
+  // YT → MP3 resolver: cobalt + RapidAPI fallback
   // ─────────────────────────────────────────────
   if (params.has("yt")) {
     const action = String(params.get("yt") || "");
@@ -255,22 +255,22 @@ async function handle(req, res) {
         return;
       }
 
-      const instances = [
+      const errors = [];
+
+      // ── STEP 1: cobalt community instances ──
+      const cobaltInstances = [
         "https://cobalt-api.kwiatekmiki.com",
         "https://cobalt.255x.ru",
         "https://cobalt-api.drgns.space",
         "https://api.cobalt.best",
         "https://cobalt-api.ayo.tf",
         "https://co.eepy.today",
-        "https://api.cobalt.tools",
       ];
-
-      const errors = [];
-      for (const base of instances) {
+      for (const base of cobaltInstances) {
         try {
           const endpoint = base.replace(/\/$/, "");
           const ctrl = new AbortController();
-          const t = setTimeout(() => ctrl.abort(), 25000);
+          const t = setTimeout(() => ctrl.abort(), 15000);
           const r = await fetch(endpoint, {
             method: "POST",
             headers: {
@@ -292,26 +292,66 @@ async function handle(req, res) {
           clearTimeout(t);
           const text = await r.text();
           let data;
-          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 200) }; }
+          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 150) }; }
 
           if (r.ok && data.url) {
-            res.status(200).json({ ok: true, direct: data.url, source: endpoint });
+            res.status(200).json({ ok: true, direct: data.url, source: "cobalt:" + base.replace(/https?:\/\//, "") });
             return;
           }
           if (r.ok && Array.isArray(data.picker) && data.picker[0] && data.picker[0].url) {
-            res.status(200).json({ ok: true, direct: data.picker[0].url, source: endpoint });
+            res.status(200).json({ ok: true, direct: data.picker[0].url, source: "cobalt:" + base.replace(/https?:\/\//, "") });
             return;
           }
-          const errMsg = data.text || (data.error && (data.error.code || data.error)) || data.message || ("HTTP " + r.status);
-          errors.push(base.replace(/https?:\/\//, "") + ": " + errMsg);
+          errors.push("cobalt/" + base.replace(/https?:\/\//, "") + ": " + (data.text || (data.error && (data.error.code || data.error)) || "HTTP " + r.status));
         } catch (e) {
-          errors.push(base.replace(/https?:\/\//, "") + ": " + String(e.message || e).slice(0, 60));
+          errors.push("cobalt/" + base.replace(/https?:\/\//, "") + ": " + String(e.message || e).slice(0, 50));
         }
       }
+
+      // ── STEP 2: RapidAPI fallback ──
+      const RA_KEY = process.env.RAPIDAPI_KEY;
+      const RA_HOST = process.env.RAPIDAPI_HOST || "youtube-mp36.p.rapidapi.com";
+      if (RA_KEY) {
+        try {
+          let vid = "";
+          const m1 = ytUrl.match(/[?&]v=([\w-]+)/);
+          const m2 = ytUrl.match(/youtu\.be\/([\w-]+)/);
+          const m3 = ytUrl.match(/shorts\/([\w-]+)/);
+          vid = (m1 && m1[1]) || (m2 && m2[1]) || (m3 && m3[1]) || "";
+          if (!vid) {
+            errors.push("rapidapi: video ID tidak dapat diekstrak dari URL");
+          } else {
+            const ctrl = new AbortController();
+            const t = setTimeout(() => ctrl.abort(), 20000);
+            const r = await fetch("https://" + RA_HOST + "/dl?id=" + encodeURIComponent(vid), {
+              method: "GET",
+              headers: {
+                "X-RapidAPI-Key": RA_KEY,
+                "X-RapidAPI-Host": RA_HOST,
+              },
+              signal: ctrl.signal,
+            });
+            clearTimeout(t);
+            const text = await r.text();
+            let data;
+            try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 150) }; }
+            if (r.ok && data.link) {
+              res.status(200).json({ ok: true, direct: data.link, source: "rapidapi" });
+              return;
+            }
+            errors.push("rapidapi: " + (data.message || data.msg || data.error || "HTTP " + r.status));
+          }
+        } catch (e) {
+          errors.push("rapidapi: " + String(e.message || e).slice(0, 50));
+        }
+      } else {
+        errors.push("rapidapi: RAPIDAPI_KEY belum di-set di Vercel env");
+      }
+
       res.status(200).json({
         ok: false,
-        error: "Semua cobalt instance gagal. Coba lagi nanti.",
-        detail: errors.slice(0, 4),
+        error: "Semua endpoint gagal. Coba lagi atau setup RapidAPI env var.",
+        detail: errors.slice(0, 8),
       });
       return;
     }
