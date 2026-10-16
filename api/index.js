@@ -235,7 +235,7 @@ async function handle(req, res) {
   }
 
   // ─────────────────────────────────────────────
-  // YT → MP3 resolver + stream proxy
+  // YT → MP3: resolve + stream proxy
   // ─────────────────────────────────────────────
   if (params.has("yt")) {
     const action = String(params.get("yt") || "");
@@ -248,7 +248,7 @@ async function handle(req, res) {
       return (m1 && m1[1]) || (m2 && m2[1]) || (m3 && m3[1]) || (m4 && m4[1]) || "";
     }
 
-    // NEW: stream proxy — bypass CORS + expiry
+    // STREAM PROXY — bypass CORS + URL expiry
     if (action === "stream" && method === "GET") {
       const target = String(params.get("url") || "").trim();
       if (!target || !target.startsWith("http")) { res.status(400).send("invalid url"); return; }
@@ -1401,7 +1401,6 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 <div class="panel" id="tab1">
 <div class="card">
 <div class="card-title">🔄 Converter RBXL → RBXM</div>
-
 <div class="fmt-box">
 <b style="color:var(--yellow)">Cara pakai:</b><br>
 1. Buka file <span class="field">.rbxl</span> di <b>Roblox Studio</b><br>
@@ -1410,9 +1409,8 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 4. <b>Klik kanan → Save to File</b> → simpan <span class="field">.rbxm</span><br>
 5. Selesai
 </div>
-
 <div style="padding:14px;background:rgba(255,200,50,.05);border:1px solid rgba(255,200,50,.25);border-radius:12px;font-size:.75rem;color:var(--yellow);line-height:1.7">
-⚠️ <b>Converter otomatis di web gak tersedia</b> — library Python gak bisa jalan di Vercel. Pakai Studio.
+⚠️ <b>Converter otomatis di web gak tersedia</b> — pakai Studio.
 </div>
 </div>
 </div>
@@ -1426,13 +1424,11 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 <span class="label">Personal Upload:</span><br>
 1. Buka <a href="https://create.roblox.com/dashboard/credentials" target="_blank">create.roblox.com/dashboard/credentials</a><br>
 2. Create API Key → Assets API → Write + Read<br>
-3. Experience/IP restriction: nonaktif<br>
-4. Save & Generate → copy key<br><br>
+3. Save & Generate → copy key<br><br>
 <span class="label">Group Upload:</span><br>
 1. Bikin akun Roblox khusus automation<br>
-2. Invite akun ke grup + role min bikin asset<br>
-3. Login pakai akun itu → bikin API key<br>
-4. <b style="color:var(--pink)">Jangan pakai akun utama</b>
+2. Invite ke grup + role min bikin asset<br>
+3. Login pakai akun itu → bikin API key
 </div>
 </div>
 
@@ -1452,8 +1448,7 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 <div class="fmt-box">
 <b style="color:var(--pink)">📦 Model</b> — .rbxm / .rbxmx — max 20 MB<br>
 <b style="color:var(--cyan)">🎵 Audio</b> — .mp3 .ogg .wav .flac — max 7 menit<br>
-<b style="color:var(--yellow)">🖼️ Gambar/Decal</b> — .png .jpg .jpeg .bmp .tga — max 20 MB<br>
-Limit web: max <span class="field">15 MB</span>
+<b style="color:var(--yellow)">🖼️ Gambar/Decal</b> — .png .jpg .jpeg .bmp .tga — max 20 MB
 </div>
 </div>
 <div class="card">
