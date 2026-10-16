@@ -240,10 +240,67 @@ async function handle(req, res) {
   }
 
   // ─────────────────────────────────────────────
-  // YT → MP3 resolver: cobalt + RapidAPI fallback
+  // YT → MP3 resolver: cobalt → Piped → Invidious → RapidAPI
   // ─────────────────────────────────────────────
   if (params.has("yt")) {
     const action = String(params.get("yt") || "");
+
+    function _extractVid(u) {
+      const m1 = u.match(/[?&]v=([\w-]{11})/);
+      const m2 = u.match(/youtu\.be\/([\w-]{11})/);
+      const m3 = u.match(/shorts\/([\w-]{11})/);
+      const m4 = u.match(/embed\/([\w-]{11})/);
+      return (m1 && m1[1]) || (m2 && m2[1]) || (m3 && m3[1]) || (m4 && m4[1]) || "";
+    }
+
+    // DEBUG endpoint — pakai ?yt=debug&url=...
+    if (action === "debug" && method === "GET") {
+      const ytUrl = String(params.get("url") || "").trim();
+      const vid = _extractVid(ytUrl);
+      const results = { vid, cobalt: [], piped: [], invidious: [] };
+
+      const cobaltTest = [
+        "https://cobalt-api.kwiatekmiki.com",
+        "https://cobalt-api.drgns.space",
+      ];
+      for (const base of cobaltTest) {
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 8000);
+          const r = await fetch(base, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Accept": "application/json" },
+            body: JSON.stringify({ url: ytUrl, downloadMode: "audio" }),
+            signal: ctrl.signal,
+          });
+          clearTimeout(t);
+          const txt = await r.text();
+          results.cobalt.push({ host: base, status: r.status, body: txt.slice(0, 200) });
+        } catch (e) { results.cobalt.push({ host: base, error: String(e.message || e).slice(0, 100) }); }
+      }
+
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 8000);
+        const r = await fetch("https://pipedapi.kavin.rocks/streams/" + vid, { signal: ctrl.signal });
+        clearTimeout(t);
+        const txt = await r.text();
+        results.piped.push({ host: "pipedapi.kavin.rocks", status: r.status, body: txt.slice(0, 200) });
+      } catch (e) { results.piped.push({ host: "pipedapi.kavin.rocks", error: String(e.message || e).slice(0, 100) }); }
+
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 8000);
+        const r = await fetch("https://inv.nadeko.net/api/v1/videos/" + vid, { signal: ctrl.signal });
+        clearTimeout(t);
+        const txt = await r.text();
+        results.invidious.push({ host: "inv.nadeko.net", status: r.status, body: txt.slice(0, 200) });
+      } catch (e) { results.invidious.push({ host: "inv.nadeko.net", error: String(e.message || e).slice(0, 100) }); }
+
+      res.status(200).json({ ok: true, debug: results });
+      return;
+    }
+
     if (action === "resolve" && method === "POST") {
       let raw = "";
       await new Promise(r => { req.on("data", c => raw += c); req.on("end", r); });
@@ -254,104 +311,114 @@ async function handle(req, res) {
         res.status(200).json({ ok: false, error: "Bukan link YouTube" });
         return;
       }
+      const vid = _extractVid(ytUrl);
+      if (!vid) {
+        res.status(200).json({ ok: false, error: "Video ID tidak dapat diekstrak dari URL" });
+        return;
+      }
 
       const errors = [];
 
-      // ── STEP 1: cobalt community instances ──
+      // LAYER 1: cobalt
       const cobaltInstances = [
         "https://cobalt-api.kwiatekmiki.com",
-        "https://cobalt.255x.ru",
         "https://cobalt-api.drgns.space",
-        "https://api.cobalt.best",
+        "https://cobalt.255x.ru",
         "https://cobalt-api.ayo.tf",
-        "https://co.eepy.today",
       ];
       for (const base of cobaltInstances) {
         try {
-          const endpoint = base.replace(/\/$/, "");
           const ctrl = new AbortController();
-          const t = setTimeout(() => ctrl.abort(), 15000);
-          const r = await fetch(endpoint, {
+          const t = setTimeout(() => ctrl.abort(), 10000);
+          const r = await fetch(base, {
             method: "POST",
-            headers: {
-              "Accept": "application/json",
-              "Content-Type": "application/json",
-              "User-Agent": "Mozilla/5.0 (compatible; NANG/1.0)",
-            },
-            body: JSON.stringify({
-              url: ytUrl,
-              downloadMode: "audio",
-              audioFormat: "mp3",
-              audioBitrate: "128",
-              filenameStyle: "basic",
-              vQuality: "128",
-              isAudioOnly: true,
-            }),
+            headers: { "Accept": "application/json", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" },
+            body: JSON.stringify({ url: ytUrl, downloadMode: "audio", audioFormat: "mp3", audioBitrate: "128", filenameStyle: "basic" }),
             signal: ctrl.signal,
           });
           clearTimeout(t);
-          const text = await r.text();
-          let data;
-          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 150) }; }
-
-          if (r.ok && data.url) {
-            res.status(200).json({ ok: true, direct: data.url, source: "cobalt:" + base.replace(/https?:\/\//, "") });
-            return;
-          }
-          if (r.ok && Array.isArray(data.picker) && data.picker[0] && data.picker[0].url) {
-            res.status(200).json({ ok: true, direct: data.picker[0].url, source: "cobalt:" + base.replace(/https?:\/\//, "") });
-            return;
-          }
+          const txt = await r.text();
+          let data; try { data = JSON.parse(txt); } catch { data = { raw: txt.slice(0, 150) }; }
+          if (r.ok && data.url) { res.status(200).json({ ok: true, direct: data.url, source: "cobalt:" + base.replace(/https?:\/\//, "") }); return; }
+          if (r.ok && Array.isArray(data.picker) && data.picker[0] && data.picker[0].url) { res.status(200).json({ ok: true, direct: data.picker[0].url, source: "cobalt" }); return; }
           errors.push("cobalt/" + base.replace(/https?:\/\//, "") + ": " + (data.text || (data.error && (data.error.code || data.error)) || "HTTP " + r.status));
-        } catch (e) {
-          errors.push("cobalt/" + base.replace(/https?:\/\//, "") + ": " + String(e.message || e).slice(0, 50));
-        }
+        } catch (e) { errors.push("cobalt/" + base.replace(/https?:\/\//, "") + ": " + String(e.message || e).slice(0, 40)); }
       }
 
-      // ── STEP 2: RapidAPI fallback ──
+      // LAYER 2: Piped
+      const pipedInstances = [
+        "https://pipedapi.kavin.rocks",
+        "https://pipedapi.adminforge.de",
+        "https://api.piped.private.coffee",
+        "https://pipedapi.leptons.xyz",
+      ];
+      for (const base of pipedInstances) {
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 12000);
+          const r = await fetch(base + "/streams/" + vid, { signal: ctrl.signal, headers: { "Accept": "application/json" } });
+          clearTimeout(t);
+          if (!r.ok) { errors.push("piped/" + base.replace(/https?:\/\//, "") + ": HTTP " + r.status); continue; }
+          const data = await r.json();
+          const audioStreams = (data.audioStreams || []).filter(s => s.mimeType && s.mimeType.includes("audio"));
+          if (!audioStreams.length) { errors.push("piped/" + base.replace(/https?:\/\//, "") + ": no audio"); continue; }
+          audioStreams.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+          const best = audioStreams[0];
+          if (best.url) { res.status(200).json({ ok: true, direct: best.url, source: "piped:" + base.replace(/https?:\/\//, "") }); return; }
+          errors.push("piped/" + base.replace(/https?:\/\//, "") + ": no url");
+        } catch (e) { errors.push("piped/" + base.replace(/https?:\/\//, "") + ": " + String(e.message || e).slice(0, 40)); }
+      }
+
+      // LAYER 3: Invidious
+      const invInstances = [
+        "https://inv.nadeko.net",
+        "https://invidious.nerdvpn.de",
+        "https://yewtu.be",
+        "https://invidious.f5.si",
+        "https://iv.melmac.space",
+      ];
+      for (const base of invInstances) {
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 12000);
+          const r = await fetch(base + "/api/v1/videos/" + vid, { signal: ctrl.signal, headers: { "Accept": "application/json" } });
+          clearTimeout(t);
+          if (!r.ok) { errors.push("inv/" + base.replace(/https?:\/\//, "") + ": HTTP " + r.status); continue; }
+          const data = await r.json();
+          const adaptive = (data.adaptiveFormats || []).filter(f => f.type && f.type.startsWith("audio"));
+          if (!adaptive.length) { errors.push("inv/" + base.replace(/https?:\/\//, "") + ": no audio"); continue; }
+          adaptive.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+          const best = adaptive[0];
+          if (best.url) { res.status(200).json({ ok: true, direct: best.url, source: "invidious:" + base.replace(/https?:\/\//, "") }); return; }
+          errors.push("inv/" + base.replace(/https?:\/\//, "") + ": no url");
+        } catch (e) { errors.push("inv/" + base.replace(/https?:\/\//, "") + ": " + String(e.message || e).slice(0, 40)); }
+      }
+
+      // LAYER 4: RapidAPI
       const RA_KEY = process.env.RAPIDAPI_KEY;
       const RA_HOST = process.env.RAPIDAPI_HOST || "youtube-mp36.p.rapidapi.com";
       if (RA_KEY) {
         try {
-          let vid = "";
-          const m1 = ytUrl.match(/[?&]v=([\w-]+)/);
-          const m2 = ytUrl.match(/youtu\.be\/([\w-]+)/);
-          const m3 = ytUrl.match(/shorts\/([\w-]+)/);
-          vid = (m1 && m1[1]) || (m2 && m2[1]) || (m3 && m3[1]) || "";
-          if (!vid) {
-            errors.push("rapidapi: video ID tidak dapat diekstrak dari URL");
-          } else {
-            const ctrl = new AbortController();
-            const t = setTimeout(() => ctrl.abort(), 20000);
-            const r = await fetch("https://" + RA_HOST + "/dl?id=" + encodeURIComponent(vid), {
-              method: "GET",
-              headers: {
-                "X-RapidAPI-Key": RA_KEY,
-                "X-RapidAPI-Host": RA_HOST,
-              },
-              signal: ctrl.signal,
-            });
-            clearTimeout(t);
-            const text = await r.text();
-            let data;
-            try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 150) }; }
-            if (r.ok && data.link) {
-              res.status(200).json({ ok: true, direct: data.link, source: "rapidapi" });
-              return;
-            }
-            errors.push("rapidapi: " + (data.message || data.msg || data.error || "HTTP " + r.status));
-          }
-        } catch (e) {
-          errors.push("rapidapi: " + String(e.message || e).slice(0, 50));
-        }
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 20000);
+          const r = await fetch("https://" + RA_HOST + "/dl?id=" + encodeURIComponent(vid), {
+            method: "GET",
+            headers: { "X-RapidAPI-Key": RA_KEY, "X-RapidAPI-Host": RA_HOST },
+            signal: ctrl.signal,
+          });
+          clearTimeout(t);
+          const data = await r.json();
+          if (r.ok && data.link) { res.status(200).json({ ok: true, direct: data.link, source: "rapidapi" }); return; }
+          errors.push("rapidapi: " + (data.message || data.msg || data.error || "HTTP " + r.status));
+        } catch (e) { errors.push("rapidapi: " + String(e.message || e).slice(0, 40)); }
       } else {
-        errors.push("rapidapi: RAPIDAPI_KEY belum di-set di Vercel env");
+        errors.push("rapidapi: RAPIDAPI_KEY belum di-set");
       }
 
       res.status(200).json({
         ok: false,
-        error: "Semua endpoint gagal. Coba lagi atau setup RapidAPI env var.",
-        detail: errors.slice(0, 8),
+        error: "Semua endpoint gagal. Coba lagi nanti.",
+        detail: errors.slice(0, 12),
       });
       return;
     }
@@ -2513,7 +2580,7 @@ async function ytFetch(){
   if(!url){ box.className='result err'; box.innerHTML='Paste link YouTube dulu'; return; }
   if(!/youtube\.com|youtu\.be/.test(url)){ box.className='result err'; box.innerHTML='Bukan link YouTube'; return; }
   btn.disabled=true; btn.textContent='⏳ RESOLVING...';
-  box.className='result info'; box.innerHTML='<span class="spinner"></span>Minta cobalt convert...';
+  box.className='result info'; box.innerHTML='<span class="spinner"></span>Minta convert...';
   try{
     const r = await apiCall('/?yt=resolve', {
       method:'POST',
@@ -2531,9 +2598,9 @@ async function ytFetch(){
     }
 
     box.className='result info';
-    box.innerHTML = '<span class="spinner"></span>Download MP3 dari cobalt...';
+    box.innerHTML = '<span class="spinner"></span>Download MP3...';
     const audioResp = await fetch(r.direct);
-    if(!audioResp.ok){ box.className='result err'; box.innerHTML='❌ Cobalt CDN error: '+audioResp.status; return; }
+    if(!audioResp.ok){ box.className='result err'; box.innerHTML='❌ CDN error: '+audioResp.status; return; }
     const blob = await audioResp.blob();
     if(!blob || blob.size < 4096){ box.className='result err'; box.innerHTML='File terlalu kecil / gagal'; return; }
 
