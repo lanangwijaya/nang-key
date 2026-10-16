@@ -235,7 +235,7 @@ async function handle(req, res) {
   }
 
   // ─────────────────────────────────────────────
-  // YT → MP3: resolve + stream proxy
+  // YT → MP3: debug + stream proxy + resolve
   // ─────────────────────────────────────────────
   if (params.has("yt")) {
     const action = String(params.get("yt") || "");
@@ -246,6 +246,45 @@ async function handle(req, res) {
       const m3 = u.match(/shorts\/([\w-]{11})/);
       const m4 = u.match(/embed\/([\w-]{11})/);
       return (m1 && m1[1]) || (m2 && m2[1]) || (m3 && m3[1]) || (m4 && m4[1]) || "";
+    }
+
+    // DEBUG — buka di browser: /?yt=debug&url=https://youtu.be/xxxx
+    if (action === "debug" && method === "GET") {
+      const ytUrl = String(params.get("url") || "").trim();
+      const vid = _extractVid(ytUrl);
+      const out = { vid, ytdl: null, rapidapi: {} };
+      try {
+        const ytdlMod = await import("@distube/ytdl-core");
+        const ytdl = ytdlMod.default || ytdlMod;
+        const info = await ytdl.getInfo(ytUrl);
+        const audios = info.formats.filter(f => f.hasAudio && !f.hasVideo);
+        out.ytdl = {
+          ok: true,
+          title: info.videoDetails.title,
+          audioOnlyFormats: audios.length,
+          firstUrl: audios[0] && audios[0].url ? audios[0].url.slice(0, 100) + "..." : null,
+          firstBitrate: audios[0] ? audios[0].audioBitrate : null,
+        };
+      } catch (e) { out.ytdl = { ok: false, error: String(e.message || e).slice(0, 200) }; }
+      const RA_KEY = process.env.RAPIDAPI_KEY;
+      const rapidHosts = [
+        { host: "youtube-to-mp315.p.rapidapi.com", method: "POST", path: "/download", body: { url: ytUrl, format: "mp3", quality: 0 } },
+        { host: "youtube-mp36.p.rapidapi.com", method: "GET", path: "/dl?id=" + vid },
+      ];
+      for (const rh of rapidHosts) {
+        if (!RA_KEY) { out.rapidapi[rh.host] = { error: "no RAPIDAPI_KEY" }; continue; }
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 15000);
+          const opts = { method: rh.method, headers: { "X-RapidAPI-Key": RA_KEY, "X-RapidAPI-Host": rh.host }, signal: ctrl.signal };
+          if (rh.body) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(rh.body); }
+          const r = await fetch("https://" + rh.host + rh.path, opts);
+          clearTimeout(t);
+          out.rapidapi[rh.host] = { status: r.status, body: (await r.text()).slice(0, 400) };
+        } catch (e) { out.rapidapi[rh.host] = { error: String(e.message || e).slice(0, 120) }; }
+      }
+      res.status(200).json({ ok: true, debug: out });
+      return;
     }
 
     // STREAM PROXY — bypass CORS + URL expiry
@@ -274,6 +313,7 @@ async function handle(req, res) {
       return;
     }
 
+    // RESOLVE — cari direct URL
     if (action === "resolve" && method === "POST") {
       let raw = "";
       await new Promise(r => { req.on("data", c => raw += c); req.on("end", r); });
@@ -1306,9 +1346,6 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 .mod-box.unknown{background:rgba(255,255,255,.02);border-color:var(--border);color:var(--muted)}
 .mod-box .mod-title{font-size:1rem;font-weight:800;margin-bottom:6px}
 .mod-box .mod-sub{font-size:.75rem;opacity:.85}
-.tree-box{background:rgba(0,0,0,0.35);border:1px solid var(--border);border-radius:10px;padding:12px;font-family:'JetBrains Mono',monospace;font-size:.72rem;color:var(--muted);line-height:1.7;white-space:pre;overflow-x:auto;margin:8px 0}
-.progress-bar{width:100%;height:6px;background:rgba(255,255,255,.06);border-radius:4px;overflow:hidden;margin:10px 0}
-.progress-bar-fill{height:100%;width:0;background:linear-gradient(90deg,var(--pink),var(--cyan));transition:width .3s ease;border-radius:4px}
 </style></head><body>
 
 <div id="nangLoader">
@@ -1424,11 +1461,7 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 <span class="label">Personal Upload:</span><br>
 1. Buka <a href="https://create.roblox.com/dashboard/credentials" target="_blank">create.roblox.com/dashboard/credentials</a><br>
 2. Create API Key → Assets API → Write + Read<br>
-3. Save & Generate → copy key<br><br>
-<span class="label">Group Upload:</span><br>
-1. Bikin akun Roblox khusus automation<br>
-2. Invite ke grup + role min bikin asset<br>
-3. Login pakai akun itu → bikin API key
+3. Save & Generate → copy key
 </div>
 </div>
 
