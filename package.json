@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "vid-yt": "^1.1.0"
+    "@distube/ytdl-core": "^4.16.4"
   }
 }
