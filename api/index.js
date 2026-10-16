@@ -207,9 +207,7 @@ async function handle(req, res) {
   if (method === "OPTIONS") { res.status(200).end(); return; }
 
   if (params.has("version")) {
-    let hasYtdl = false, ytdlErr = null;
-    try { await import("@distube/ytdl-core"); hasYtdl = true; } catch(e) { ytdlErr = String(e.message || e).slice(0, 80); }
-    res.status(200).json({ version: BUILD, ts: Date.now(), hasKv: _HAS_KV, hasRapid: !!process.env.RAPIDAPI_KEY, hasYtdl, ytdlErr });
+    res.status(200).json({ version: BUILD, ts: Date.now(), hasKv: _HAS_KV });
     return;
   }
 
@@ -232,175 +230,6 @@ async function handle(req, res) {
   }
   if (path.startsWith("/api/")) {
     return await handleApi(req, res, path, method, params, { ADMIN_PW, AUTH_DOMAIN, WA_NUMBER });
-  }
-
-  // ─────────────────────────────────────────────
-  // YT → MP3: debug + stream proxy + resolve
-  // ─────────────────────────────────────────────
-  if (params.has("yt")) {
-    const action = String(params.get("yt") || "");
-
-    function _extractVid(u) {
-      const m1 = u.match(/[?&]v=([\w-]{11})/);
-      const m2 = u.match(/youtu\.be\/([\w-]{11})/);
-      const m3 = u.match(/shorts\/([\w-]{11})/);
-      const m4 = u.match(/embed\/([\w-]{11})/);
-      return (m1 && m1[1]) || (m2 && m2[1]) || (m3 && m3[1]) || (m4 && m4[1]) || "";
-    }
-
-    // DEBUG — buka di browser: /?yt=debug&url=https://youtu.be/xxxx
-    if (action === "debug" && method === "GET") {
-      const ytUrl = String(params.get("url") || "").trim();
-      const vid = _extractVid(ytUrl);
-      const out = { vid, ytdl: null, rapidapi: {} };
-      try {
-        const ytdlMod = await import("@distube/ytdl-core");
-        const ytdl = ytdlMod.default || ytdlMod;
-        const info = await ytdl.getInfo(ytUrl);
-        const audios = info.formats.filter(f => f.hasAudio && !f.hasVideo);
-        out.ytdl = {
-          ok: true,
-          title: info.videoDetails.title,
-          audioOnlyFormats: audios.length,
-          firstUrl: audios[0] && audios[0].url ? audios[0].url.slice(0, 100) + "..." : null,
-          firstBitrate: audios[0] ? audios[0].audioBitrate : null,
-        };
-      } catch (e) { out.ytdl = { ok: false, error: String(e.message || e).slice(0, 200) }; }
-      const RA_KEY = process.env.RAPIDAPI_KEY;
-      const rapidHosts = [
-        { host: "youtube-to-mp315.p.rapidapi.com", method: "POST", path: "/download", body: { url: ytUrl, format: "mp3", quality: 0 } },
-        { host: "youtube-mp36.p.rapidapi.com", method: "GET", path: "/dl?id=" + vid },
-      ];
-      for (const rh of rapidHosts) {
-        if (!RA_KEY) { out.rapidapi[rh.host] = { error: "no RAPIDAPI_KEY" }; continue; }
-        try {
-          const ctrl = new AbortController();
-          const t = setTimeout(() => ctrl.abort(), 15000);
-          const opts = { method: rh.method, headers: { "X-RapidAPI-Key": RA_KEY, "X-RapidAPI-Host": rh.host }, signal: ctrl.signal };
-          if (rh.body) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(rh.body); }
-          const r = await fetch("https://" + rh.host + rh.path, opts);
-          clearTimeout(t);
-          out.rapidapi[rh.host] = { status: r.status, body: (await r.text()).slice(0, 400) };
-        } catch (e) { out.rapidapi[rh.host] = { error: String(e.message || e).slice(0, 120) }; }
-      }
-      res.status(200).json({ ok: true, debug: out });
-      return;
-    }
-
-    // STREAM PROXY — bypass CORS + URL expiry
-    if (action === "stream" && method === "GET") {
-      const target = String(params.get("url") || "").trim();
-      if (!target || !target.startsWith("http")) { res.status(400).send("invalid url"); return; }
-      try {
-        const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), 60000);
-        const r = await fetch(target, { headers: { "User-Agent": "Mozilla/5.0" }, signal: ctrl.signal });
-        clearTimeout(t);
-        if (!r.ok) { res.status(502).send("upstream " + r.status); return; }
-        res.setHeader("Content-Type", "audio/mpeg");
-        res.setHeader("Content-Disposition", "attachment; filename=yt-music.mp3");
-        res.setHeader("Access-Control-Allow-Origin", "*");
-        const reader = r.body.getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          res.write(Buffer.from(value));
-        }
-        res.end();
-      } catch (e) {
-        if (!res.headersSent) res.status(500).send("proxy error: " + String(e.message || e).slice(0, 100));
-      }
-      return;
-    }
-
-    // RESOLVE — cari direct URL
-    if (action === "resolve" && method === "POST") {
-      let raw = "";
-      await new Promise(r => { req.on("data", c => raw += c); req.on("end", r); });
-      let body = null; try { body = JSON.parse(raw); } catch {}
-      const ytUrl = String((body && body.url) || "").trim();
-      if (!ytUrl || (!ytUrl.includes("youtube.com") && !ytUrl.includes("youtu.be"))) {
-        res.status(200).json({ ok: false, error: "Bukan link YouTube" }); return;
-      }
-      const vid = _extractVid(ytUrl);
-      if (!vid) { res.status(200).json({ ok: false, error: "Video ID tidak dapat diekstrak" }); return; }
-
-      const errors = [];
-      const RA_KEY = process.env.RAPIDAPI_KEY;
-
-      // LAYER 1: ytdl-core
-      try {
-        const ytdlMod = await import("@distube/ytdl-core");
-        const ytdl = ytdlMod.default || ytdlMod;
-        const info = await ytdl.getInfo(ytUrl);
-        const audios = info.formats.filter(f => f.hasAudio && !f.hasVideo).sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0));
-        if (audios.length && audios[0].url) {
-          res.status(200).json({ ok: true, direct: audios[0].url, source: "ytdl:" + (audios[0].audioBitrate || "?") + "kbps" });
-          return;
-        }
-        const anyAudio = info.formats.filter(f => f.hasAudio).sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0));
-        if (anyAudio.length && anyAudio[0].url) {
-          res.status(200).json({ ok: true, direct: anyAudio[0].url, source: "ytdl:combined" });
-          return;
-        }
-        errors.push("ytdl: no audio format");
-      } catch (e) { errors.push("ytdl: " + String(e.message || e).slice(0, 80)); }
-
-      // LAYER 2: RapidAPI
-      if (RA_KEY) {
-        const rapidHosts = [
-          { host: "youtube-to-mp315.p.rapidapi.com", method: "POST", path: "/download", body: { url: ytUrl, format: "mp3", quality: 0 }, fields: ["link", "downloadUrl", "url", "mp3"] },
-          { host: "youtube-mp36.p.rapidapi.com", method: "GET", path: "/dl?id=" + vid, fields: ["link", "url"] },
-          { host: "youtube-mp3-audio-video-downloader.p.rapidapi.com", method: "GET", path: "/youtube?id=" + vid + "&type=audio", fields: ["link", "url"] },
-          { host: "youtube-multi-api.p.rapidapi.com", method: "GET", path: "/mp3?url=" + encodeURIComponent(ytUrl), fields: ["link", "downloadUrl", "url"] },
-        ];
-        for (const rh of rapidHosts) {
-          try {
-            const ctrl = new AbortController();
-            const t = setTimeout(() => ctrl.abort(), 25000);
-            const opts = { method: rh.method, headers: { "X-RapidAPI-Key": RA_KEY, "X-RapidAPI-Host": rh.host, "Accept": "application/json" }, signal: ctrl.signal };
-            if (rh.body) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(rh.body); }
-            const r = await fetch("https://" + rh.host + rh.path, opts);
-            clearTimeout(t);
-            const txt = await r.text();
-            let data; try { data = JSON.parse(txt); } catch { data = { raw: txt.slice(0, 200) }; }
-            if (r.ok) {
-              for (const f of rh.fields) {
-                if (data[f] && typeof data[f] === "string" && data[f].startsWith("http")) {
-                  res.status(200).json({ ok: true, direct: data[f], source: "rapidapi:" + rh.host, title: data.title || "" });
-                  return;
-                }
-              }
-              if (data.data && typeof data.data === "object") {
-                for (const f of rh.fields) {
-                  if (data.data[f] && typeof data.data[f] === "string" && data.data[f].startsWith("http")) {
-                    res.status(200).json({ ok: true, direct: data.data[f], source: "rapidapi:" + rh.host });
-                    return;
-                  }
-                }
-              }
-              if (data.result && typeof data.result === "object") {
-                for (const f of rh.fields) {
-                  if (data.result[f] && typeof data.result[f] === "string" && data.result[f].startsWith("http")) {
-                    res.status(200).json({ ok: true, direct: data.result[f], source: "rapidapi:" + rh.host });
-                    return;
-                  }
-                }
-              }
-            }
-            errors.push("rapidapi/" + rh.host + ": " + (data.message || data.error || data.msg || "HTTP " + r.status));
-          } catch (e) { errors.push("rapidapi/" + rh.host + ": " + String(e.message || e).slice(0, 60)); }
-        }
-      } else {
-        errors.push("rapidapi: RAPIDAPI_KEY belum di-set");
-      }
-
-      res.status(200).json({ ok: false, error: "Semua endpoint gagal.", detail: errors.slice(0, 8) });
-      return;
-    }
-
-    res.status(200).json({ ok: false, error: "unknown yt action" });
-    return;
   }
 
   if (method === "POST") {
@@ -1466,17 +1295,6 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 </div>
 
 <div class="card">
-<div class="card-title">🎵 Dari YouTube (auto-upload)</div>
-<div class="fmt-box" style="font-size:.72rem;line-height:1.7">
-    Paste link YouTube → fetch → auto upload ke Roblox pakai API key di bawah.<br>
-    <b style="color:var(--yellow)">⚠️</b> Roblox tolak audio ber-copyright. Yang lolos cuma CC / royalty-free / punya kamu sendiri.
-</div>
-<input type="text" class="inp" id="ytUrl" placeholder="https://youtube.com/watch?v=... atau https://youtu.be/...">
-<button class="btn-cyan" id="ytBtn" onclick="ytFetch()">🎵 FETCH + AUTO-UPLOAD</button>
-<div class="result" id="ytResult"></div>
-</div>
-
-<div class="card">
 <div class="card-title">📦 Format</div>
 <div class="fmt-box">
 <b style="color:var(--pink)">📦 Model</b> — .rbxm / .rbxmx — max 20 MB<br>
@@ -2195,9 +2013,9 @@ function upSetType(t){
              : isDecal ? '.png / .jpg / .jpeg / .bmp / .tga — max 15 MB'
              : '.rbxm / .rbxmx — max 15 MB';
   const icon = isAudio ? '🎵' : isDecal ? '🖼️' : '📦';
-  const regex = isAudio ? /\.(mp3|ogg|wav|flac)$/
-              : isDecal ? /\.(png|jpg|jpeg|bmp|tga)$/
-              : /\.(rbxm|rbxmx)$/;
+  const regex = isAudio ? /\\.(mp3|ogg|wav|flac)$/
+              : isDecal ? /\\.(png|jpg|jpeg|bmp|tga)$/
+              : /\\.(rbxm|rbxmx)$/;
   upFileInput.setAttribute('accept', accept);
   upDrop.querySelector('.drop-hint').textContent = hint;
   if (_upFile) {
@@ -2216,9 +2034,9 @@ function _upHandleFile(f){
   const n=f.name.toLowerCase();
   const isAudio = _upAssetType === 'Audio';
   const isDecal = _upAssetType === 'Decal';
-  const valid = isAudio ? /\.(mp3|ogg|wav|flac)$/.test(n)
-              : isDecal ? /\.(png|jpg|jpeg|bmp|tga)$/.test(n)
-              : /\.(rbxm|rbxmx)$/.test(n);
+  const valid = isAudio ? /\\.(mp3|ogg|wav|flac)$/.test(n)
+              : isDecal ? /\\.(png|jpg|jpeg|bmp|tga)$/.test(n)
+              : /\\.(rbxm|rbxmx)$/.test(n);
   if(!valid){
     return _upBigShowFail(
       isAudio ? 'File harus .mp3 / .ogg / .wav / .flac'
@@ -2328,7 +2146,7 @@ async function doUploadRbxm(){
   if(!username) return _upBigShowFail('Username / User ID kosong');
   if(!apiKey) return _upBigShowFail('API Key kosong');
   if(_upMode === 'group' && !groupId) return _upBigShowFail('Group ID kosong', 'Isi Group ID di panel "Upload Sebagai → Grup"');
-  if(_upMode === 'group' && !/^\d+$/.test(groupId)) return _upBigShowFail('Group ID tidak valid', 'Hanya angka');
+  if(_upMode === 'group' && !/^\\d+$/.test(groupId)) return _upBigShowFail('Group ID tidak valid', 'Hanya angka');
   if(!_upFile) return _upBigShowFail('Belum ada file dipilih');
 
   _upSaveFields();
@@ -2364,7 +2182,7 @@ async function doUploadRbxm(){
         'Content-Type': 'application/octet-stream',
         'x-nang-apikey': apiKey,
         'x-nang-filename': _upFile.name,
-        'x-nang-display': (name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac|png|jpg|jpeg|bmp|tga)$/i,'')).slice(0,50),
+        'x-nang-display': (name || _upFile.name.replace(/\\.(rbxm|rbxmx|mp3|ogg|wav|flac|png|jpg|jpeg|bmp|tga)$/i,'')).slice(0,50),
         'x-nang-desc': (desc || 'Upload via NANG web').slice(0,1000),
         'x-nang-assettype': _upAssetType
       };
@@ -2378,7 +2196,7 @@ async function doUploadRbxm(){
       operationId = up.operationId;
     } else {
       const sid = _randHex(16);
-      const displayName = (name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac|png|jpg|jpeg|bmp|tga)$/i,'')).slice(0,50);
+      const displayName = (name || _upFile.name.replace(/\\.(rbxm|rbxmx|mp3|ogg|wav|flac|png|jpg|jpeg|bmp|tga)$/i,'')).slice(0,50);
       for (let i = 0; i < totalChunks; i++) {
         const start = i * CHUNK_SIZE;
         const end = Math.min(start + CHUNK_SIZE, _upFile.size);
@@ -2414,79 +2232,10 @@ async function doUploadRbxm(){
     }
     if(!assetId){ _upStep(4,'err'); throw new Error(lastErr || 'Timeout. Cek dashboard Roblox.'); }
     _upStep(4,'done');
-    _upBigShowSuccess(assetId, name || _upFile.name.replace(/\.(rbxm|rbxmx|mp3|ogg|wav|flac|png|jpg|jpeg|bmp|tga)$/i,''), _upAssetType, groupId, apiKey);
+    _upBigShowSuccess(assetId, name || _upFile.name.replace(/\\.(rbxm|rbxmx|mp3|ogg|wav|flac|png|jpg|jpeg|bmp|tga)$/i,''), _upAssetType, groupId, apiKey);
   }
   catch(e){ _upBigShowFail(e.message || 'Error tidak diketahui'); }
   finally{ btn.disabled=false; btn.textContent='UPLOAD KE ROBLOX'; }
-}
-
-async function ytFetch(){
-  const url = $('ytUrl').value.trim();
-  const box = $('ytResult');
-  const btn = $('ytBtn');
-  if(!url){ box.className='result err'; box.innerHTML='Paste link YouTube dulu'; return; }
-  if(!/youtube\.com|youtu\.be/.test(url)){ box.className='result err'; box.innerHTML='Bukan link YouTube'; return; }
-  btn.disabled=true; btn.textContent='⏳ FETCHING...';
-  box.className='result info'; box.innerHTML='<span class="spinner"></span>Resolve URL dari server...';
-  try{
-    const r = await apiCall('/?yt=resolve', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ url })
-    });
-    if(!r.ok){
-      let detail = '';
-      if(Array.isArray(r.detail) && r.detail.length){
-        detail = '<br><small style="opacity:.7">' + r.detail.map(x=>esc(x)).join('<br>') + '</small>';
-      }
-      box.className='result err';
-      box.innerHTML='❌ '+esc(r.error||'gagal resolve')+detail;
-      return;
-    }
-
-    box.className='result info';
-    box.innerHTML = '<span class="spinner"></span>Download MP3 via server...';
-    const streamUrl = '/?yt=stream&url=' + encodeURIComponent(r.direct);
-    const audioResp = await fetch(streamUrl);
-    if(!audioResp.ok){ box.className='result err'; box.innerHTML='❌ Stream error: HTTP '+audioResp.status; return; }
-    const blob = await audioResp.blob();
-    if(!blob || blob.size < 4096){ box.className='result err'; box.innerHTML='File terlalu kecil / gagal'; return; }
-
-    const file = new File([blob], 'yt-music.mp3', { type:'audio/mpeg' });
-    _upFile = file;
-    upDrop.classList.add('done');
-    upDrop.querySelector('.drop-icon').textContent = '🎵';
-    upDrop.querySelector('.drop-text').textContent = file.name;
-    upDrop.querySelector('.drop-hint').textContent = (file.size/1024).toFixed(1) + ' KB  ·  dari YouTube';
-    _upHideBig();
-    upSetType('Audio');
-    _upSaveFields();
-
-    const username = $('upUsername').value.trim();
-    const apiKey = $('upApiKey').value.trim();
-    if(!username || !apiKey){
-      box.className='result warn';
-      box.innerHTML='⚠️ File siap (' + (blob.size/1024).toFixed(1) + ' KB). Isi dulu Username + API Key, terus klik UPLOAD KE ROBLOX manual.';
-      return;
-    }
-
-    box.className='result info';
-    box.innerHTML='<span class="spinner"></span>File siap (' + (blob.size/1024).toFixed(1) + ' KB). Auto-upload...';
-    await doUploadRbxm();
-
-    const upRes = $('upBigResult');
-    if(upRes && upRes.classList.contains('err')){
-      box.className='result err';
-      box.innerHTML='❌ Auto-upload gagal.';
-    } else if(upRes && upRes.classList.contains('ok')){
-      box.className='result ok';
-      box.innerHTML='✓ Auto-upload selesai. Asset ID muncul di kotak bawah.';
-    }
-  } catch(e){
-    box.className='result err'; box.innerHTML='Error: '+esc(e.message);
-  } finally {
-    btn.disabled=false; btn.textContent='🎵 FETCH + AUTO-UPLOAD';
-  }
 }
 
 let _fmFile = null;
@@ -2675,7 +2424,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     const v=$('upGroupId').value.trim();
     const h=$('upGroupHint');
     if(!v){h.className='hint';h.textContent='Masukkan ID grup komunitas lu';return;}
-    if(!/^\d+$/.test(v)){ h.className='hint err'; h.textContent='✗ Group ID cuma angka'; return; }
+    if(!/^\\d+$/.test(v)){ h.className='hint err'; h.textContent='✗ Group ID cuma angka'; return; }
     h.className='hint'; h.innerHTML='<span class="spinner"></span>Mencari grup...';
     _upGroupT=setTimeout(async()=>{
       const d=await apiCall('/?api=lookup-group',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groupId:v})});
