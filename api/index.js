@@ -1333,7 +1333,7 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 <div class="card">
 <div class="card-title">File</div>
 <div class="drop" id="upDrop"><div class="drop-icon">📦</div><div class="drop-text">Klik atau drop file</div><div class="drop-hint">.rbxm / .rbxmx — max 15 MB</div></div>
-<input type="file" id="upFileInput" accept=".rbxm,.rbxmx" hidden>
+<input type="file" id="upFileInput" accept=".rbxm,.rbxmx" multiple hidden>
 <input type="text" class="inp" id="upName" placeholder="Nama asset (opsional)">
 <input type="text" class="inp" id="upDesc" placeholder="Deskripsi (opsional)">
 <button class="btn-cyan" id="upBtn" onclick="doUploadRbxm()">UPLOAD KE ROBLOX</button>
@@ -1928,7 +1928,8 @@ async function doOwnerGen(){
   } catch(e) { box.className='result err'; box.innerHTML='Error: '+esc(e.message); }
 }
 
-let _upFile=null;
+// ===== MULTI-FILE STATE =====
+let _upFiles=[];
 const upDrop=$('upDrop');
 const upFileInput=$('upFileInput');
 const upBigResult=$('upBigResult');
@@ -1995,8 +1996,8 @@ function upSetMode(mode, silent){
 upDrop.addEventListener('click',()=>upFileInput.click());
 upDrop.addEventListener('dragover',e=>{e.preventDefault();upDrop.classList.add('over');});
 upDrop.addEventListener('dragleave',()=>upDrop.classList.remove('over'));
-upDrop.addEventListener('drop',e=>{e.preventDefault();upDrop.classList.remove('over');if(e.dataTransfer.files.length)_upHandleFile(e.dataTransfer.files[0]);});
-upFileInput.addEventListener('change',e=>{if(e.target.files.length)_upHandleFile(e.target.files[0]);});
+upDrop.addEventListener('drop',e=>{e.preventDefault();upDrop.classList.remove('over');if(e.dataTransfer.files.length)_upHandleFiles(Array.from(e.dataTransfer.files));});
+upFileInput.addEventListener('change',e=>{if(e.target.files.length)_upHandleFiles(Array.from(e.target.files));});
 
 function upSetType(t){
   try{ localStorage.setItem(_lsKey(_LS_BASE.type), t); }catch(e){}
@@ -2009,47 +2010,74 @@ function upSetType(t){
   const accept = isAudio ? '.mp3,.ogg,.wav,.flac'
                : isDecal ? '.png,.jpg,.jpeg,.bmp,.tga'
                : '.rbxm,.rbxmx';
-  const hint = isAudio ? '.mp3 / .ogg / .wav / .flac — max 15 MB'
-             : isDecal ? '.png / .jpg / .jpeg / .bmp / .tga — max 15 MB'
-             : '.rbxm / .rbxmx — max 15 MB';
+  const hint = isAudio ? '.mp3 / .ogg / .wav / .flac — max 15 MB (bisa pilih banyak)'
+             : isDecal ? '.png / .jpg / .jpeg / .bmp / .tga — max 15 MB (bisa pilih banyak)'
+             : '.rbxm / .rbxmx — max 15 MB (bisa pilih banyak)';
   const icon = isAudio ? '🎵' : isDecal ? '🖼️' : '📦';
-  const regex = isAudio ? /\\.(mp3|ogg|wav|flac)$/
-              : isDecal ? /\\.(png|jpg|jpeg|bmp|tga)$/
-              : /\\.(rbxm|rbxmx)$/;
+  const regex = isAudio ? /\\.(mp3|ogg|wav|flac)$/i
+              : isDecal ? /\\.(png|jpg|jpeg|bmp|tga)$/i
+              : /\\.(rbxm|rbxmx)$/i;
   upFileInput.setAttribute('accept', accept);
   upDrop.querySelector('.drop-hint').textContent = hint;
-  if (_upFile) {
-    const n = _upFile.name.toLowerCase();
-    const ok = regex.test(n);
-    if (!ok) {
-      _upFile = null; upDrop.classList.remove('done');
+  if (_upFiles.length) {
+    const valid = _upFiles.filter(f => regex.test(f.name.toLowerCase()));
+    if (!valid.length) {
+      _upFiles = []; upDrop.classList.remove('done');
       upDrop.querySelector('.drop-icon').textContent = icon;
       upDrop.querySelector('.drop-text').textContent = 'Klik atau drop file';
       upDrop.querySelector('.drop-hint').textContent = hint;
       _upHideBig();
+    } else {
+      _upFiles = valid;
+      upDrop.querySelector('.drop-icon').textContent = valid.length === 1 ? '✓' : '📚';
+      upDrop.querySelector('.drop-text').textContent = valid.length === 1 ? valid[0].name : valid.length + ' file dipilih';
+      const totalMB = valid.reduce((s,f)=>s+f.size,0)/1024/1024;
+      upDrop.querySelector('.drop-hint').textContent = totalMB.toFixed(2) + ' MB total';
+      const btn = $('upBtn');
+      if (btn) btn.textContent = valid.length > 1 ? 'UPLOAD ' + valid.length + ' FILE' : 'UPLOAD KE ROBLOX';
     }
   } else { upDrop.querySelector('.drop-icon').textContent = icon; }
 }
-function _upHandleFile(f){
-  const n=f.name.toLowerCase();
+function _upHandleFiles(files){
   const isAudio = _upAssetType === 'Audio';
   const isDecal = _upAssetType === 'Decal';
-  const valid = isAudio ? /\\.(mp3|ogg|wav|flac)$/.test(n)
-              : isDecal ? /\\.(png|jpg|jpeg|bmp|tga)$/.test(n)
-              : /\\.(rbxm|rbxmx)$/.test(n);
-  if(!valid){
-    return _upBigShowFail(
-      isAudio ? 'File harus .mp3 / .ogg / .wav / .flac'
-      : isDecal ? 'File harus .png / .jpg / .jpeg / .bmp / .tga'
-      : 'File harus .rbxm atau .rbxmx'
-    );
+  const validRegex = isAudio ? /\.(mp3|ogg|wav|flac)$/i
+                   : isDecal ? /\.(png|jpg|jpeg|bmp|tga)$/i
+                   : /\.(rbxm|rbxmx)$/i;
+  const errMsg = isAudio ? 'File harus .mp3 / .ogg / .wav / .flac'
+               : isDecal ? 'File harus .png / .jpg / .jpeg / .bmp / .tga'
+               : 'File harus .rbxm / .rbxmx';
+
+  const valid = [];
+  const skipped = [];
+  for (const f of files){
+    if (!validRegex.test(f.name.toLowerCase())) { skipped.push(f.name + ' (tipe salah)'); continue; }
+    if (f.size > 15 * 1024 * 1024) { skipped.push(f.name + ' (>15 MB)'); continue; }
+    valid.push(f);
   }
-  if(f.size>15*1024*1024){ return _upBigShowFail('File > 15 MB'); }
-  _upFile=f;
+
+  if (!valid.length){
+    return _upBigShowFail(errMsg + (skipped.length ? ' — semua file di-skip' : ''), skipped.slice(0,3).join(', '));
+  }
+  if (valid.length > 50){
+    return _upBigShowFail('Maksimal 50 file per batch', 'Kamu pilih ' + valid.length + ' file');
+  }
+
+  _upFiles = valid;
+  const totalMB = valid.reduce((s,f) => s + f.size, 0) / 1024 / 1024;
+
   upDrop.classList.add('done');
-  upDrop.querySelector('.drop-icon').textContent='✓';
-  upDrop.querySelector('.drop-text').textContent=f.name;
-  upDrop.querySelector('.drop-hint').textContent=(f.size/1024).toFixed(1)+' KB';
+  upDrop.querySelector('.drop-icon').textContent = valid.length === 1 ? '✓' : '📚';
+  upDrop.querySelector('.drop-text').textContent = valid.length === 1
+    ? valid[0].name
+    : valid.length + ' file dipilih';
+  upDrop.querySelector('.drop-hint').textContent =
+    (skipped.length ? '⚠️ ' + skipped.length + ' di-skip · ' : '')
+    + totalMB.toFixed(2) + ' MB total';
+
+  const btn = $('upBtn');
+  if (btn) btn.textContent = valid.length > 1 ? 'UPLOAD ' + valid.length + ' FILE' : 'UPLOAD KE ROBLOX';
+
   _upHideBig();
 }
 function _upHideBig(){
@@ -2147,7 +2175,11 @@ async function doUploadRbxm(){
   if(!apiKey) return _upBigShowFail('API Key kosong');
   if(_upMode === 'group' && !groupId) return _upBigShowFail('Group ID kosong', 'Isi Group ID di panel "Upload Sebagai → Grup"');
   if(_upMode === 'group' && !/^\\d+$/.test(groupId)) return _upBigShowFail('Group ID tidak valid', 'Hanya angka');
-  if(!_upFile) return _upBigShowFail('Belum ada file dipilih');
+
+  // ▼ MULTI-FILE BRANCH
+  if (_upFiles.length === 0) return _upBigShowFail('Belum ada file dipilih');
+  if (_upFiles.length > 1) return _doUploadBatch(_upFiles);
+  const _upFile = _upFiles[0];
 
   _upSaveFields();
   const btn=$('upBtn');
@@ -2236,6 +2268,147 @@ async function doUploadRbxm(){
   }
   catch(e){ _upBigShowFail(e.message || 'Error tidak diketahui'); }
   finally{ btn.disabled=false; btn.textContent='UPLOAD KE ROBLOX'; }
+}
+
+// ===== BATCH UPLOAD (multi-file) =====
+async function _doUploadBatch(files){
+  const username   = $('upUsername').value.trim();
+  const apiKey     = $('upApiKey').value.trim();
+  const desc       = $('upDesc').value.trim();
+  const namePrefix = $('upName').value.trim();
+  const groupId    = _upMode === 'group' ? $('upGroupId').value.trim() : '';
+  const btn        = $('upBtn');
+
+  if(!username) return _upBigShowFail('Username / User ID kosong');
+  if(!apiKey)   return _upBigShowFail('API Key kosong');
+  if(_upMode === 'group' && !groupId) return _upBigShowFail('Group ID kosong');
+
+  _upSaveFields();
+  btn.disabled = true; btn.textContent = '⏳ BATCH...';
+  _upHideBig();
+  $('upProgress').style.display = 'block';
+  _upStep(1,'active'); _upStep(2,''); _upStep(3,''); _upStep(4,'');
+  upBigResult.className = 'result info';
+  upBigResult.innerHTML = '<span class="spinner"></span>Persiapan...';
+
+  try{
+    // 1) Lookup user
+    const lk = await apiCall('/?api=lookup-user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:username})});
+    if(!lk.ok){ _upStep(1,'err'); throw new Error('User: ' + (lk.error||'tidak ditemukan')); }
+    _upStep(1,'done');
+
+    // 2) Verify API key SEKALI
+    _upStep(2,'active');
+    const vk = await apiCall('/?api=verify-apikey',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apiKey})});
+    if(!vk.ok){ _upStep(2,'err'); throw new Error('API Key: ' + (vk.error||'invalid')); }
+    _upStep(2,'done');
+    _upStep(3,'active');
+
+    const results = [];
+    for(let i = 0; i < files.length; i++){
+      const fileObj    = files[i];
+      const fileName   = fileObj.name;
+      const baseName   = fileName.replace(/\.[^.]+$/, '').slice(0,50);
+      const displayName = (namePrefix && files.length === 1) ? namePrefix : baseName;
+
+      upBigResult.className = 'result info';
+      upBigResult.innerHTML = '<span class="spinner"></span><b>📦 ' + (i+1) + '/' + files.length + '</b><br>' + esc(fileName)
+        + '<br><small style="color:var(--muted)">✅ ' + results.filter(r=>r.ok).length + ' sukses · ❌ ' + results.filter(r=>!r.ok).length + ' gagal</small>';
+
+      try{
+        const CHUNK_SIZE = 500 * 1024;
+        const totalChunks = Math.max(1, Math.ceil(fileObj.size / CHUNK_SIZE));
+        let operationId = null;
+
+        if(totalChunks <= 1){
+          const headers = {
+            'Content-Type': 'application/octet-stream',
+            'x-nang-apikey': apiKey,
+            'x-nang-filename': fileName,
+            'x-nang-display': displayName,
+            'x-nang-desc': (desc || 'Upload via NANG web').slice(0,1000),
+            'x-nang-assettype': _upAssetType
+          };
+          if(groupId) headers['x-nang-groupid'] = groupId;
+          else headers['x-nang-userid'] = String(lk.userId);
+
+          const r = await fetch('/?api=upload-rbxm-raw', { method:'POST', headers, body: fileObj });
+          let up; try { up = await r.json(); } catch(e){ throw new Error('Server bukan JSON'); }
+          if(!up.ok) throw new Error(up.error || 'Upload gagal');
+          operationId = up.operationId;
+        } else {
+          const sid = _randHex(16);
+          for(let ci = 0; ci < totalChunks; ci++){
+            const start = ci * CHUNK_SIZE;
+            const end   = Math.min(start + CHUNK_SIZE, fileObj.size);
+            const chunk = fileObj.slice(start, end);
+            let url = '/?api=upload-chunk&sid=' + encodeURIComponent(sid) + '&idx=' + ci + '&total=' + totalChunks
+                    + '&fn=' + encodeURIComponent(fileName) + '&at=' + encodeURIComponent(_upAssetType);
+            if(groupId) url += '&gid=' + encodeURIComponent(groupId);
+            const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/octet-stream'}, body: chunk });
+            const d = await r.json();
+            if(!d.ok) throw new Error('Chunk ' + (ci+1) + ': ' + (d.error||'?'));
+          }
+          const commitBody = { sid, apiKey, displayName, description: desc || 'Upload via NANG web' };
+          if(groupId) commitBody.groupId = groupId;
+          else commitBody.userId = lk.userId;
+          const commit = await apiCall('/?api=upload-commit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(commitBody)});
+          if(!commit.ok) throw new Error(commit.error || 'Commit gagal');
+          operationId = commit.operationId;
+        }
+
+        // Poll status
+        let assetId = null, lastErr = null;
+        for(let p = 0; p < 80; p++){
+          await new Promise(res => setTimeout(res, 1500));
+          const st = await apiCall('/?api=upload-status&id=' + encodeURIComponent(operationId) + '&k=' + encodeURIComponent(apiKey));
+          if(!st.ok){ lastErr = st.error; continue; }
+          if(st.done){
+            if(st.error) throw new Error('Ditolak: ' + st.error);
+            assetId = st.assetId; break;
+          }
+        }
+        if(!assetId) throw new Error(lastErr || 'Timeout');
+        results.push({ name: fileName, ok: true, assetId });
+      } catch(e){
+        results.push({ name: fileName, ok: false, error: e.message || 'Error' });
+      }
+
+      // Delay antar file — hindari rate limit Roblox 429
+      if(i < files.length - 1) await new Promise(r => setTimeout(r, 2500));
+    }
+
+    _upStep(3,'done');
+    _upStep(4,'done');
+    $('upProgress').style.display = 'none';
+
+    const okCount = results.filter(r => r.ok).length;
+    upBigResult.className = okCount === results.length ? 'result ok' : 'result warn';
+    upBigResult.innerHTML = '<b>📦 Batch selesai: ' + okCount + '/' + results.length + ' sukses</b><br><br>' +
+      results.map(r => r.ok
+        ? '✅ ' + esc(r.name) + ' → <span style="font-family:\'JetBrains Mono\',monospace;color:var(--green)">' + r.assetId + '</span>'
+        : '❌ ' + esc(r.name) + ' — <span style="color:#ff9090">' + esc(r.error) + '</span>'
+      ).join('<br>');
+
+    // Kalau semua sukses → reset form (biar gak double-upload)
+    if (okCount === results.length) {
+      _upFiles = [];
+      upDrop.classList.remove('done');
+      upDrop.querySelector('.drop-icon').textContent = _upAssetType === 'Audio' ? '🎵' : _upAssetType === 'Decal' ? '🖼️' : '📦';
+      upDrop.querySelector('.drop-text').textContent = 'Klik atau drop file';
+      const hint = _upAssetType === 'Audio' ? '.mp3 / .ogg / .wav / .flac — max 15 MB (bisa pilih banyak)'
+                 : _upAssetType === 'Decal' ? '.png / .jpg / .jpeg / .bmp / .tga — max 15 MB (bisa pilih banyak)'
+                 : '.rbxm / .rbxmx — max 15 MB (bisa pilih banyak)';
+      upDrop.querySelector('.drop-hint').textContent = hint;
+      btn.textContent = 'UPLOAD KE ROBLOX';
+    }
+  } catch(e){
+    _upBigShowFail(e.message || 'Error');
+  } finally {
+    btn.disabled = false;
+    if (_upFiles.length > 1) btn.textContent = 'UPLOAD ' + _upFiles.length + ' FILE';
+    else if (_upFiles.length === 1) btn.textContent = 'UPLOAD KE ROBLOX';
+  }
 }
 
 let _fmFile = null;
