@@ -1332,7 +1332,7 @@ footer{margin-top:32px;color:var(--muted);font-size:0.68rem;text-align:center;op
 </div>
 <div class="card">
 <div class="card-title">File</div>
-<div class="drop" id="upDrop"><div class="drop-icon">📦</div><div class="drop-text">Klik atau drop file</div><div class="drop-hint">.rbxm / .rbxmx — max 15 MB</div></div>
+<div class="drop" id="upDrop"><div class="drop-icon">📦</div><div class="drop-text">Klik atau drop file</div><div class="drop-hint">.rbxm / .rbxmx — max 15 MB (bisa pilih banyak)</div></div>
 <input type="file" id="upFileInput" accept=".rbxm,.rbxmx" multiple hidden>
 <input type="text" class="inp" id="upName" placeholder="Nama asset (opsional)">
 <input type="text" class="inp" id="upDesc" placeholder="Deskripsi (opsional)">
@@ -1928,7 +1928,6 @@ async function doOwnerGen(){
   } catch(e) { box.className='result err'; box.innerHTML='Error: '+esc(e.message); }
 }
 
-// ===== MULTI-FILE STATE =====
 let _upFiles=[];
 const upDrop=$('upDrop');
 const upFileInput=$('upFileInput');
@@ -2041,9 +2040,9 @@ function upSetType(t){
 function _upHandleFiles(files){
   const isAudio = _upAssetType === 'Audio';
   const isDecal = _upAssetType === 'Decal';
-  const validRegex = isAudio ? /\.(mp3|ogg|wav|flac)$/i
-                   : isDecal ? /\.(png|jpg|jpeg|bmp|tga)$/i
-                   : /\.(rbxm|rbxmx)$/i;
+  const validRegex = isAudio ? /\\.(mp3|ogg|wav|flac)$/i
+                   : isDecal ? /\\.(png|jpg|jpeg|bmp|tga)$/i
+                   : /\\.(rbxm|rbxmx)$/i;
   const errMsg = isAudio ? 'File harus .mp3 / .ogg / .wav / .flac'
                : isDecal ? 'File harus .png / .jpg / .jpeg / .bmp / .tga'
                : 'File harus .rbxm / .rbxmx';
@@ -2176,7 +2175,6 @@ async function doUploadRbxm(){
   if(_upMode === 'group' && !groupId) return _upBigShowFail('Group ID kosong', 'Isi Group ID di panel "Upload Sebagai → Grup"');
   if(_upMode === 'group' && !/^\\d+$/.test(groupId)) return _upBigShowFail('Group ID tidak valid', 'Hanya angka');
 
-  // ▼ MULTI-FILE BRANCH
   if (_upFiles.length === 0) return _upBigShowFail('Belum ada file dipilih');
   if (_upFiles.length > 1) return _doUploadBatch(_upFiles);
   const _upFile = _upFiles[0];
@@ -2270,7 +2268,6 @@ async function doUploadRbxm(){
   finally{ btn.disabled=false; btn.textContent='UPLOAD KE ROBLOX'; }
 }
 
-// ===== BATCH UPLOAD (multi-file) =====
 async function _doUploadBatch(files){
   const username   = $('upUsername').value.trim();
   const apiKey     = $('upApiKey').value.trim();
@@ -2292,12 +2289,10 @@ async function _doUploadBatch(files){
   upBigResult.innerHTML = '<span class="spinner"></span>Persiapan...';
 
   try{
-    // 1) Lookup user
     const lk = await apiCall('/?api=lookup-user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:username})});
     if(!lk.ok){ _upStep(1,'err'); throw new Error('User: ' + (lk.error||'tidak ditemukan')); }
     _upStep(1,'done');
 
-    // 2) Verify API key SEKALI
     _upStep(2,'active');
     const vk = await apiCall('/?api=verify-apikey',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apiKey})});
     if(!vk.ok){ _upStep(2,'err'); throw new Error('API Key: ' + (vk.error||'invalid')); }
@@ -2306,9 +2301,9 @@ async function _doUploadBatch(files){
 
     const results = [];
     for(let i = 0; i < files.length; i++){
-      const fileObj    = files[i];
-      const fileName   = fileObj.name;
-      const baseName   = fileName.replace(/\.[^.]+$/, '').slice(0,50);
+      const fileObj     = files[i];
+      const fileName    = fileObj.name;
+      const baseName    = fileName.replace(/\\.[^.]+$/, '').slice(0,50);
       const displayName = (namePrefix && files.length === 1) ? namePrefix : baseName;
 
       upBigResult.className = 'result info';
@@ -2357,7 +2352,6 @@ async function _doUploadBatch(files){
           operationId = commit.operationId;
         }
 
-        // Poll status
         let assetId = null, lastErr = null;
         for(let p = 0; p < 80; p++){
           await new Promise(res => setTimeout(res, 1500));
@@ -2374,7 +2368,6 @@ async function _doUploadBatch(files){
         results.push({ name: fileName, ok: false, error: e.message || 'Error' });
       }
 
-      // Delay antar file — hindari rate limit Roblox 429
       if(i < files.length - 1) await new Promise(r => setTimeout(r, 2500));
     }
 
@@ -2386,11 +2379,10 @@ async function _doUploadBatch(files){
     upBigResult.className = okCount === results.length ? 'result ok' : 'result warn';
     upBigResult.innerHTML = '<b>📦 Batch selesai: ' + okCount + '/' + results.length + ' sukses</b><br><br>' +
       results.map(r => r.ok
-        ? '✅ ' + esc(r.name) + ' → <span style="font-family:\'JetBrains Mono\',monospace;color:var(--green)">' + r.assetId + '</span>'
+        ? '✅ ' + esc(r.name) + ' → <span style="font-family:monospace;color:var(--green)">' + r.assetId + '</span>'
         : '❌ ' + esc(r.name) + ' — <span style="color:#ff9090">' + esc(r.error) + '</span>'
       ).join('<br>');
 
-    // Kalau semua sukses → reset form (biar gak double-upload)
     if (okCount === results.length) {
       _upFiles = [];
       upDrop.classList.remove('done');
